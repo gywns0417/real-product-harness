@@ -2,6 +2,7 @@
 set -euo pipefail
 
 RPH_REPO_URL="${RPH_REPO_URL:-https://github.com/gywns0417/real-product-harness.git}"
+RPH_REPO_SLUG="${RPH_REPO_SLUG:-gywns0417/real-product-harness}"
 RPH_REF="${RPH_REF:-main}"
 RPH_INSTALL_DIR="${RPH_INSTALL_DIR:-$HOME/.real-product-harness}"
 RPH_BIN_DIR="${RPH_BIN_DIR:-$HOME/.local/bin}"
@@ -23,6 +24,15 @@ need_command() {
 
 need_command git
 need_command node
+
+clone_repository() {
+  if [ "${RPH_USE_GH:-auto}" != "0" ] && command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+    info "cloning $RPH_REPO_SLUG via gh"
+    gh repo clone "$RPH_REPO_SLUG" "$RPH_INSTALL_DIR" -- --depth 1 --branch "$RPH_REF"
+  else
+    git clone --depth 1 --branch "$RPH_REF" "$RPH_REPO_URL" "$RPH_INSTALL_DIR"
+  fi
+}
 
 node_major="$(node -p "Number(process.versions.node.split('.')[0])" 2>/dev/null || true)"
 if [ -z "$node_major" ] || [ "$node_major" -lt 22 ]; then
@@ -47,7 +57,7 @@ elif [ -e "$RPH_INSTALL_DIR" ]; then
   fail "$RPH_INSTALL_DIR already exists and is not a git checkout"
 else
   info "installing into $RPH_INSTALL_DIR"
-  git clone --depth 1 --branch "$RPH_REF" "$RPH_REPO_URL" "$RPH_INSTALL_DIR"
+  clone_repository
 fi
 
 info "installing dependencies"

@@ -17,6 +17,14 @@ If `rph` is not found after install, add `~/.local/bin` to your shell `PATH`.
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
+Private GitHub fallback, if the repository is made private again:
+
+```bash
+gh api -H "Accept: application/vnd.github.raw" repos/gywns0417/real-product-harness/contents/install.sh | bash
+```
+
+This requires `gh auth login` and repository access.
+
 Manual local install:
 
 ```bash
