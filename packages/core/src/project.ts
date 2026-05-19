@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { approvalsFile, designApprovalsFile, githubDir, interviewsDir, projectFile, rphDir, stateFile } from "./paths";
+import { approvalsFile, designApprovalsFile, githubDir, interviewsDir, issueIndexFile, projectFile, rphDir, stateFile } from "./paths";
 import { ensureDir, fileExists, readJson, writeJson, writeText } from "./fs";
 import { Project, ProjectState } from "./types";
 import { newId, nowIso } from "./time";
@@ -49,6 +49,7 @@ export function initProject(projectRoot: string, options: InitProjectOptions): {
     stateFile(root),
     approvalsFile(root),
     designApprovalsFile(root),
+    issueIndexFile(root),
     path.join(githubDir(root), "labels.json"),
     path.join(root, ".mcp", "config.json"),
     path.join(root, ".env.example")
@@ -62,6 +63,7 @@ export function initProject(projectRoot: string, options: InitProjectOptions): {
   writeJson(stateFile(root), state);
   writeJson(approvalsFile(root), []);
   writeJson(designApprovalsFile(root), []);
+  writeJson(issueIndexFile(root), { nextIssueNumber: 1, issues: [] });
   writeJson(path.join(root, ".mcp", "config.json"), createMcpConfig());
   if (!fileExists(path.join(root, ".env.example")) || options.force) {
     writeText(path.join(root, ".env.example"), envExample());
@@ -104,7 +106,13 @@ function envExample(): string {
     "NOTION_PARENT_PAGE_ID=",
     "FIGMA_TOKEN=",
     "FIGMA_FILE_ID=",
+    "SLACK_BOT_TOKEN=",
+    "DISCORD_BOT_TOKEN=",
     "DEPLOY_PROVIDER=",
-    "DATABASE_URL="
+    "DATABASE_URL=",
+    "CLOUD_PROJECT_ID=",
+    "AWS_ACCESS_KEY_ID=",
+    "AWS_SECRET_ACCESS_KEY=",
+    "GCP_PROJECT_ID="
   ].join("\n");
 }

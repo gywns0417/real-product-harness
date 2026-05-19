@@ -10,35 +10,49 @@ import {
   advanceAfterPdApproval,
   approveDesignArtifact,
   approveDocument,
+  approveEngineeringDocument,
   applyGitHubLabels,
   canFinalizePm,
   canFinalizePd,
+  createDevDeploymentPlan,
   createDocumentVersion,
   createDesignArtifactVersion,
+  createEngineeringDocumentVersion,
   createGitHubRepo,
   createInterviewSession,
   createLandingPreviewHtml,
   createObsidianProject,
+  createPullRequestDraft,
+  createWorkIssue,
   DESIGN_ARTIFACT_IDS,
   DESIGN_ARTIFACT_TITLES,
   diffDocumentVersions,
   DOCUMENT_IDS,
   DOCUMENT_TITLES,
   DesignArtifactId,
+  DocumentId,
   exportDocumentToObsidian,
   exportDesignArtifactToObsidian,
+  FE_SPEC_DOC,
+  FE_SPRINT_PLAN_DOC,
+  BE_SPEC_DOC,
+  BE_SPRINT_PLAN_DOC,
+  API_CONTRACT_DOC,
   GITHUB_ENV_KEYS,
   initProject,
   isDocumentId,
   listDocumentIndexes,
   listDesignArtifactIndexes,
+  listWorkIssues,
   loadEnvFile,
   loadProject,
   loadState,
+  markIssueInProgress,
   nextStage,
   optionBool,
   optionString,
   parseCli,
+  prepareEngineeringDocumentState,
   preparePdArtifactState,
   preparePmDraftState,
   ProjectState,
@@ -56,6 +70,7 @@ import {
   syncStateDocuments,
   transitionState,
   validateEnv,
+  Workstream,
   WORKFLOW_STAGES,
   writeGitHubTemplates
 } from "../../../packages/core/src";
@@ -89,6 +104,12 @@ async function main(): Promise<void> {
         break;
       case "pd":
         handlePd(cwd, parsed.subcommand, parsed.args, parsed.options);
+        break;
+      case "fe":
+        handleFe(cwd, parsed.subcommand, parsed.args, parsed.options);
+        break;
+      case "be":
+        handleBe(cwd, parsed.subcommand, parsed.args, parsed.options);
         break;
       case "docs":
         handleDocs(cwd, parsed.subcommand, parsed.args, parsed.options);
@@ -182,6 +203,11 @@ function handleStatus(projectRoot: string): void {
     if (artifact) {
       console.log(`- ${artifact.artifactId} ${artifact.currentVersion} ${artifact.status}`);
     }
+  }
+  const issues = listWorkIssues(projectRoot);
+  console.log(`작업 issue: ${issues.length}`);
+  for (const issue of issues.slice(0, 8)) {
+    console.log(`- #${issue.issueNumber} ${issue.assigneeAgent} ${issue.label} ${issue.status} ${issue.branchName}`);
   }
 }
 
@@ -521,6 +547,210 @@ function pdFinalize(projectRoot: string): void {
   console.log("다음: FE/BE spec");
 }
 
+function handleFe(
+  projectRoot: string,
+  subcommand: string | undefined,
+  args: string[],
+  options: Record<string, string | boolean>
+): void {
+  requireInitialized(projectRoot);
+  switch (subcommand) {
+    case "spec":
+      engineeringDraft(projectRoot, FE_SPEC_DOC, options);
+      return;
+    case "sprint-plan":
+      engineeringDraft(projectRoot, FE_SPRINT_PLAN_DOC, options);
+      return;
+    case "approve":
+      engineeringApprove(projectRoot, parseFeTarget(args[0]), optionString(options, "by") ?? "user");
+      return;
+    case "issue-create":
+      workIssueCreate(projectRoot, "FE", args, options);
+      return;
+    case "work":
+      workIssueStart(projectRoot, options);
+      return;
+    case "pr":
+      workPrDraft(projectRoot, options);
+      return;
+    default:
+      console.log("FE 명령어: spec | sprint-plan | approve <spec|sprint-plan> | issue-create | work --issue <n> | pr --issue <n>");
+  }
+}
+
+function handleBe(
+  projectRoot: string,
+  subcommand: string | undefined,
+  args: string[],
+  options: Record<string, string | boolean>
+): void {
+  requireInitialized(projectRoot);
+  switch (subcommand) {
+    case "spec":
+      engineeringDraft(projectRoot, BE_SPEC_DOC, options);
+      return;
+    case "api-contract":
+      engineeringDraft(projectRoot, API_CONTRACT_DOC, options);
+      return;
+    case "sprint-plan":
+      engineeringDraft(projectRoot, BE_SPRINT_PLAN_DOC, options);
+      return;
+    case "approve":
+      engineeringApprove(projectRoot, parseBeTarget(args[0]), optionString(options, "by") ?? "user");
+      return;
+    case "issue-create":
+      workIssueCreate(projectRoot, "BE", args, options);
+      return;
+    case "work":
+      workIssueStart(projectRoot, options);
+      return;
+    case "deploy-dev":
+      beDeployDev(projectRoot, options);
+      return;
+    case "pr":
+      workPrDraft(projectRoot, options);
+      return;
+    default:
+      console.log("BE 명령어: spec | api-contract | sprint-plan | approve <spec|api-contract|sprint-plan> | issue-create | work --issue <n> | deploy-dev | pr --issue <n>");
+  }
+}
+
+function engineeringDraft(
+  projectRoot: string,
+  docId: DocumentId,
+  options: Record<string, string | boolean>
+): void {
+  const body = bodyFromOptions(options);
+  const prepared = prepareEngineeringDocumentState(loadState(projectRoot), docId);
+  const index = createEngineeringDocumentVersion(projectRoot, docId, {
+    changeSummary: optionString(options, "summary") ?? "Initial engineering draft",
+    body
+  });
+  const state = syncStateDocuments(prepared, index);
+  saveState(projectRoot, state);
+  console.log(`엔지니어링 문서 생성: ${docId} ${index.currentVersion}`);
+  console.log(`승인 전 다음 큰 단계 진행 금지: ${approvalCommandForEngineeringDoc(docId)}`);
+}
+
+function engineeringApprove(projectRoot: string, docId: DocumentId, approvedBy = "user"): void {
+  const state = approveEngineeringDocument(projectRoot, docId, approvedBy);
+  saveState(projectRoot, state);
+  const index = readDocumentIndex(projectRoot, docId);
+  console.log(`[승인 완료] ${docId} ${index.currentVersion}`);
+  console.log(`승인자: ${approvedBy}`);
+}
+
+function workIssueCreate(
+  projectRoot: string,
+  workstream: Workstream,
+  args: string[],
+  options: Record<string, string | boolean>
+): void {
+  requireImplementationStage(projectRoot);
+  const title = optionString(options, "title") ?? (args.join(" ") || `${workstream} implementation task`);
+  const issue = createWorkIssue(projectRoot, {
+    workstream,
+    label: optionString(options, "label") ?? "feat",
+    title,
+    description: optionString(options, "description"),
+    acceptanceCriteria: splitListOption(optionString(options, "acceptance")),
+    testRequirement: optionString(options, "test")
+  });
+  console.log(`로컬 issue 생성: #${issue.issueNumber} ${issue.title}`);
+  console.log(`브랜치: ${issue.branchName}`);
+  console.log(`GitHub dry-run: gh issue create --title "${issue.title}" --label ${issue.label}`);
+}
+
+function workIssueStart(projectRoot: string, options: Record<string, string | boolean>): void {
+  requireImplementationStage(projectRoot);
+  const issueNumber = parseIssueNumber(optionString(options, "issue"));
+  const issue = markIssueInProgress(projectRoot, issueNumber);
+  console.log(`작업 시작 기록: #${issue.issueNumber}`);
+  console.log(`브랜치: ${issue.branchName}`);
+  console.log(`명령어: git switch -c ${issue.branchName}`);
+}
+
+function workPrDraft(projectRoot: string, options: Record<string, string | boolean>): void {
+  requireImplementationStage(projectRoot);
+  const issueNumber = parseIssueNumber(optionString(options, "issue"));
+  const target = optionString(options, "target") ?? "dev";
+  if (!["dev", "release", "main"].includes(target)) {
+    throw new Error("PR target must be dev, release, or main");
+  }
+  const pr = createPullRequestDraft(projectRoot, issueNumber, target as "dev" | "release" | "main");
+  console.log(`PR draft 기록: issue #${pr.issueNumber}`);
+  console.log(`source: ${pr.sourceBranch}`);
+  console.log(`target: ${pr.targetBranch}`);
+  console.log(`dry-run: ${pr.dryRunCommand}`);
+}
+
+function beDeployDev(projectRoot: string, options: Record<string, string | boolean>): void {
+  requireImplementationStage(projectRoot);
+  const provider = optionString(options, "provider") ?? "local";
+  const deployment = createDevDeploymentPlan(projectRoot, provider);
+  console.log(`dev deploy hook 생성: ${deployment.filePath}`);
+  console.log("외부 배포는 사용자 승인 전 실행하지 않음");
+}
+
+function parseFeTarget(value: string | undefined): DocumentId {
+  if (value === "spec" || value === FE_SPEC_DOC) {
+    return FE_SPEC_DOC;
+  }
+  if (value === "sprint-plan" || value === FE_SPRINT_PLAN_DOC) {
+    return FE_SPRINT_PLAN_DOC;
+  }
+  throw new Error("FE approve target must be spec or sprint-plan");
+}
+
+function parseBeTarget(value: string | undefined): DocumentId {
+  if (value === "spec" || value === BE_SPEC_DOC) {
+    return BE_SPEC_DOC;
+  }
+  if (value === "api-contract" || value === API_CONTRACT_DOC) {
+    return API_CONTRACT_DOC;
+  }
+  if (value === "sprint-plan" || value === BE_SPRINT_PLAN_DOC) {
+    return BE_SPRINT_PLAN_DOC;
+  }
+  throw new Error("BE approve target must be spec, api-contract, or sprint-plan");
+}
+
+function approvalCommandForEngineeringDoc(docId: DocumentId): string {
+  switch (docId) {
+    case FE_SPEC_DOC:
+      return "rph fe approve spec";
+    case BE_SPEC_DOC:
+      return "rph be approve spec";
+    case API_CONTRACT_DOC:
+      return "rph be approve api-contract";
+    case FE_SPRINT_PLAN_DOC:
+      return "rph fe approve sprint-plan";
+    case BE_SPRINT_PLAN_DOC:
+      return "rph be approve sprint-plan";
+    default:
+      return "rph docs approve";
+  }
+}
+
+function splitListOption(value: string | undefined): string[] | undefined {
+  return value?.split("|").map((item) => item.trim()).filter(Boolean);
+}
+
+function parseIssueNumber(value: string | undefined): number {
+  const issueNumber = Number(value);
+  if (!Number.isInteger(issueNumber) || issueNumber < 1) {
+    throw new Error("usage: --issue <number>");
+  }
+  return issueNumber;
+}
+
+function requireImplementationStage(projectRoot: string): void {
+  const state = loadState(projectRoot);
+  if (!["IMPLEMENTATION", "QA_REVIEW", "READY_FOR_RELEASE"].includes(state.currentStage)) {
+    throw new Error(`implementation work blocked. current stage must be IMPLEMENTATION. current: ${state.currentStage}`);
+  }
+}
+
 function handleGitHub(projectRoot: string, subcommand: string | undefined): void {
   switch (subcommand) {
     case "create-repo": {
@@ -655,6 +885,10 @@ function recommendedCommand(state: ProjectState, stage: string): string {
   if (pdCommand) {
     return pdCommand;
   }
+  const engineeringCommand = recommendedEngineeringCommand(state);
+  if (engineeringCommand) {
+    return engineeringCommand;
+  }
   if (stage.includes("INTERVIEW")) {
     return `rph pm interview ${recommendedDoc(stage)}`;
   }
@@ -672,6 +906,45 @@ function recommendedCommand(state: ProjectState, stage: string): string {
   }
   if (stage === "PM_FEATURE_DEFINITION_APPROVED") {
     return "rph pm finalize";
+  }
+  return "rph status";
+}
+
+function recommendedEngineeringCommand(state: ProjectState): string | null {
+  switch (state.currentStage) {
+    case "PD_APPROVED":
+      return "rph fe spec";
+    case "FE_SPEC":
+      return recommendedDocumentAction(state, FE_SPEC_DOC, "rph fe spec", "rph fe approve spec");
+    case "BE_SPEC":
+      if (state.documents[BE_SPEC_DOC]?.status !== "approved") {
+        return recommendedDocumentAction(state, BE_SPEC_DOC, "rph be spec", "rph be approve spec");
+      }
+      return recommendedDocumentAction(state, API_CONTRACT_DOC, "rph be api-contract", "rph be approve api-contract");
+    case "SPRINT_PLANNING":
+      if (state.documents[FE_SPRINT_PLAN_DOC]?.status !== "approved") {
+        return recommendedDocumentAction(state, FE_SPRINT_PLAN_DOC, "rph fe sprint-plan", "rph fe approve sprint-plan");
+      }
+      return recommendedDocumentAction(state, BE_SPRINT_PLAN_DOC, "rph be sprint-plan", "rph be approve sprint-plan");
+    case "IMPLEMENTATION":
+      return "rph fe issue-create --title \"First FE task\"";
+    default:
+      return null;
+  }
+}
+
+function recommendedDocumentAction(
+  state: ProjectState,
+  docId: DocumentId,
+  createCommand: string,
+  approveCommand: string
+): string {
+  const doc = state.documents[docId];
+  if (!doc?.currentVersion) {
+    return createCommand;
+  }
+  if (doc.status !== "approved") {
+    return approveCommand;
   }
   return "rph status";
 }
@@ -773,6 +1046,20 @@ function printHelp(): void {
     "  rph pd approve <artifactId> [--by <name>]",
     "  rph pd export obsidian <artifactId|all> --path <vaultProjectPath>",
     "  rph pd finalize",
+    "  rph fe spec",
+    "  rph fe approve <spec|sprint-plan> [--by <name>]",
+    "  rph fe sprint-plan",
+    "  rph fe issue-create [--title <title>] [--label <label>]",
+    "  rph fe work --issue <number>",
+    "  rph fe pr --issue <number> [--target <dev|release|main>]",
+    "  rph be spec",
+    "  rph be api-contract",
+    "  rph be approve <spec|api-contract|sprint-plan> [--by <name>]",
+    "  rph be sprint-plan",
+    "  rph be issue-create [--title <title>] [--label <label>]",
+    "  rph be work --issue <number>",
+    "  rph be deploy-dev [--provider <provider>]",
+    "  rph be pr --issue <number> [--target <dev|release|main>]",
     "  rph docs list",
     "  rph docs show <docId> [version]",
     "  rph docs diff <docId> <fromVersion> <toVersion>",

@@ -12,7 +12,7 @@ export interface PmDocumentWorkflow {
   requiresInterview: boolean;
 }
 
-export const PM_DOCUMENT_WORKFLOWS: Record<DocumentId, PmDocumentWorkflow> = {
+export const PM_DOCUMENT_WORKFLOWS: Partial<Record<DocumentId, PmDocumentWorkflow>> = {
   "product-definition": {
     docId: "product-definition",
     interviewStage: "PM_PRODUCT_DEFINITION_INTERVIEW",
@@ -65,6 +65,9 @@ export const PM_DOCUMENT_WORKFLOWS: Record<DocumentId, PmDocumentWorkflow> = {
 
 export function advanceAfterPmDraft(state: ProjectState, docId: DocumentId): ProjectState {
   const flow = PM_DOCUMENT_WORKFLOWS[docId];
+  if (!flow) {
+    throw new Error(`unsupported PM document: ${docId}`);
+  }
   if (flow.interviewStage && flow.draftStage && flow.reviewStage && state.currentStage === flow.interviewStage) {
     const drafted = transitionState(state, flow.draftStage, `${docId} draft created`);
     return transitionState(drafted, flow.reviewStage, `${docId} ready for review`);
@@ -74,6 +77,9 @@ export function advanceAfterPmDraft(state: ProjectState, docId: DocumentId): Pro
 
 export function preparePmDraftState(state: ProjectState, docId: DocumentId): ProjectState {
   const flow = PM_DOCUMENT_WORKFLOWS[docId];
+  if (!flow) {
+    throw new Error(`unsupported PM document: ${docId}`);
+  }
   const target = flow.interviewStage ?? flow.activeStage;
   if (!target || state.currentStage === target) {
     return state;
@@ -83,6 +89,9 @@ export function preparePmDraftState(state: ProjectState, docId: DocumentId): Pro
 
 export function advanceAfterPmApproval(state: ProjectState, docId: DocumentId): ProjectState {
   const flow = PM_DOCUMENT_WORKFLOWS[docId];
+  if (!flow) {
+    return state;
+  }
   if (flow.reviewStage && flow.approvedStage && state.currentStage === flow.reviewStage) {
     return transitionState(state, flow.approvedStage, `${docId} approved by user`);
   }

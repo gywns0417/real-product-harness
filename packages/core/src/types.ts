@@ -4,7 +4,12 @@ export const DOCUMENT_IDS = [
   "differentiation",
   "requirements",
   "screen-definition",
-  "feature-definition"
+  "feature-definition",
+  "fe-technical-spec",
+  "be-technical-spec",
+  "api-contract",
+  "fe-sprint-plan",
+  "be-sprint-plan"
 ] as const;
 
 export type DocumentId = (typeof DOCUMENT_IDS)[number];
@@ -208,4 +213,58 @@ export interface EnvValidation {
   valid: boolean;
   missing: string[];
   present: string[];
+}
+
+export type Workstream = "FE" | "BE";
+
+export type WorkIssueStatus = "planned" | "in-progress" | "pr-ready" | "done";
+
+export interface WorkIssue {
+  issueNumber: number;
+  label: string;
+  title: string;
+  description: string;
+  acceptanceCriteria: string[];
+  relatedDocs: DocumentId[];
+  relatedScreens: string[];
+  relatedApis: string[];
+  branchName: string;
+  assigneeAgent: Workstream;
+  testRequirement: string;
+  qaChecklist: string[];
+  status: WorkIssueStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WorkIssueIndex {
+  nextIssueNumber: number;
+  issues: WorkIssue[];
+}
+
+export interface PullRequestRecord {
+  issueNumber: number;
+  prNumber: number | null;
+  sourceBranch: string;
+  targetBranch: "dev" | "release" | "main";
+  status: "draft" | "ready" | "merged" | "closed";
+  qaStatus: "not-requested" | "requested" | "approved" | "changes-requested";
+  conflictStatus: "unknown" | "clean" | "conflict";
+  testStatus: "not-run" | "passed" | "failed";
+  userApproval: "required" | "approved" | "rejected";
+  dryRunCommand: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DeploymentRecord {
+  id: string;
+  environment: "dev" | "staging" | "prod";
+  provider: string;
+  status: "planned" | "blocked" | "deployed" | "failed";
+  approvalRequired: true;
+  fallback: string;
+  filePath: string;
+  createdAt: string;
+  updatedAt: string;
 }

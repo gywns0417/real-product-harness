@@ -25,6 +25,18 @@ pnpm rph pd references
 pnpm rph pd approve references
 pnpm rph pd landing-preview
 pnpm rph pd export obsidian all --path "/path/to/Obsidian/Project"
+pnpm rph fe spec
+pnpm rph fe approve spec
+pnpm rph be spec
+pnpm rph be api-contract
+pnpm rph be approve spec
+pnpm rph be approve api-contract
+pnpm rph fe sprint-plan
+pnpm rph be sprint-plan
+pnpm rph fe issue-create --title "Build dashboard shell"
+pnpm rph fe work --issue 1
+pnpm rph fe pr --issue 1
+pnpm rph be deploy-dev --provider local
 pnpm rph docs list
 pnpm rph docs export obsidian all --path "/path/to/Obsidian/Project"
 pnpm rph github create-repo

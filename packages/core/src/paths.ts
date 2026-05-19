@@ -51,3 +51,31 @@ export function designArtifactDir(projectRoot: string, artifactId: string): stri
 export function designArtifactIndexFile(projectRoot: string, artifactId: string): string {
   return path.join(designArtifactDir(projectRoot, artifactId), "index.json");
 }
+
+export function issuesDir(projectRoot: string): string {
+  return path.join(rphDir(projectRoot), "issues");
+}
+
+export function issueIndexFile(projectRoot: string): string {
+  return path.join(issuesDir(projectRoot), "index.json");
+}
+
+export function issueFile(projectRoot: string, issueNumber: number): string {
+  return path.join(issuesDir(projectRoot), `issue-${issueNumber}.json`);
+}
+
+export function pullRequestsDir(projectRoot: string): string {
+  return path.join(rphDir(projectRoot), "prs");
+}
+
+export function pullRequestFile(projectRoot: string, issueNumber: number): string {
+  return path.join(pullRequestsDir(projectRoot), `issue-${issueNumber}.json`);
+}
+
+export function deploymentsDir(projectRoot: string): string {
+  return path.join(rphDir(projectRoot), "deployments");
+}
+
+export function deploymentPlanFile(projectRoot: string, environment: string): string {
+  return path.join(deploymentsDir(projectRoot), `${environment}-deployment-plan.md`);
+}

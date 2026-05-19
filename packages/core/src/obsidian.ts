@@ -14,7 +14,9 @@ export const OBSIDIAN_STRUCTURE = [
   "01_PM/feature-definition",
   "02_PD/references",
   "02_PD/directions",
+  "02_PD/moodboards",
   "02_PD/landing-preview",
+  "02_PD/landing-previews",
   "02_PD/design-system",
   "02_PD/page-designs",
   "03_FE/technical-spec",
@@ -59,7 +61,7 @@ export function createObsidianProject(vaultProjectPath: string): string[] {
 
 export function exportDocumentToObsidian(projectRoot: string, vaultProjectPath: string, docId: DocumentId): string {
   const markdown = showDocument(projectRoot, docId);
-  const targetDir = path.join(vaultProjectPath, "01_PM", docId);
+  const targetDir = documentObsidianDir(vaultProjectPath, docId);
   ensureDir(targetDir);
   const filePath = path.join(targetDir, `${docId}.md`);
   writeText(filePath, markdown);
@@ -70,7 +72,7 @@ export function documentObsidianPath(vaultProjectPath: string, docId: DocumentId
   if (!DOCUMENT_IDS.includes(docId)) {
     throw new Error(`unsupported document id: ${docId}`);
   }
-  return path.join(vaultProjectPath, "01_PM", docId, `${docId}.md`);
+  return path.join(documentObsidianDir(vaultProjectPath, docId), `${docId}.md`);
 }
 
 export function exportDesignArtifactToObsidian(projectRoot: string, vaultProjectPath: string, artifactId: DesignArtifactId): string {
@@ -87,4 +89,21 @@ export function designArtifactObsidianPath(vaultProjectPath: string, artifactId:
     throw new Error(`unsupported design artifact id: ${artifactId}`);
   }
   return path.join(vaultProjectPath, "02_PD", artifactId, `${artifactId}.md`);
+}
+
+function documentObsidianDir(vaultProjectPath: string, docId: DocumentId): string {
+  switch (docId) {
+    case "fe-technical-spec":
+      return path.join(vaultProjectPath, "03_FE", "technical-spec");
+    case "fe-sprint-plan":
+      return path.join(vaultProjectPath, "03_FE", "sprints");
+    case "be-technical-spec":
+      return path.join(vaultProjectPath, "04_BE", "technical-spec");
+    case "api-contract":
+      return path.join(vaultProjectPath, "04_BE", "api-contract");
+    case "be-sprint-plan":
+      return path.join(vaultProjectPath, "04_BE", "sprints");
+    default:
+      return path.join(vaultProjectPath, "01_PM", docId);
+  }
 }

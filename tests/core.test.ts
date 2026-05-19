@@ -10,7 +10,11 @@ import {
   advanceAfterPdApproval,
   canFinalizePm,
   canFinalizePd,
+  createDevDeploymentPlan,
   createDesignArtifactVersion,
+  createEngineeringDocumentVersion,
+  createPullRequestDraft,
+  createWorkIssue,
   createGitHubRepo,
   createLandingPreviewHtml,
   createBranchName,
@@ -22,8 +26,10 @@ import {
   initProject,
   loadEnvFile,
   loadState,
+  markIssueInProgress,
   normalizeLabel,
   parseCli,
+  prepareEngineeringDocumentState,
   preparePdArtifactState,
   preparePmDraftState,
   ProjectState,
@@ -31,6 +37,7 @@ import {
   readDesignArtifactIndex,
   setupGitHubLabels,
   showDocument,
+  advanceAfterEngineeringApproval,
   syncStateDocuments,
   syncStateDesignArtifacts,
   transitionState,
@@ -168,6 +175,85 @@ function approveAndReadDesign(rootPath: string, artifactId: Parameters<typeof re
   return readDesignArtifactIndex(rootPath, artifactId);
 }
 
+describe("FE/BE workflow", () => {
+  it("blocks FE spec before PD approval", () => {
+    const state = loadState(root);
+    expect(() => prepareEngineeringDocumentState(state, "fe-technical-spec")).toThrow(/cannot move|required design/);
+  });
+
+  it("advances engineering specs and sprint plans through approval gates", () => {
+    let state: ProjectState = approvedPdState(root);
+
+    state = prepareEngineeringDocumentState(state, "fe-technical-spec");
+    let index = createEngineeringDocumentVersion(root, "fe-technical-spec", { changeSummary: "initial" });
+    state = syncStateDocuments(state, index);
+    approveDocument(root, "fe-technical-spec", "tester");
+    state = advanceAfterEngineeringApproval(syncStateDocuments(state, readDocumentIndex(root, "fe-technical-spec")), "fe-technical-spec");
+    expect(state.currentStage).toBe("BE_SPEC");
+
+    index = createEngineeringDocumentVersion(root, "be-technical-spec", { changeSummary: "initial" });
+    state = syncStateDocuments(state, index);
+    approveDocument(root, "be-technical-spec", "tester");
+    state = advanceAfterEngineeringApproval(syncStateDocuments(state, readDocumentIndex(root, "be-technical-spec")), "be-technical-spec");
+    expect(state.currentStage).toBe("BE_SPEC");
+
+    index = createEngineeringDocumentVersion(root, "api-contract", { changeSummary: "initial" });
+    state = syncStateDocuments(state, index);
+    approveDocument(root, "api-contract", "tester");
+    state = advanceAfterEngineeringApproval(syncStateDocuments(state, readDocumentIndex(root, "api-contract")), "api-contract");
+    expect(state.currentStage).toBe("SPRINT_PLANNING");
+
+    index = createEngineeringDocumentVersion(root, "fe-sprint-plan", { changeSummary: "initial" });
+    state = syncStateDocuments(state, index);
+    approveDocument(root, "fe-sprint-plan", "tester");
+    state = advanceAfterEngineeringApproval(syncStateDocuments(state, readDocumentIndex(root, "fe-sprint-plan")), "fe-sprint-plan");
+    expect(state.currentStage).toBe("SPRINT_PLANNING");
+
+    index = createEngineeringDocumentVersion(root, "be-sprint-plan", { changeSummary: "initial" });
+    state = syncStateDocuments(state, index);
+    approveDocument(root, "be-sprint-plan", "tester");
+    state = advanceAfterEngineeringApproval(syncStateDocuments(state, readDocumentIndex(root, "be-sprint-plan")), "be-sprint-plan");
+    expect(state.currentStage).toBe("IMPLEMENTATION");
+  });
+
+  it("creates local issues, PR drafts, and dev deployment hooks", () => {
+    const issue = createWorkIssue(root, {
+      workstream: "FE",
+      title: "Build dashboard shell",
+      label: "refator",
+      acceptanceCriteria: ["renders shell"]
+    });
+    expect(issue.issueNumber).toBe(1);
+    expect(issue.label).toBe("refactor");
+    expect(issue.branchName).toBe("refactor/01-build-dashboard-shell");
+
+    const started = markIssueInProgress(root, issue.issueNumber);
+    expect(started.status).toBe("in-progress");
+
+    const pr = createPullRequestDraft(root, issue.issueNumber);
+    expect(pr.targetBranch).toBe("dev");
+    expect(pr.userApproval).toBe("required");
+    expect(fs.existsSync(path.join(root, ".rph", "prs", "issue-1.json"))).toBe(true);
+
+    const deployment = createDevDeploymentPlan(root, "local");
+    expect(deployment.approvalRequired).toBe(true);
+    expect(fs.existsSync(deployment.filePath)).toBe(true);
+  });
+});
+
+function approvedPdState(rootPath: string): ProjectState {
+  let state: ProjectState = { ...loadState(rootPath), currentStage: "PD_APPROVED" };
+  for (const artifactId of ["references", "directions", "landing-preview", "design-system", "page-designs"] as const) {
+    const index = createDesignArtifactVersion(rootPath, artifactId, { changeSummary: "approved pd" });
+    approveDesignArtifact(rootPath, artifactId, "tester");
+    state = syncStateDesignArtifacts(state, {
+      ...index,
+      status: "approved"
+    });
+  }
+  return state;
+}
+
 describe("github helpers", () => {
   it("normalizes labels and creates branch names", () => {
     expect(normalizeLabel("refator")).toBe("refactor");
@@ -236,5 +322,16 @@ describe("obsidian export", () => {
     expect(fs.existsSync(path.join(vault, "02_PD", "landing-preview"))).toBe(true);
     expect(fs.existsSync(exported)).toBe(true);
     expect(exported).toContain(path.join("02_PD", "directions", "directions.md"));
+  });
+
+  it("exports FE/BE documents to role-specific vault folders", () => {
+    const vault = path.join(root, "vault-project");
+    createObsidianProject(vault);
+    createEngineeringDocumentVersion(root, "fe-technical-spec", { changeSummary: "initial" });
+    createEngineeringDocumentVersion(root, "api-contract", { changeSummary: "initial" });
+    const feExported = exportDocumentToObsidian(root, vault, "fe-technical-spec");
+    const apiExported = exportDocumentToObsidian(root, vault, "api-contract");
+    expect(feExported).toContain(path.join("03_FE", "technical-spec", "fe-technical-spec.md"));
+    expect(apiExported).toContain(path.join("04_BE", "api-contract", "api-contract.md"));
   });
 });
