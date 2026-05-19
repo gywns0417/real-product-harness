@@ -99,7 +99,7 @@ export function saveState(projectRoot: string, state: ProjectState): void {
 
 export function requireInitialized(projectRoot: string): void {
   if (!fs.existsSync(projectFile(projectRoot)) || !fs.existsSync(stateFile(projectRoot))) {
-    throw new Error("RPH project not initialized. Run: rph init");
+    throw new Error("RPH project not initialized. Run `rph`, then /init");
   }
 }
 

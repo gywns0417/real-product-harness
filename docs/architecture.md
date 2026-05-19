@@ -2,14 +2,27 @@
 
 ## Shape
 
-The repo is a TypeScript workspace with one CLI app and focused packages:
+The repo is a TypeScript workspace with a top-level product runtime and focused packages:
 
-- `apps/cli`: command routing, wizard UX, terminal output.
+- `apps/cli`: runtime shell, slash-command routing, wizard UX, terminal output.
 - `packages/core`: workflow state, document/design versions, approvals, PM/PD/FE/BE flow helpers, local issue/PR/deploy records, GitHub dry-run helpers.
 - `packages/integrations`: Notion, MCP, and future external adapters.
 - `packages/templates`: reusable document and GitHub templates.
 - `packages/qa`: QA report skeleton.
 - `packages/config`: environment validation.
+
+## Runtime Layer
+
+`rph` is the control-plane entrypoint. Running it without arguments opens a long-lived runtime shell where the operator uses slash commands such as `/pm start`, `/pd references`, `/fe spec`, and `/qa review --pr 1`.
+
+The design mirrors a Hermes-style separation:
+
+- Runtime/control plane: keeps the active project, prompt, session, and command envelope.
+- Execution lanes: PM, PD, FE, BE, QA, GitHub, Notion, and Docs handlers execute bounded workflow actions.
+- Records: product state remains in `.rph/`; runtime command history is appended under `.rph/runtime/`.
+- Handoff contract: every command either advances state, writes an artifact, reports a blocker, or recommends the next slash command.
+
+Automation can still call the same surface one-shot with `rph /pm start`; the old positional form is kept internally for compatibility but is no longer the primary UX.
 
 ## State
 
@@ -34,6 +47,7 @@ Project state lives under `.rph/` in the target product folder:
 - `.rph/notion/workspace-plan.md`
 - `.rph/notion/sync-payload.json`
 - `.rph/github/labels.json`
+- `.rph/runtime/session-<timestamp>.jsonl`
 
 Secrets stay outside `.rph`.
 

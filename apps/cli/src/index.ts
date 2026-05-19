@@ -59,6 +59,7 @@ import {
   optionBool,
   optionString,
   parseCli,
+  parseCommandLine,
   prepareEngineeringDocumentState,
   preparePdArtifactState,
   preparePmDraftState,
@@ -87,63 +88,213 @@ import {
 } from "../../../packages/core/src";
 
 async function main(): Promise<void> {
-  const parsed = parseCli(process.argv.slice(2));
   const cwd = path.resolve(process.cwd());
   loadEnvFile(path.join(cwd, ".env"));
+  const argv = process.argv.slice(2);
+
+  if (shouldStartRuntime(argv)) {
+    await runRuntimeShell(cwd);
+    return;
+  }
+
+  const parsed = parseCli(argv);
+  await runParsedCommand(cwd, parsed);
+}
+
+async function runParsedCommand(
+  projectRoot: string,
+  parsed: ReturnType<typeof parseCli>,
+  setExitCode = true
+): Promise<boolean> {
   try {
     switch (parsed.command) {
+      case "shell":
+      case "runtime":
+        await runRuntimeShell(projectRoot);
+        break;
       case "init":
-        await handleInit(cwd, parsed.options);
+        await handleInit(projectRoot, parsed.options);
         break;
       case "status":
-        handleStatus(cwd);
+        handleStatus(projectRoot);
         break;
       case "next":
-        handleNext(cwd);
+        handleNext(projectRoot);
         break;
       case "pause":
-        handlePause(cwd, true);
+        handlePause(projectRoot, true);
         break;
       case "resume":
-        handlePause(cwd, false);
+        handlePause(projectRoot, false);
         break;
       case "cancel":
-        handleCancel(cwd);
+        handleCancel(projectRoot);
         break;
       case "pm":
-        handlePm(cwd, parsed.subcommand, parsed.args, parsed.options);
+        handlePm(projectRoot, parsed.subcommand, parsed.args, parsed.options);
         break;
       case "pd":
-        handlePd(cwd, parsed.subcommand, parsed.args, parsed.options);
+        handlePd(projectRoot, parsed.subcommand, parsed.args, parsed.options);
         break;
       case "fe":
-        handleFe(cwd, parsed.subcommand, parsed.args, parsed.options);
+        handleFe(projectRoot, parsed.subcommand, parsed.args, parsed.options);
         break;
       case "be":
-        handleBe(cwd, parsed.subcommand, parsed.args, parsed.options);
+        handleBe(projectRoot, parsed.subcommand, parsed.args, parsed.options);
         break;
       case "qa":
-        handleQa(cwd, parsed.subcommand, parsed.args, parsed.options);
+        handleQa(projectRoot, parsed.subcommand, parsed.args, parsed.options);
         break;
       case "notion":
-        handleNotion(cwd, parsed.subcommand);
+        handleNotion(projectRoot, parsed.subcommand);
         break;
       case "docs":
-        handleDocs(cwd, parsed.subcommand, parsed.args, parsed.options);
+        handleDocs(projectRoot, parsed.subcommand, parsed.args, parsed.options);
         break;
       case "github":
-        handleGitHub(cwd, parsed.subcommand, parsed.args, parsed.options);
+        handleGitHub(projectRoot, parsed.subcommand, parsed.args, parsed.options);
         break;
       case "help":
       default:
         printHelp();
         break;
     }
+    return true;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[error] ${message}`);
-    process.exitCode = 1;
+    if (setExitCode) {
+      process.exitCode = 1;
+    }
+    return false;
   }
+}
+
+function shouldStartRuntime(argv: string[]): boolean {
+  if (argv[0] === "shell" || argv[0] === "runtime") {
+    return false;
+  }
+  return argv.length === 0 && process.stdin.isTTY;
+}
+
+async function runRuntimeShell(initialRoot: string): Promise<void> {
+  let projectRoot = initialRoot;
+  const sessionId = `session-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+  printRuntimeBanner(projectRoot, sessionId);
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+
+  try {
+    rl.setPrompt(runtimePrompt(projectRoot));
+    rl.prompt();
+    for await (const rawLine of rl) {
+      const line = rawLine.trim();
+      if (!line) {
+        rl.setPrompt(runtimePrompt(projectRoot));
+        rl.prompt();
+        continue;
+      }
+      if (isExitCommand(line)) {
+        appendRuntimeLog(projectRoot, sessionId, line, true);
+        console.log("RPH runtime 종료");
+        return;
+      }
+
+      let ok = false;
+      try {
+        const control = handleRuntimeControlCommand(projectRoot, line);
+        if (control.handled) {
+          projectRoot = control.projectRoot;
+          ok = true;
+          continue;
+        }
+
+        if (!line.startsWith("/")) {
+          console.log("slash command만 입력하세요. 예: /pm start, /status, /next");
+          continue;
+        }
+
+        const parsed = parseCli(parseCommandLine(line));
+        if (parsed.command === "init" && !optionBool(parsed.options, "yes")) {
+          parsed.options.yes = true;
+          console.log("runtime init은 비대화형 기본값으로 실행합니다. 필요한 값은 /init --project-name <name>처럼 넘기세요.");
+        }
+        ok = await runParsedCommand(projectRoot, parsed, false);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`[error] ${message}`);
+      } finally {
+        appendRuntimeLog(projectRoot, sessionId, line, ok);
+        rl.setPrompt(runtimePrompt(projectRoot));
+        rl.prompt();
+      }
+    }
+  } finally {
+    rl.close();
+  }
+}
+
+function printRuntimeBanner(projectRoot: string, sessionId: string): void {
+  console.log("Real Product Harness runtime");
+  console.log(`session: ${sessionId}`);
+  console.log(`project: ${projectRoot}`);
+  console.log("commands: /help, /init --yes --project-name <name>, /pm start, /next, /status, /project <path>, /exit");
+}
+
+function runtimePrompt(projectRoot: string): string {
+  try {
+    const project = loadProject(projectRoot);
+    const state = loadState(projectRoot);
+    return `rph:${project.name}/${state.currentStage}> `;
+  } catch {
+    return `rph:${path.basename(projectRoot)}/uninitialized> `;
+  }
+}
+
+function isExitCommand(line: string): boolean {
+  return ["/exit", "/quit", "exit", "quit"].includes(line);
+}
+
+function handleRuntimeControlCommand(
+  projectRoot: string,
+  line: string
+): { handled: true; projectRoot: string } | { handled: false; projectRoot: string } {
+  const argv = parseCommandLine(line);
+  const [command, target] = argv;
+  if (command !== "/project" && command !== "/cd" && command !== "/pwd") {
+    return { handled: false, projectRoot };
+  }
+  if (command === "/pwd") {
+    console.log(projectRoot);
+    return { handled: true, projectRoot };
+  }
+  if (!target) {
+    console.log("usage: /project <path>");
+    return { handled: true, projectRoot };
+  }
+  const nextRoot = path.resolve(projectRoot, target);
+  if (!fs.existsSync(nextRoot) || !fs.statSync(nextRoot).isDirectory()) {
+    console.log(`[error] project path not found: ${nextRoot}`);
+    return { handled: true, projectRoot };
+  }
+  loadEnvFile(path.join(nextRoot, ".env"));
+  console.log(`project switched: ${nextRoot}`);
+  return { handled: true, projectRoot: nextRoot };
+}
+
+function appendRuntimeLog(projectRoot: string, sessionId: string, command: string, ok: boolean): void {
+  const rphDir = path.join(projectRoot, ".rph");
+  if (!fs.existsSync(rphDir)) {
+    return;
+  }
+  const runtimeDir = path.join(rphDir, "runtime");
+  fs.mkdirSync(runtimeDir, { recursive: true });
+  const record = {
+    at: new Date().toISOString(),
+    sessionId,
+    command,
+    ok
+  };
+  fs.appendFileSync(path.join(runtimeDir, `${sessionId}.jsonl`), `${JSON.stringify(record)}\n`);
 }
 
 async function handleInit(projectRoot: string, options: Record<string, string | boolean>): Promise<void> {
@@ -302,7 +453,7 @@ function handlePm(
 function pmDiff(projectRoot: string, args: string[]): void {
   const docId = parseDocId(args[0]);
   if (!args[1] || !args[2]) {
-    throw new Error("usage: rph pm diff <docId> <fromVersion> <toVersion>");
+    throw new Error("usage: /pm diff <docId> <fromVersion> <toVersion>");
   }
   console.log(diffDocumentVersions(projectRoot, docId, args[1], args[2]));
 }
@@ -311,7 +462,7 @@ function pmRollback(projectRoot: string, docArg: string | undefined, options: Re
   const docId = parseDocId(docArg);
   const toVersion = optionString(options, "to");
   if (!toVersion) {
-    throw new Error("usage: rph pm rollback <docId> --to <version>");
+    throw new Error("usage: /pm rollback <docId> --to <version>");
   }
   const index = rollbackDocument(projectRoot, docId, toVersion);
   const state = syncStateDocuments(loadState(projectRoot), index);
@@ -326,7 +477,7 @@ function pmStart(projectRoot: string): void {
     : state;
   saveState(projectRoot, next);
   console.log("PM 워크플로우 시작");
-  console.log("다음: rph pm interview");
+  console.log("다음: /pm interview");
 }
 
 function pmInterview(projectRoot: string, docArg?: string): void {
@@ -346,7 +497,7 @@ function pmDraft(projectRoot: string, docArg: string | undefined, options: Recor
   const state = advanceAfterPmDraft(syncStateDocuments(prepared, index), docId);
   saveState(projectRoot, state);
   console.log(`문서 초안 생성: ${docId} ${index.currentVersion}`);
-  console.log(`승인 전 다음 큰 단계 진행 금지: rph pm approve ${docId}`);
+  console.log(`승인 전 다음 큰 단계 진행 금지: /pm approve ${docId}`);
 }
 
 function pmRevise(projectRoot: string, docArg: string | undefined, options: Record<string, string | boolean>): void {
@@ -362,7 +513,7 @@ function pmRevise(projectRoot: string, docArg: string | undefined, options: Reco
   const state = syncStateDocuments(loadState(projectRoot), index);
   saveState(projectRoot, state);
   console.log(`문서 수정본 생성: ${docId} ${index.currentVersion}`);
-  console.log(`검토 후 승인: rph pm approve ${docId}`);
+  console.log(`검토 후 승인: /pm approve ${docId}`);
 }
 
 function pmApprove(projectRoot: string, docArg?: string, approvedBy = "user"): void {
@@ -387,7 +538,7 @@ function pmFinalize(projectRoot: string): void {
     : state;
   saveState(projectRoot, next);
   console.log("PM 산출물 최종 확정 완료");
-  console.log("다음: rph status");
+  console.log("다음: /status");
 }
 
 function handleDocs(
@@ -412,7 +563,7 @@ function handleDocs(
     case "diff": {
       const docId = parseDocId(args[0]);
       if (!args[1] || !args[2]) {
-        throw new Error("usage: rph docs diff <docId> <fromVersion> <toVersion>");
+        throw new Error("usage: /docs diff <docId> <fromVersion> <toVersion>");
       }
       console.log(diffDocumentVersions(projectRoot, docId, args[1], args[2]));
       return;
@@ -421,7 +572,7 @@ function handleDocs(
       const docId = parseDocId(args[0]);
       const toVersion = optionString(options, "to");
       if (!toVersion) {
-        throw new Error("usage: rph docs rollback <docId> --to <version>");
+        throw new Error("usage: /docs rollback <docId> --to <version>");
       }
       const index = rollbackDocument(projectRoot, docId, toVersion);
       const state = syncStateDocuments(loadState(projectRoot), index);
@@ -442,7 +593,7 @@ function handleDocs(
         return;
       }
       if (args[0] !== "obsidian") {
-        throw new Error("usage: rph docs export <obsidian|notion> <docId> --path <vaultProjectPath>");
+        throw new Error("usage: /docs export <obsidian|notion> <docId> --path <vaultProjectPath>");
       }
       const target = optionString(options, "path");
       if (!target) {
@@ -527,7 +678,7 @@ function handlePd(
 
 function pdExport(projectRoot: string, args: string[], options: Record<string, string | boolean>): void {
   if (args[0] !== "obsidian") {
-    throw new Error("usage: rph pd export obsidian <artifactId|all> --path <vaultProjectPath>");
+    throw new Error("usage: /pd export obsidian <artifactId|all> --path <vaultProjectPath>");
   }
   const target = optionString(options, "path");
   if (!target) {
@@ -556,7 +707,7 @@ function pdStart(projectRoot: string): void {
     : state;
   saveState(projectRoot, next);
   console.log("PD 워크플로우 시작");
-  console.log("다음: rph pd references");
+  console.log("다음: /pd references");
 }
 
 function pdCreateArtifact(
@@ -576,7 +727,7 @@ function pdCreateArtifact(
   if (artifactId === "landing-preview") {
     console.log(`HTML fallback preview: ${createLandingPreviewHtml(projectRoot)}`);
   }
-  console.log(`승인 전 다음 큰 단계 진행 금지: rph pd approve ${artifactId}`);
+  console.log(`승인 전 다음 큰 단계 진행 금지: /pd approve ${artifactId}`);
 }
 
 function pdShow(projectRoot: string, artifactArg?: string, version?: string): void {
@@ -860,17 +1011,17 @@ function parseBeTarget(value: string | undefined): DocumentId {
 function approvalCommandForEngineeringDoc(docId: DocumentId): string {
   switch (docId) {
     case FE_SPEC_DOC:
-      return "rph fe approve spec";
+      return "/fe approve spec";
     case BE_SPEC_DOC:
-      return "rph be approve spec";
+      return "/be approve spec";
     case API_CONTRACT_DOC:
-      return "rph be approve api-contract";
+      return "/be approve api-contract";
     case FE_SPRINT_PLAN_DOC:
-      return "rph fe approve sprint-plan";
+      return "/fe approve sprint-plan";
     case BE_SPRINT_PLAN_DOC:
-      return "rph be approve sprint-plan";
+      return "/be approve sprint-plan";
     default:
-      return "rph docs approve";
+      return "/docs approve";
   }
 }
 
@@ -1007,7 +1158,7 @@ function handleGitHub(
       requireInitialized(projectRoot);
       const version = optionString(options, "version") ?? args[0];
       if (!version) {
-        throw new Error("usage: rph github release-plan --version <version>");
+        throw new Error("usage: /github release-plan --version <version>");
       }
       const plan = createReleasePlan(projectRoot, version);
       console.log(`release plan 생성: ${plan.filePath}`);
@@ -1091,44 +1242,44 @@ function recommendedCommand(state: ProjectState, stage: string): string {
     return engineeringCommand;
   }
   if (stage.includes("INTERVIEW")) {
-    return `rph pm interview ${recommendedDoc(stage)}`;
+    return `/pm interview ${recommendedDoc(stage)}`;
   }
   if (stage.includes("DRAFT")) {
-    return `rph pm draft ${recommendedDoc(stage)}`;
+    return `/pm draft ${recommendedDoc(stage)}`;
   }
   if (stage === "PM_COMPETITOR_ANALYSIS") {
-    return "rph pm draft competitor-analysis";
+    return "/pm draft competitor-analysis";
   }
   if (stage === "PM_DIFFERENTIATION") {
-    return "rph pm draft differentiation";
+    return "/pm draft differentiation";
   }
   if (stage.includes("REVIEW")) {
-    return `rph pm approve ${recommendedDoc(stage)}`;
+    return `/pm approve ${recommendedDoc(stage)}`;
   }
   if (stage === "PM_FEATURE_DEFINITION_APPROVED") {
-    return "rph pm finalize";
+    return "/pm finalize";
   }
-  return "rph status";
+  return "/status";
 }
 
 function recommendedEngineeringCommand(state: ProjectState): string | null {
   switch (state.currentStage) {
     case "PD_APPROVED":
-      return "rph fe spec";
+      return "/fe spec";
     case "FE_SPEC":
-      return recommendedDocumentAction(state, FE_SPEC_DOC, "rph fe spec", "rph fe approve spec");
+      return recommendedDocumentAction(state, FE_SPEC_DOC, "/fe spec", "/fe approve spec");
     case "BE_SPEC":
       if (state.documents[BE_SPEC_DOC]?.status !== "approved") {
-        return recommendedDocumentAction(state, BE_SPEC_DOC, "rph be spec", "rph be approve spec");
+        return recommendedDocumentAction(state, BE_SPEC_DOC, "/be spec", "/be approve spec");
       }
-      return recommendedDocumentAction(state, API_CONTRACT_DOC, "rph be api-contract", "rph be approve api-contract");
+      return recommendedDocumentAction(state, API_CONTRACT_DOC, "/be api-contract", "/be approve api-contract");
     case "SPRINT_PLANNING":
       if (state.documents[FE_SPRINT_PLAN_DOC]?.status !== "approved") {
-        return recommendedDocumentAction(state, FE_SPRINT_PLAN_DOC, "rph fe sprint-plan", "rph fe approve sprint-plan");
+        return recommendedDocumentAction(state, FE_SPRINT_PLAN_DOC, "/fe sprint-plan", "/fe approve sprint-plan");
       }
-      return recommendedDocumentAction(state, BE_SPRINT_PLAN_DOC, "rph be sprint-plan", "rph be approve sprint-plan");
+      return recommendedDocumentAction(state, BE_SPRINT_PLAN_DOC, "/be sprint-plan", "/be approve sprint-plan");
     case "IMPLEMENTATION":
-      return "rph fe issue-create --title \"First FE task\"";
+      return "/fe issue-create --title \"First FE task\"";
     default:
       return null;
   }
@@ -1147,25 +1298,25 @@ function recommendedDocumentAction(
   if (doc.status !== "approved") {
     return approveCommand;
   }
-  return "rph status";
+  return "/status";
 }
 
 function recommendedPdCommand(state: ProjectState): string | null {
   switch (state.currentStage) {
     case "PM_APPROVED":
-      return "rph pd start";
+      return "/pd start";
     case "PD_REFERENCES":
-      return recommendedDesignArtifactAction(state, "references", "rph pd references");
+      return recommendedDesignArtifactAction(state, "references", "/pd references");
     case "PD_DIRECTIONS":
-      return recommendedDesignArtifactAction(state, "directions", "rph pd directions");
+      return recommendedDesignArtifactAction(state, "directions", "/pd directions");
     case "PD_LANDING_PREVIEWS":
-      return recommendedDesignArtifactAction(state, "landing-preview", "rph pd landing-preview");
+      return recommendedDesignArtifactAction(state, "landing-preview", "/pd landing-preview");
     case "PD_DESIGN_SYSTEM":
-      return recommendedDesignArtifactAction(state, "design-system", "rph pd design-system");
+      return recommendedDesignArtifactAction(state, "design-system", "/pd design-system");
     case "PD_PAGE_DESIGNS":
-      return recommendedDesignArtifactAction(state, "page-designs", "rph pd pages");
+      return recommendedDesignArtifactAction(state, "page-designs", "/pd pages");
     case "PD_REVIEW":
-      return "rph pd finalize";
+      return "/pd finalize";
     default:
       return null;
   }
@@ -1181,9 +1332,9 @@ function recommendedDesignArtifactAction(
     return createCommand;
   }
   if (artifact.status !== "approved") {
-    return `rph pd approve ${artifactId}`;
+    return `/pd approve ${artifactId}`;
   }
-  return "rph status";
+  return "/status";
 }
 
 function recommendedDoc(stage: string): string {
@@ -1276,66 +1427,72 @@ function printHelp(): void {
   console.log([
     "real-product-harness",
     "",
-    "Commands:",
-    "  rph init [--yes] [--project-name <name>] [--obsidian-vault <path>]",
-    "  rph status",
-    "  rph next",
-    "  rph pause | resume | cancel",
-    "  rph pm start",
-    "  rph pm interview [docId]",
-    "  rph pm draft <docId> [--file <markdown>] [--summary <text>]",
-    "  rph pm revise <docId> [--from <version>] [--file <markdown>] [--summary <text>]",
-    "  rph pm approve <docId> [--by <name>]",
-    "  rph pm diff <docId> <fromVersion> <toVersion>",
-    "  rph pm rollback <docId> --to <version>",
-    "  rph pm finalize",
-    "  rph pd start",
-    "  rph pd references",
-    "  rph pd directions",
-    "  rph pd landing-preview",
-    "  rph pd design-system",
-    "  rph pd pages",
-    "  rph pd show <artifactId> [version]",
-    "  rph pd revise <artifactId> [--from <version>] [--file <markdown>] [--summary <text>]",
-    "  rph pd approve <artifactId> [--by <name>]",
-    "  rph pd export obsidian <artifactId|all> --path <vaultProjectPath>",
-    "  rph pd finalize",
-    "  rph fe spec",
-    "  rph fe approve <spec|sprint-plan> [--by <name>]",
-    "  rph fe sprint-plan",
-    "  rph fe issue-create [--title <title>] [--label <label>]",
-    "  rph fe work --issue <number>",
-    "  rph fe pr --issue <number> [--target <dev|release|main>]",
-    "  rph be spec",
-    "  rph be api-contract",
-    "  rph be approve <spec|api-contract|sprint-plan> [--by <name>]",
-    "  rph be sprint-plan",
-    "  rph be issue-create [--title <title>] [--label <label>]",
-    "  rph be work --issue <number>",
-    "  rph be deploy-dev [--provider <provider>]",
-    "  rph be pr --issue <number> [--target <dev|release|main>]",
-    "  rph qa review --pr <number>",
-    "  rph qa conflicts --pr <number>",
-    "  rph qa test --pr <number>",
-    "  rph qa report --pr <number>",
-    "  rph notion plan",
-    "  rph notion sync",
-    "  rph docs list",
-    "  rph docs show <docId> [version]",
-    "  rph docs diff <docId> <fromVersion> <toVersion>",
-    "  rph docs rollback <docId> --to <version>",
-    "  rph docs approve <docId> [--by <name>]",
-    "  rph docs export obsidian <docId|all> --path <vaultProjectPath>",
-    "  rph docs export notion",
-    "  rph github create-repo",
-    "  rph github setup-labels",
-    "  rph github setup-templates",
-    "  rph github setup-branches",
-    "  rph github create-issue --agent <FE|BE> --title <title>",
-    "  rph github create-pr --issue <number>",
-    "  rph github sync",
-    "  rph github release-plan --version <version>",
-    "  rph github hotfix-plan --title <title>",
+    "Run `rph` to enter the runtime, then use slash commands.",
+    "One-shot form is also supported: rph /pm start",
+    "",
+    "Slash commands:",
+    "  /init [--yes] [--project-name <name>] [--obsidian-vault <path>]",
+    "  /status",
+    "  /next",
+    "  /pause | /resume | /cancel",
+    "  /project <path>",
+    "  /pwd",
+    "  /exit",
+    "  /pm start",
+    "  /pm interview [docId]",
+    "  /pm draft <docId> [--file <markdown>] [--summary <text>]",
+    "  /pm revise <docId> [--from <version>] [--file <markdown>] [--summary <text>]",
+    "  /pm approve <docId> [--by <name>]",
+    "  /pm diff <docId> <fromVersion> <toVersion>",
+    "  /pm rollback <docId> --to <version>",
+    "  /pm finalize",
+    "  /pd start",
+    "  /pd references",
+    "  /pd directions",
+    "  /pd landing-preview",
+    "  /pd design-system",
+    "  /pd pages",
+    "  /pd show <artifactId> [version]",
+    "  /pd revise <artifactId> [--from <version>] [--file <markdown>] [--summary <text>]",
+    "  /pd approve <artifactId> [--by <name>]",
+    "  /pd export obsidian <artifactId|all> --path <vaultProjectPath>",
+    "  /pd finalize",
+    "  /fe spec",
+    "  /fe approve <spec|sprint-plan> [--by <name>]",
+    "  /fe sprint-plan",
+    "  /fe issue-create [--title <title>] [--label <label>]",
+    "  /fe work --issue <number>",
+    "  /fe pr --issue <number> [--target <dev|release|main>]",
+    "  /be spec",
+    "  /be api-contract",
+    "  /be approve <spec|api-contract|sprint-plan> [--by <name>]",
+    "  /be sprint-plan",
+    "  /be issue-create [--title <title>] [--label <label>]",
+    "  /be work --issue <number>",
+    "  /be deploy-dev [--provider <provider>]",
+    "  /be pr --issue <number> [--target <dev|release|main>]",
+    "  /qa review --pr <number>",
+    "  /qa conflicts --pr <number>",
+    "  /qa test --pr <number>",
+    "  /qa report --pr <number>",
+    "  /notion plan",
+    "  /notion sync",
+    "  /docs list",
+    "  /docs show <docId> [version]",
+    "  /docs diff <docId> <fromVersion> <toVersion>",
+    "  /docs rollback <docId> --to <version>",
+    "  /docs approve <docId> [--by <name>]",
+    "  /docs export obsidian <docId|all> --path <vaultProjectPath>",
+    "  /docs export notion",
+    "  /github create-repo",
+    "  /github setup-labels",
+    "  /github setup-templates",
+    "  /github setup-branches",
+    "  /github create-issue --agent <FE|BE> --title <title>",
+    "  /github create-pr --issue <number>",
+    "  /github sync",
+    "  /github release-plan --version <version>",
+    "  /github hotfix-plan --title <title>",
     "",
     `Document IDs: ${DOCUMENT_IDS.map((docId) => `${docId}(${DOCUMENT_TITLES[docId]})`).join(", ")}`,
     `Design Artifact IDs: ${DESIGN_ARTIFACT_IDS.map((artifactId) => `${artifactId}(${DESIGN_ARTIFACT_TITLES[artifactId]})`).join(", ")}`

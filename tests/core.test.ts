@@ -34,6 +34,7 @@ import {
   markIssueInProgress,
   normalizeLabel,
   parseCli,
+  parseCommandLine,
   readPullRequest,
   runQaTests,
   finalizeQaReport,
@@ -320,6 +321,23 @@ describe("command parser and env validation", () => {
   it("ignores npm argument separator", () => {
     const parsed = parseCli(["--", "status"]);
     expect(parsed.command).toBe("status");
+  });
+
+  it("accepts slash-command argv for one-shot runtime commands", () => {
+    const parsed = parseCli(["/pm", "draft", "product-definition", "--summary", "first draft"]);
+    expect(parsed.command).toBe("pm");
+    expect(parsed.subcommand).toBe("draft");
+    expect(parsed.args).toEqual(["product-definition"]);
+    expect(parsed.options.summary).toBe("first draft");
+  });
+
+  it("tokenizes quoted slash-command lines for the runtime shell", () => {
+    expect(parseCommandLine('/fe issue-create --title "Build dashboard shell"')).toEqual([
+      "/fe",
+      "issue-create",
+      "--title",
+      "Build dashboard shell"
+    ]);
   });
 
   it("validates required env keys", () => {
