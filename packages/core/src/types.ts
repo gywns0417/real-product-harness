@@ -101,6 +101,13 @@ export interface Project {
   };
 }
 
+export interface SetupChoices {
+  aiProvider: "openai-codex" | "anthropic-claude" | "google-gemini" | "local-model" | "mixed" | "later";
+  deployment: "local" | "docker" | "aws" | "gcp" | "vercel" | "render" | "fly" | "railway" | "custom" | "later";
+  stack: "recommended" | "custom" | "analyze-existing";
+  mcp: string[];
+}
+
 export type IntegrationStatus = "not-configured" | "configured" | "dry-run";
 
 export interface ProjectState {
@@ -215,6 +222,103 @@ export interface EnvValidation {
   present: string[];
 }
 
+export interface Agent {
+  id: string;
+  role: AgentRole;
+  name: string;
+  responsibilities: string[];
+}
+
+export interface Document {
+  docId: DocumentId;
+  title: string;
+  ownerAgent: AgentRole;
+  currentVersion: string | null;
+  status: DocumentStatus;
+}
+
+export interface InterviewQuestion {
+  id: string;
+  stageId: InterviewStage["id"];
+  question: string;
+  required: boolean;
+}
+
+export interface InterviewAnswer {
+  questionId: string;
+  answer: string;
+  answeredAt: string;
+}
+
+export interface Decision {
+  id: string;
+  area: string;
+  decision: string;
+  rationale: string;
+  status: "proposed" | "accepted" | "rejected";
+  decidedAt: string | null;
+}
+
+export interface DesignReference {
+  id: string;
+  name: string;
+  url: string;
+  selected: boolean;
+  notes: string;
+}
+
+export interface DesignDirection {
+  id: string;
+  name: string;
+  brandKeywords: string[];
+  colorTokens: string[];
+  typography: string;
+  layoutPrinciples: string[];
+  interactionPrinciples: string[];
+}
+
+export interface DesignSystem {
+  id: string;
+  version: string;
+  tokens: string[];
+  components: DesignComponent[];
+}
+
+export interface DesignComponent {
+  name: string;
+  type: string;
+  states: string[];
+  accessibilityNotes: string[];
+}
+
+export interface Screen {
+  id: string;
+  name: string;
+  purpose: string;
+  states: string[];
+  relatedApis: string[];
+}
+
+export interface Feature {
+  id: string;
+  name: string;
+  priority: string;
+  acceptanceCriteria: string[];
+  testCriteria: string[];
+}
+
+export interface Sprint {
+  id: string;
+  name: string;
+  goal: string;
+  issueNumbers: number[];
+  prerequisites: string[];
+  doneCriteria: string[];
+  risks: string[];
+  dependencies: string[];
+  userConfirmRequired: boolean;
+}
+
 export type Workstream = "FE" | "BE";
 
 export type WorkIssueStatus = "planned" | "in-progress" | "pr-ready" | "done";
@@ -304,4 +408,36 @@ export interface DeploymentRecord {
   filePath: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export type Integration = Project["integrations"];
+
+export interface MCPServer {
+  name: string;
+  enabled: boolean;
+  transport: "stdio" | "http";
+  url?: string;
+  command?: string;
+}
+
+export interface EnvironmentVariable {
+  name: string;
+  required: boolean;
+  secret: boolean;
+  configured: boolean;
+}
+
+export interface GitBranch {
+  name: string;
+  base: "main" | "release" | "dev" | string;
+  issueNumber: number | null;
+  status: "planned" | "created" | "merged" | "closed";
+}
+
+export interface CommandLog {
+  id: string;
+  command: string;
+  status: "planned" | "succeeded" | "failed" | "skipped";
+  outputSummary: string;
+  createdAt: string;
 }

@@ -1,6 +1,6 @@
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { githubDir } from "./paths";
+import { githubBranchPlanFile, githubDir } from "./paths";
 import { ensureDir, writeJson, writeText } from "./fs";
 import { GitHubLabel } from "./types";
 
@@ -173,6 +173,34 @@ export function writeGitHubTemplates(projectRoot: string): string[] {
   writeText(files[3], "blank_issues_enabled: false\ncontact_links: []\n");
   writeText(files[4], pullRequestTemplate());
   return files;
+}
+
+export function writeGitHubBranchPlan(projectRoot: string): string {
+  const filePath = githubBranchPlanFile(projectRoot);
+  writeText(filePath, [
+    "# GitHub Branch Plan",
+    "",
+    "## Protected branches",
+    "- main: production",
+    "- release: next version preparation",
+    "- dev: integration",
+    "",
+    "## Branch commands",
+    "```bash",
+    "git switch -c dev main",
+    "git switch -c release main",
+    "git switch main",
+    "```",
+    "",
+    "## Merge flow",
+    "local branch -> dev -> release -> main",
+    "",
+    "## Hotfix flow",
+    "main -> hotfix/<number>-<slug> -> main, then backport to release and dev",
+    "",
+    "No branch is created or merged by this plan without user approval."
+  ].join("\n"));
+  return filePath;
 }
 
 function featureTemplate(): string {

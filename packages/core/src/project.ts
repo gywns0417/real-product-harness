@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
-import { approvalsFile, designApprovalsFile, githubDir, interviewsDir, issueIndexFile, projectFile, pullRequestIndexFile, rphDir, stateFile } from "./paths";
+import { approvalsFile, designApprovalsFile, githubDir, interviewsDir, issueIndexFile, projectFile, pullRequestIndexFile, rphDir, setupChoicesFile, stateFile } from "./paths";
 import { ensureDir, fileExists, readJson, writeJson, writeText } from "./fs";
-import { Project, ProjectState } from "./types";
+import { Project, ProjectState, SetupChoices } from "./types";
 import { newId, nowIso } from "./time";
 import { createMcpConfig } from "../../integrations/src/mcp";
 
@@ -11,6 +11,7 @@ export interface InitProjectOptions {
   obsidianPath?: string;
   force?: boolean;
   dryRun?: boolean;
+  setupChoices?: SetupChoices;
 }
 
 export function initProject(projectRoot: string, options: InitProjectOptions): { project: Project; state: ProjectState; files: string[] } {
@@ -47,6 +48,7 @@ export function initProject(projectRoot: string, options: InitProjectOptions): {
   const files = [
     projectFile(root),
     stateFile(root),
+    setupChoicesFile(root),
     approvalsFile(root),
     designApprovalsFile(root),
     issueIndexFile(root),
@@ -62,6 +64,7 @@ export function initProject(projectRoot: string, options: InitProjectOptions): {
   ensureDir(interviewsDir(root, "product-definition"));
   writeJson(projectFile(root), project);
   writeJson(stateFile(root), state);
+  writeJson(setupChoicesFile(root), options.setupChoices ?? defaultSetupChoices());
   writeJson(approvalsFile(root), []);
   writeJson(designApprovalsFile(root), []);
   writeJson(issueIndexFile(root), { nextIssueNumber: 1, issues: [] });
@@ -71,6 +74,15 @@ export function initProject(projectRoot: string, options: InitProjectOptions): {
     writeText(path.join(root, ".env.example"), envExample());
   }
   return { project, state, files };
+}
+
+export function defaultSetupChoices(): SetupChoices {
+  return {
+    aiProvider: "later",
+    deployment: "later",
+    stack: "recommended",
+    mcp: ["notion", "github"]
+  };
 }
 
 export function loadProject(projectRoot: string): Project {

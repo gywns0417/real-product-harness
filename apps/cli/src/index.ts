@@ -79,8 +79,10 @@ import {
   syncStateDocuments,
   transitionState,
   validateEnv,
+  SetupChoices,
   Workstream,
   WORKFLOW_STAGES,
+  writeGitHubBranchPlan,
   writeGitHubTemplates
 } from "../../../packages/core/src";
 
@@ -149,18 +151,21 @@ async function handleInit(projectRoot: string, options: Record<string, string | 
   const yes = optionBool(options, "yes");
   let projectName = optionString(options, "project-name") ?? path.basename(projectRoot);
   let obsidianPath = optionString(options, "obsidian-vault");
+  let setupChoices: SetupChoices | undefined;
 
   if (!yes && process.stdin.isTTY) {
     const answers = await runInitialWizard(projectName, obsidianPath);
     projectName = answers.projectName;
     obsidianPath = answers.obsidianPath;
+    setupChoices = answers.setupChoices;
   }
 
   const result = initProject(projectRoot, {
     projectName,
     obsidianPath,
     dryRun,
-    force: optionBool(options, "force")
+    force: optionBool(options, "force"),
+    setupChoices
   });
 
   if (obsidianPath && !dryRun) {
@@ -280,12 +285,38 @@ function handlePm(
     case "approve":
       pmApprove(projectRoot, args[0], optionString(options, "by") ?? "user");
       return;
+    case "diff":
+      pmDiff(projectRoot, args);
+      return;
+    case "rollback":
+      pmRollback(projectRoot, args[0], options);
+      return;
     case "finalize":
       pmFinalize(projectRoot);
       return;
     default:
       console.log("PM 명령어: start | interview | draft <docId> | revise <docId> | approve <docId> | finalize");
   }
+}
+
+function pmDiff(projectRoot: string, args: string[]): void {
+  const docId = parseDocId(args[0]);
+  if (!args[1] || !args[2]) {
+    throw new Error("usage: rph pm diff <docId> <fromVersion> <toVersion>");
+  }
+  console.log(diffDocumentVersions(projectRoot, docId, args[1], args[2]));
+}
+
+function pmRollback(projectRoot: string, docArg: string | undefined, options: Record<string, string | boolean>): void {
+  const docId = parseDocId(docArg);
+  const toVersion = optionString(options, "to");
+  if (!toVersion) {
+    throw new Error("usage: rph pm rollback <docId> --to <version>");
+  }
+  const index = rollbackDocument(projectRoot, docId, toVersion);
+  const state = syncStateDocuments(loadState(projectRoot), index);
+  saveState(projectRoot, state);
+  console.log(`PM 문서 롤백 버전 생성: ${docId} ${index.currentVersion}`);
 }
 
 function pmStart(projectRoot: string): void {
@@ -398,9 +429,20 @@ function handleDocs(
       console.log(`롤백 버전 생성: ${docId} ${index.currentVersion}`);
       return;
     }
+    case "approve": {
+      const docId = parseDocId(args[0]);
+      docsApprove(projectRoot, docId, optionString(options, "by") ?? "user");
+      return;
+    }
     case "export": {
+      if (args[0] === "notion") {
+        const result = createNotionSyncPayload(projectRoot);
+        console.log(`Notion sync payload 생성: ${result.filePath}`);
+        console.log(`documents: ${result.counts.documents}`);
+        return;
+      }
       if (args[0] !== "obsidian") {
-        throw new Error("usage: rph docs export obsidian <docId> --path <vaultProjectPath>");
+        throw new Error("usage: rph docs export <obsidian|notion> <docId> --path <vaultProjectPath>");
       }
       const target = optionString(options, "path");
       if (!target) {
@@ -418,8 +460,22 @@ function handleDocs(
       return;
     }
     default:
-      console.log("Docs 명령어: list | show <docId> | diff <docId> <from> <to> | rollback <docId> --to <version> | export obsidian <docId> --path <path>");
+      console.log("Docs 명령어: list | show <docId> | diff <docId> <from> <to> | rollback <docId> --to <version> | approve <docId> | export obsidian <docId> --path <path> | export notion");
   }
+}
+
+function docsApprove(projectRoot: string, docId: DocumentId, approvedBy: string): void {
+  if ([FE_SPEC_DOC, BE_SPEC_DOC, API_CONTRACT_DOC, FE_SPRINT_PLAN_DOC, BE_SPRINT_PLAN_DOC].includes(docId)) {
+    engineeringApprove(projectRoot, docId, approvedBy);
+    return;
+  }
+  const approval = approveDocument(projectRoot, docId, approvedBy);
+  let state = loadState(projectRoot);
+  state = syncStateDocuments(state, readDocumentIndex(projectRoot, docId));
+  state = advanceAfterPmApproval(state, docId);
+  saveState(projectRoot, state);
+  console.log(`[승인 완료] ${approval.docId} ${approval.version}`);
+  console.log(`승인자: ${approval.approvedBy}`);
 }
 
 function handlePd(
@@ -920,6 +976,13 @@ function handleGitHub(
       files.forEach((file) => console.log(`- ${file}`));
       return;
     }
+    case "setup-branches": {
+      requireInitialized(projectRoot);
+      const file = writeGitHubBranchPlan(projectRoot);
+      console.log(`GitHub branch plan 생성: ${file}`);
+      console.log("dev/release/main 브랜치 생성 및 병합은 사용자 승인 전 실행하지 않음");
+      return;
+    }
     case "create-issue": {
       requireInitialized(projectRoot);
       workIssueCreate(projectRoot, parseWorkstream(optionString(options, "agent") ?? "FE"), args, options);
@@ -960,7 +1023,7 @@ function handleGitHub(
       return;
     }
     default:
-      console.log("GitHub 명령어: create-repo | setup-labels | setup-templates | create-issue | create-pr | sync | release-plan | hotfix-plan");
+      console.log("GitHub 명령어: create-repo | setup-labels | setup-templates | setup-branches | create-issue | create-pr | sync | release-plan | hotfix-plan");
   }
 }
 
@@ -1139,7 +1202,7 @@ function recommendedDoc(stage: string): string {
 async function runInitialWizard(
   defaultName: string,
   defaultObsidianPath?: string
-): Promise<{ projectName: string; obsidianPath?: string }> {
+): Promise<{ projectName: string; obsidianPath?: string; setupChoices: SetupChoices }> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   try {
     console.log("Real Product Harness 초기 설정");
@@ -1152,10 +1215,61 @@ async function runInitialWizard(
     console.log("7. 종료");
     const projectName = (await rl.question(`프로젝트명 (${defaultName}): `)).trim() || defaultName;
     const sync = (await rl.question("Obsidian 프로젝트 경로를 지금 생성할까요? 경로 입력 또는 Enter: ")).trim();
-    return { projectName, obsidianPath: sync || defaultObsidianPath };
+    console.log("사용할 AI 에이전트 제공자를 선택하세요: 1 OpenAI/Codex, 2 Claude, 3 Gemini, 4 Local, 5 Mixed, 6 Later");
+    const ai = (await rl.question("AI provider (6): ")).trim() || "6";
+    console.log("배포 방식을 선택하세요: 1 Local, 2 Docker, 3 AWS, 4 GCP, 5 Vercel, 6 Render, 7 Fly.io, 8 Railway, 9 Custom, 10 Later");
+    const deployment = (await rl.question("Deploy (10): ")).trim() || "10";
+    console.log("기술 스택을 선택하세요: 1 Recommended, 2 Custom, 3 Analyze existing");
+    const stack = (await rl.question("Stack (1): ")).trim() || "1";
+    console.log("연결할 MCP를 입력하세요. 예: notion,github,figma 또는 later");
+    const mcp = (await rl.question("MCP (notion,github): ")).trim() || "notion,github";
+    return {
+      projectName,
+      obsidianPath: sync || defaultObsidianPath,
+      setupChoices: {
+        aiProvider: parseAiProvider(ai),
+        deployment: parseDeploymentChoice(deployment),
+        stack: parseStackChoice(stack),
+        mcp: mcp === "later" ? [] : mcp.split(",").map((item) => item.trim()).filter(Boolean)
+      }
+    };
   } finally {
     rl.close();
   }
+}
+
+function parseAiProvider(value: string): SetupChoices["aiProvider"] {
+  return {
+    "1": "openai-codex",
+    "2": "anthropic-claude",
+    "3": "google-gemini",
+    "4": "local-model",
+    "5": "mixed",
+    "6": "later"
+  }[value] as SetupChoices["aiProvider"] ?? "later";
+}
+
+function parseDeploymentChoice(value: string): SetupChoices["deployment"] {
+  return {
+    "1": "local",
+    "2": "docker",
+    "3": "aws",
+    "4": "gcp",
+    "5": "vercel",
+    "6": "render",
+    "7": "fly",
+    "8": "railway",
+    "9": "custom",
+    "10": "later"
+  }[value] as SetupChoices["deployment"] ?? "later";
+}
+
+function parseStackChoice(value: string): SetupChoices["stack"] {
+  return {
+    "1": "recommended",
+    "2": "custom",
+    "3": "analyze-existing"
+  }[value] as SetupChoices["stack"] ?? "recommended";
 }
 
 function printHelp(): void {
@@ -1172,6 +1286,8 @@ function printHelp(): void {
     "  rph pm draft <docId> [--file <markdown>] [--summary <text>]",
     "  rph pm revise <docId> [--from <version>] [--file <markdown>] [--summary <text>]",
     "  rph pm approve <docId> [--by <name>]",
+    "  rph pm diff <docId> <fromVersion> <toVersion>",
+    "  rph pm rollback <docId> --to <version>",
     "  rph pm finalize",
     "  rph pd start",
     "  rph pd references",
@@ -1208,10 +1324,13 @@ function printHelp(): void {
     "  rph docs show <docId> [version]",
     "  rph docs diff <docId> <fromVersion> <toVersion>",
     "  rph docs rollback <docId> --to <version>",
+    "  rph docs approve <docId> [--by <name>]",
     "  rph docs export obsidian <docId|all> --path <vaultProjectPath>",
+    "  rph docs export notion",
     "  rph github create-repo",
     "  rph github setup-labels",
     "  rph github setup-templates",
+    "  rph github setup-branches",
     "  rph github create-issue --agent <FE|BE> --title <title>",
     "  rph github create-pr --issue <number>",
     "  rph github sync",

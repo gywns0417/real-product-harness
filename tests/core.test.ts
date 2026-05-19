@@ -49,7 +49,8 @@ import {
   syncStateDocuments,
   syncStateDesignArtifacts,
   transitionState,
-  validateEnv
+  validateEnv,
+  writeGitHubBranchPlan
 } from "../packages/core/src";
 
 let root: string;
@@ -299,6 +300,12 @@ describe("github helpers", () => {
   it("exposes repo creation as a typed function", () => {
     expect(typeof createGitHubRepo).toBe("function");
   });
+
+  it("writes branch plan without creating branches", () => {
+    const filePath = writeGitHubBranchPlan(root);
+    expect(fs.existsSync(filePath)).toBe(true);
+    expect(fs.readFileSync(filePath, "utf8")).toContain("local branch -> dev -> release -> main");
+  });
 });
 
 describe("command parser and env validation", () => {
@@ -330,6 +337,14 @@ describe("command parser and env validation", () => {
     expect(loaded).toEqual(["GITHUB_REPO"]);
     expect(env.GITHUB_OWNER).toBe("existing");
     expect(env.GITHUB_REPO).toBe("repo");
+  });
+
+  it("initializes setup choices for the project wizard", () => {
+    const filePath = path.join(root, ".rph", "setup-choices.json");
+    expect(fs.existsSync(filePath)).toBe(true);
+    const choices = JSON.parse(fs.readFileSync(filePath, "utf8")) as { stack: string; mcp: string[] };
+    expect(choices.stack).toBe("recommended");
+    expect(choices.mcp).toContain("notion");
   });
 });
 

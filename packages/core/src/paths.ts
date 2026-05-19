@@ -12,6 +12,10 @@ export function stateFile(projectRoot: string): string {
   return path.join(rphDir(projectRoot), "state.json");
 }
 
+export function setupChoicesFile(projectRoot: string): string {
+  return path.join(rphDir(projectRoot), "setup-choices.json");
+}
+
 export function documentsDir(projectRoot: string): string {
   return path.join(rphDir(projectRoot), "documents");
 }
@@ -38,6 +42,10 @@ export function interviewsDir(projectRoot: string, docId: string): string {
 
 export function githubDir(projectRoot: string): string {
   return path.join(rphDir(projectRoot), "github");
+}
+
+export function githubBranchPlanFile(projectRoot: string): string {
+  return path.join(githubDir(projectRoot), "branch-plan.md");
 }
 
 export function designDir(projectRoot: string): string {
