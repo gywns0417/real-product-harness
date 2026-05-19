@@ -1,0 +1,17 @@
+name: Chore
+description: Maintenance, tooling, or docs work item
+title: "[chore] "
+labels: ["chore"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+  - type: textarea
+    id: risks
+    attributes:
+      label: Risks

@@ -1,0 +1,17 @@
+name: Bug fix
+description: Defect or regression work item
+title: "[fix] "
+labels: ["fix"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance Criteria

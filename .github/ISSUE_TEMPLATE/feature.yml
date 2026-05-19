@@ -1,0 +1,17 @@
+name: Feature
+description: Product feature work item
+title: "[feat] "
+labels: ["feat"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance Criteria
+  - type: textarea
+    id: tests
+    attributes:
+      label: Test Requirements

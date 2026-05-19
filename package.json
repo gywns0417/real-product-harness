@@ -1,0 +1,29 @@
+{
+  "name": "real-product-harness",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CLI harness for real-product AI agent workflows with approval gates.",
+  "type": "commonjs",
+  "bin": {
+    "rph": "./dist/apps/cli/src/index.js",
+    "real-product-harness": "./dist/apps/cli/src/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx apps/cli/src/index.ts",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "rph": "node dist/apps/cli/src/index.js",
+    "test": "vitest run tests",
+    "start": "node dist/apps/cli/src/index.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.18.3",
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.6"
+  }
+}
