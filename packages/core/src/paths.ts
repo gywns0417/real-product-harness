@@ -107,3 +107,19 @@ export function releasesDir(projectRoot: string): string {
 export function releasePlanFile(projectRoot: string, id: string): string {
   return path.join(releasesDir(projectRoot), `${id}.md`);
 }
+
+export function notionDir(projectRoot: string): string {
+  return path.join(rphDir(projectRoot), "notion");
+}
+
+export function notionPlanFile(projectRoot: string): string {
+  return path.join(notionDir(projectRoot), "workspace-plan.json");
+}
+
+export function notionPlanMarkdownFile(projectRoot: string): string {
+  return path.join(notionDir(projectRoot), "workspace-plan.md");
+}
+
+export function notionSyncPayloadFile(projectRoot: string): string {
+  return path.join(notionDir(projectRoot), "sync-payload.json");
+}

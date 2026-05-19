@@ -22,6 +22,8 @@ import {
   createLandingPreviewHtml,
   createBranchName,
   createDocumentVersion,
+  createNotionSyncPayload,
+  createNotionWorkspacePlan,
   createObsidianProject,
   diffDocumentVersions,
   exportDocumentToObsidian,
@@ -361,5 +363,21 @@ describe("obsidian export", () => {
     const apiExported = exportDocumentToObsidian(root, vault, "api-contract");
     expect(feExported).toContain(path.join("03_FE", "technical-spec", "fe-technical-spec.md"));
     expect(apiExported).toContain(path.join("04_BE", "api-contract", "api-contract.md"));
+  });
+});
+
+describe("notion integration plan", () => {
+  it("writes a dry-run workspace plan and sync payload", () => {
+    createDocumentVersion(root, "product-definition", { changeSummary: "initial" });
+    const result = createNotionWorkspacePlan(root);
+    expect(result.plan.hostedMcpUrl).toBe("https://mcp.notion.com/mcp");
+    expect(result.plan.apiVersion).toBe("2026-03-11");
+    expect(result.plan.databases).toHaveLength(14);
+    expect(result.plan.mcpTools).toContain("notion-create-view");
+    expect(fs.existsSync(path.join(root, ".rph", "notion", "workspace-plan.md"))).toBe(true);
+
+    const payload = createNotionSyncPayload(root);
+    expect(payload.counts.documents).toBe(1);
+    expect(fs.existsSync(payload.filePath)).toBe(true);
   });
 });

@@ -21,6 +21,8 @@ import {
   createGitHubRepo,
   createInterviewSession,
   createLandingPreviewHtml,
+  createNotionSyncPayload,
+  createNotionWorkspacePlan,
   createObsidianProject,
   createHotfixPlan,
   createPullRequestDraft,
@@ -120,6 +122,9 @@ async function main(): Promise<void> {
         break;
       case "qa":
         handleQa(cwd, parsed.subcommand, parsed.args, parsed.options);
+        break;
+      case "notion":
+        handleNotion(cwd, parsed.subcommand);
         break;
       case "docs":
         handleDocs(cwd, parsed.subcommand, parsed.args, parsed.options);
@@ -668,6 +673,34 @@ function handleQa(
   }
 }
 
+function handleNotion(projectRoot: string, subcommand: string | undefined): void {
+  requireInitialized(projectRoot);
+  switch (subcommand) {
+    case "plan":
+    case "setup": {
+      const result = createNotionWorkspacePlan(projectRoot);
+      console.log(`Notion workspace plan 생성: ${result.files.length} files`);
+      result.files.forEach((file) => console.log(`- ${file}`));
+      console.log(`mode: ${result.plan.executionMode}`);
+      console.log("Notion MCP/API 쓰기는 사용자 승인 전 실행하지 않음");
+      return;
+    }
+    case "sync":
+    case "export-docs": {
+      const result = createNotionSyncPayload(projectRoot);
+      console.log(`Notion sync payload 생성: ${result.filePath}`);
+      console.log(`documents: ${result.counts.documents}`);
+      console.log(`designArtifacts: ${result.counts.designArtifacts}`);
+      console.log(`issues: ${result.counts.issues}`);
+      console.log(`pullRequests: ${result.counts.pullRequests}`);
+      console.log("Notion 반영은 dry-run payload만 생성");
+      return;
+    }
+    default:
+      console.log("Notion 명령어: plan | setup | sync | export-docs");
+  }
+}
+
 function engineeringDraft(
   projectRoot: string,
   docId: DocumentId,
@@ -1169,6 +1202,8 @@ function printHelp(): void {
     "  rph qa conflicts --pr <number>",
     "  rph qa test --pr <number>",
     "  rph qa report --pr <number>",
+    "  rph notion plan",
+    "  rph notion sync",
     "  rph docs list",
     "  rph docs show <docId> [version]",
     "  rph docs diff <docId> <fromVersion> <toVersion>",

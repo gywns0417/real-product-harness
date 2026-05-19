@@ -31,6 +31,8 @@ Project state lives under `.rph/` in the target product folder:
 - `.rph/qa/pr-<number>-report.md`
 - `.rph/releases/<release-or-hotfix-id>.md`
 - `.rph/deployments/dev-deployment-plan.md`
+- `.rph/notion/workspace-plan.md`
+- `.rph/notion/sync-payload.json`
 - `.rph/github/labels.json`
 
 Secrets stay outside `.rph`.
@@ -53,3 +55,5 @@ Current high-level order:
 ## External Services
 
 GitHub, Notion, Figma, Stitch, MCP, and cloud deploy integrations are adapters. They write local config/templates or print dry-run commands unless credentials and user approval are available. Cloud deploy hooks create a local plan first; no external deploy runs without approval.
+
+Notion integration uses the hosted MCP URL in generated config and writes a local workspace plan first. The plan covers PM/PD/FE/BE/QA/GitHub/Versions/Decision/Approval sections, 14 database schemas, and MCP tool names needed for database and view creation.

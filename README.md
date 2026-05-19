@@ -42,6 +42,8 @@ pnpm rph qa test --pr 1
 pnpm rph qa report --pr 1
 pnpm rph be deploy-dev --provider local
 pnpm rph github release-plan --version v0.1.0
+pnpm rph notion plan
+pnpm rph notion sync
 pnpm rph docs list
 pnpm rph docs export obsidian all --path "/path/to/Obsidian/Project"
 pnpm rph github create-repo

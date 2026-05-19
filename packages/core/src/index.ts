@@ -8,6 +8,7 @@ export * from "./fs";
 export * from "./github";
 export * from "./interviews";
 export * from "./issues";
+export * from "./notion";
 export * from "./obsidian";
 export * from "./pm";
 export * from "./paths";
