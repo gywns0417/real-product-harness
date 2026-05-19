@@ -19,6 +19,7 @@ pnpm rph pm interview
 pnpm rph pm draft product-definition
 pnpm rph pm approve product-definition
 pnpm rph docs list
+pnpm rph github create-repo
 pnpm rph github setup-labels
 pnpm rph github setup-templates
 ```

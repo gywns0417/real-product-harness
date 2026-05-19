@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   approveDocument,
+  createGitHubRepo,
   createBranchName,
   createDocumentVersion,
   createObsidianProject,
@@ -84,6 +85,10 @@ describe("github helpers", () => {
     const result = setupGitHubLabels(root);
     expect(result.labels).toHaveLength(8);
     expect(fs.existsSync(path.join(root, ".rph", "github", "labels.json"))).toBe(true);
+  });
+
+  it("exposes repo creation as a typed function", () => {
+    expect(typeof createGitHubRepo).toBe("function");
   });
 });
 

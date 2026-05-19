@@ -7,6 +7,7 @@ import {
   approveDocument,
   applyGitHubLabels,
   createDocumentVersion,
+  createGitHubRepo,
   createInterviewSession,
   createObsidianProject,
   diffDocumentVersions,
@@ -298,6 +299,36 @@ function handleDocs(
 
 function handleGitHub(projectRoot: string, subcommand: string | undefined): void {
   switch (subcommand) {
+    case "create-repo": {
+      const repoTarget = resolveGitHubTarget(projectRoot);
+      const owner = process.env.GITHUB_OWNER || repoTarget.owner;
+      const repo = process.env.GITHUB_REPO || repoTarget.repo || path.basename(projectRoot);
+      const env = validateEnv(
+        {
+          ...process.env,
+          GITHUB_OWNER: owner,
+          GITHUB_REPO: repo
+        },
+        GITHUB_ENV_KEYS
+      );
+      if (!env.valid || !owner || !repo) {
+        console.log(`[dry-run] 누락 env: ${env.missing.join(", ")}`);
+        console.log(`실행할 명령: gh repo create ${owner ?? "<owner>"}/${repo ?? "<repo>"} --private --source . --remote origin --push`);
+        return;
+      }
+      const result = createGitHubRepo(projectRoot, owner, repo, {
+        visibility: "private",
+        push: true
+      });
+      if (!result.ok) {
+        throw new Error(result.message);
+      }
+      console.log(result.existed ? "GitHub repo 이미 존재" : "GitHub repo 생성 완료");
+      if (result.url) {
+        console.log(result.url);
+      }
+      return;
+    }
     case "setup-labels": {
       const repoTarget = resolveGitHubTarget(projectRoot);
       const env = validateEnv(
@@ -337,7 +368,7 @@ function handleGitHub(projectRoot: string, subcommand: string | undefined): void
       return;
     }
     default:
-      console.log("GitHub 명령어: setup-labels | setup-templates");
+      console.log("GitHub 명령어: create-repo | setup-labels | setup-templates");
   }
 }
 
@@ -433,6 +464,7 @@ function printHelp(): void {
     "  rph docs diff <docId> <fromVersion> <toVersion>",
     "  rph docs rollback <docId> --to <version>",
     "  rph docs export obsidian <docId> --path <vaultProjectPath>",
+    "  rph github create-repo",
     "  rph github setup-labels",
     "  rph github setup-templates",
     "",

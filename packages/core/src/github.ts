@@ -53,6 +53,13 @@ export interface GitHubApplyResult {
   message: string;
 }
 
+export interface GitHubRepoResult {
+  ok: boolean;
+  existed: boolean;
+  url: string | null;
+  message: string;
+}
+
 export function applyGitHubLabels(owner: string, repo: string, labels: GitHubLabel[] = DEFAULT_GITHUB_LABELS): GitHubApplyResult[] {
   const repoName = `${owner}/${repo}`;
   return labels.map((label) => {
@@ -78,6 +85,76 @@ export function applyGitHubLabels(owner: string, repo: string, labels: GitHubLab
       message: result.status === 0 ? "applied" : (result.stderr || result.stdout || "unknown error").trim()
     };
   });
+}
+
+export function createGitHubRepo(
+  projectRoot: string,
+  owner: string,
+  repo: string,
+  options: { visibility: "private" | "public"; push: boolean }
+): GitHubRepoResult {
+  const repoName = `${owner}/${repo}`;
+  const view = spawnSync("gh", ["repo", "view", repoName, "--json", "url"], {
+    cwd: projectRoot,
+    encoding: "utf8"
+  });
+  if (view.status === 0) {
+    const url = parseGhUrl(view.stdout);
+    ensureOriginRemote(projectRoot, url);
+    return {
+      ok: true,
+      existed: true,
+      url,
+      message: "repository already exists"
+    };
+  }
+
+  const args = ["repo", "create", repoName, options.visibility === "private" ? "--private" : "--public", "--source", projectRoot, "--remote", "origin"];
+  if (options.push) {
+    args.push("--push");
+  }
+  const created = spawnSync("gh", args, {
+    cwd: projectRoot,
+    encoding: "utf8"
+  });
+  const output = `${created.stdout}\n${created.stderr}`.trim();
+  return {
+    ok: created.status === 0,
+    existed: false,
+    url: created.status === 0 ? firstGithubUrl(output) : null,
+    message: output || "repository created"
+  };
+}
+
+function ensureOriginRemote(projectRoot: string, repoUrl: string | null): void {
+  if (!repoUrl) {
+    return;
+  }
+  const remote = spawnSync("git", ["remote", "get-url", "origin"], {
+    cwd: projectRoot,
+    encoding: "utf8"
+  });
+  if (remote.status === 0) {
+    return;
+  }
+  spawnSync("git", ["remote", "add", "origin", `${repoUrl}.git`], {
+    cwd: projectRoot,
+    encoding: "utf8"
+  });
+}
+
+function parseGhUrl(stdout: string): string | null {
+  try {
+    const parsed = JSON.parse(stdout) as { url?: string };
+    return parsed.url ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function firstGithubUrl(output: string): string | null {
+  const match = output.match(/https:\/\/github\.com\/[^\s]+/);
+  return match?.[0].replace(/\.git$/, "") ?? null;
 }
 
 export function writeGitHubTemplates(projectRoot: string): string[] {
