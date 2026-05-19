@@ -1,10 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
-import { approvalsFile, designApprovalsFile, githubDir, interviewsDir, issueIndexFile, projectFile, pullRequestIndexFile, rphDir, setupChoicesFile, stateFile } from "./paths";
+import { approvalsFile, designApprovalsFile, githubDir, harnessConfigFile, interviewsDir, issueIndexFile, projectFile, pullRequestIndexFile, rphDir, setupChoicesFile, stateFile } from "./paths";
 import { ensureDir, fileExists, readJson, writeJson, writeText } from "./fs";
 import { Project, ProjectState, SetupChoices } from "./types";
 import { newId, nowIso } from "./time";
-import { createMcpConfig } from "../../integrations/src/mcp";
+import { initializeHarnessConfig } from "./settings";
 
 export interface InitProjectOptions {
   projectName: string;
@@ -49,6 +49,7 @@ export function initProject(projectRoot: string, options: InitProjectOptions): {
     projectFile(root),
     stateFile(root),
     setupChoicesFile(root),
+    harnessConfigFile(root),
     approvalsFile(root),
     designApprovalsFile(root),
     issueIndexFile(root),
@@ -65,11 +66,11 @@ export function initProject(projectRoot: string, options: InitProjectOptions): {
   writeJson(projectFile(root), project);
   writeJson(stateFile(root), state);
   writeJson(setupChoicesFile(root), options.setupChoices ?? defaultSetupChoices());
+  initializeHarnessConfig(root, options.setupChoices ?? defaultSetupChoices());
   writeJson(approvalsFile(root), []);
   writeJson(designApprovalsFile(root), []);
   writeJson(issueIndexFile(root), { nextIssueNumber: 1, issues: [] });
   writeJson(pullRequestIndexFile(root), { nextPrNumber: 1, pullRequests: [] });
-  writeJson(path.join(root, ".mcp", "config.json"), createMcpConfig());
   if (!fileExists(path.join(root, ".env.example")) || options.force) {
     writeText(path.join(root, ".env.example"), envExample());
   }
@@ -110,8 +111,13 @@ export function updateDocumentState(projectRoot: string, state: ProjectState): v
 function envExample(): string {
   return [
     "OPENAI_API_KEY=",
+    "OPENAI_MODEL=gpt-5.2",
     "ANTHROPIC_API_KEY=",
+    "ANTHROPIC_MODEL=claude-sonnet-4-5",
     "GEMINI_API_KEY=",
+    "GEMINI_MODEL=gemini-2.5-flash",
+    "LOCAL_AI_BASE_URL=",
+    "LOCAL_AI_MODEL=",
     "GITHUB_TOKEN=",
     "GITHUB_OWNER=",
     "GITHUB_REPO=",

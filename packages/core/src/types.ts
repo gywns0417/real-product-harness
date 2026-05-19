@@ -110,6 +110,97 @@ export interface SetupChoices {
 
 export type IntegrationStatus = "not-configured" | "configured" | "dry-run";
 
+export type AiProviderId = "openai" | "anthropic" | "gemini" | "local";
+
+export type McpServerId = "notion" | "github" | "figma" | "stitch";
+
+export interface AiProviderConfig {
+  id: AiProviderId;
+  name: string;
+  enabled: boolean;
+  configured: boolean;
+  envKeys: string[];
+  missingEnv: string[];
+  model: string;
+  baseUrl: string;
+  testEndpoint: string;
+}
+
+export interface McpServerRuntimeConfig {
+  id: McpServerId;
+  name: string;
+  enabled: boolean;
+  configured: boolean;
+  transport: "stdio" | "http";
+  command?: string;
+  url?: string;
+  envKeys: string[];
+  missingEnv: string[];
+  notes: string;
+}
+
+export interface RuntimeUiConfig {
+  theme: "hacker" | "mono" | "minimal";
+  color: boolean;
+  bootAnimation: boolean;
+}
+
+export interface HarnessConfig {
+  version: 1;
+  activeAiProvider: AiProviderId | "auto" | "none";
+  aiProviders: Record<AiProviderId, AiProviderConfig>;
+  mcpServers: Record<McpServerId, McpServerRuntimeConfig>;
+  deployment: SetupChoices["deployment"];
+  stack: SetupChoices["stack"];
+  custom: Record<string, string>;
+  ui: RuntimeUiConfig;
+  updatedAt: string;
+}
+
+export interface ConnectionCheck {
+  id: string;
+  kind: "ai" | "mcp" | "env" | "runtime";
+  status: "passed" | "failed" | "skipped";
+  message: string;
+  requiredEnv: string[];
+  missingEnv: string[];
+  endpoint?: string;
+  checkedAt: string;
+}
+
+export interface AiGenerationRequest {
+  prompt: string;
+  system?: string;
+  providerId?: AiProviderId;
+  maxOutputTokens?: number;
+  temperature?: number;
+}
+
+export interface AiGenerationResult {
+  id: string;
+  providerId: AiProviderId;
+  model: string;
+  text: string;
+  endpoint: string;
+  usage?: Record<string, unknown>;
+  generatedAt: string;
+}
+
+export interface AiRunRecord {
+  id: string;
+  providerId: AiProviderId;
+  model: string;
+  command: string;
+  artifact?: {
+    kind: "pm-document" | "pd-artifact" | "engineering-document" | "prompt";
+    id: string;
+    path?: string;
+  };
+  promptPreview: string;
+  outputPreview: string;
+  generatedAt: string;
+}
+
 export interface ProjectState {
   projectId: string;
   currentStage: WorkflowStageId;

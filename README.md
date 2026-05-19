@@ -44,24 +44,29 @@ Inside the runtime, use slash commands:
 
 ```text
 /init --yes --project-name "My Product"
+/setup auto
+/doctor
 /status
+/ai status
+/mcp status
+/ai run --prompt "Summarize this product idea in three bullets."
 /pm start
 /pm interview
-/pm draft product-definition
+/pm draft product-definition --ai
 /pm revise product-definition --from v1.0.0
 /pm approve product-definition
 /pm diff product-definition v1.0.0 v1.0.1
 /docs approve requirements
 /pm finalize
 /pd start
-/pd references
+/pd references --ai
 /pd approve references
-/pd landing-preview
+/pd landing-preview --ai
 /pd export obsidian all --path "/path/to/Obsidian/Project"
-/fe spec
+/fe spec --ai
 /fe approve spec
-/be spec
-/be api-contract
+/be spec --ai
+/be api-contract --ai
 /be approve spec
 /be approve api-contract
 /fe sprint-plan
@@ -76,7 +81,9 @@ Inside the runtime, use slash commands:
 /be deploy-dev --provider local
 /github release-plan --version v0.1.0
 /notion plan
+/notion setup --live --title "RPH Workspace"
 /notion sync
+/notion sync --live
 /docs list
 /docs export obsidian all --path "/path/to/Obsidian/Project"
 /docs export notion
@@ -93,4 +100,30 @@ rph /status
 rph /pm start
 ```
 
-External services stay in dry-run or local-template mode until tokens and user approval are present.
+## Runtime Setup
+
+The runtime reads secrets from `.env`, stores non-secret connection state in `.rph/config.json`,
+and writes MCP client config to `.mcp/config.json`.
+
+```text
+/setup auto
+/setup ai openai
+/setup mcp notion
+/settings show
+/settings set ui.theme hacker
+/ai test openai
+/ai run --provider openai --prompt "Draft the first product hypothesis."
+/mcp test notion
+/doctor --live
+/pm draft product-definition --ai
+/pd references --ai
+/fe spec --ai
+/notion setup --live --title "RPH Workspace"
+```
+
+Configured credentials are never copied into `.rph/config.json`; only env key names,
+configured/missing status, selected provider, and non-secret model/base URL metadata are stored.
+
+AI-generated artifacts write non-secret run records to `.rph/ai/runs/`. Notion remains dry-run by default;
+`/notion setup --live` creates a dashboard page and tracking databases under `NOTION_PARENT_PAGE_ID`,
+and `/notion sync --live` writes a live sync summary page.

@@ -1,19 +1,21 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   approveDesignArtifact,
   approveDocument,
   advanceAfterPmApproval,
   advanceAfterPmDraft,
   advanceAfterPdApproval,
+  applyNotionWorkspacePlan,
   canFinalizePm,
   canFinalizePd,
   createDevDeploymentPlan,
   createDesignArtifactVersion,
   createEngineeringDocumentVersion,
   createHotfixPlan,
+  createHarnessConfig,
   createPullRequestDraft,
   createQaReview,
   createReleasePlan,
@@ -32,12 +34,14 @@ import {
   loadEnvFile,
   loadState,
   markIssueInProgress,
+  normalizeNotionPageId,
   normalizeLabel,
   parseCli,
   parseCommandLine,
   readPullRequest,
   runQaTests,
   finalizeQaReport,
+  generateAiText,
   prepareEngineeringDocumentState,
   preparePdArtifactState,
   preparePmDraftState,
@@ -62,6 +66,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -363,6 +368,64 @@ describe("command parser and env validation", () => {
     const choices = JSON.parse(fs.readFileSync(filePath, "utf8")) as { stack: string; mcp: string[] };
     expect(choices.stack).toBe("recommended");
     expect(choices.mcp).toContain("notion");
+    expect(fs.existsSync(path.join(root, ".rph", "config.json"))).toBe(true);
+  });
+
+  it("detects configured AI providers and MCP servers from env without storing secrets", () => {
+    const config = createHarnessConfig({
+      OPENAI_API_KEY: "openai-secret",
+      GEMINI_API_KEY: "gemini-secret",
+      GITHUB_TOKEN: "github-secret",
+      GITHUB_OWNER: "owner",
+      GITHUB_REPO: "repo",
+      NOTION_TOKEN: "notion-secret",
+      NOTION_PARENT_PAGE_ID: "page-id"
+    } as NodeJS.ProcessEnv);
+
+    expect(config.activeAiProvider).toBe("openai");
+    expect(config.aiProviders.openai.configured).toBe(true);
+    expect(config.aiProviders.gemini.configured).toBe(true);
+    expect(config.aiProviders.anthropic.configured).toBe(false);
+    expect(config.mcpServers.notion.enabled).toBe(true);
+    expect(config.mcpServers.github.enabled).toBe(true);
+    expect(config.mcpServers.figma.enabled).toBe(false);
+    expect(JSON.stringify(config)).not.toContain("openai-secret");
+  });
+
+  it("generates text through the active AI provider without exposing secrets", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      output: [
+        {
+          type: "message",
+          content: [
+            {
+              type: "output_text",
+              text: "# AI draft\n\nGenerated body"
+            }
+          ]
+        }
+      ],
+      usage: {
+        input_tokens: 10,
+        output_tokens: 5
+      }
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const config = createHarnessConfig({
+      OPENAI_API_KEY: "openai-secret"
+    } as NodeJS.ProcessEnv);
+
+    const result = await generateAiText(config, { prompt: "Draft a PM document" }, {
+      OPENAI_API_KEY: "openai-secret"
+    } as NodeJS.ProcessEnv);
+
+    expect(result.providerId).toBe("openai");
+    expect(result.text).toContain("Generated body");
+    expect(result.endpoint).toBe("https://api.openai.com/v1/responses");
+    expect(JSON.stringify(result)).not.toContain("openai-secret");
+    expect(fetchMock).toHaveBeenCalledWith("https://api.openai.com/v1/responses", expect.objectContaining({
+      method: "POST"
+    }));
   });
 });
 
@@ -400,6 +463,13 @@ describe("obsidian export", () => {
 });
 
 describe("notion integration plan", () => {
+  it("normalizes Notion page URLs and compact IDs", () => {
+    expect(normalizeNotionPageId("https://www.notion.so/workspace/Page-1234567890abcdef1234567890abcdef?pvs=4")).toBe(
+      "12345678-90ab-cdef-1234-567890abcdef"
+    );
+    expect(normalizeNotionPageId("1234567890abcdef1234567890abcdef")).toBe("12345678-90ab-cdef-1234-567890abcdef");
+  });
+
   it("writes a dry-run workspace plan and sync payload", () => {
     createDocumentVersion(root, "product-definition", { changeSummary: "initial" });
     const result = createNotionWorkspacePlan(root);
@@ -412,5 +482,37 @@ describe("notion integration plan", () => {
     const payload = createNotionSyncPayload(root);
     expect(payload.counts.documents).toBe(1);
     expect(fs.existsSync(payload.filePath)).toBe(true);
+  });
+
+  it("can apply a live Notion workspace plan through the API without storing tokens", async () => {
+    let databaseCounter = 0;
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const endpoint = String(url);
+      if (endpoint.endsWith("/v1/pages")) {
+        return new Response(JSON.stringify({
+          id: "dashboard-page-id",
+          url: "https://notion.so/dashboard"
+        }), { status: 200 });
+      }
+      databaseCounter += 1;
+      return new Response(JSON.stringify({
+        id: `database-${databaseCounter}`,
+        url: `https://notion.so/database-${databaseCounter}`
+      }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await applyNotionWorkspacePlan(root, {
+      env: {
+        NOTION_TOKEN: "notion-secret",
+        NOTION_PARENT_PAGE_ID: "1234567890abcdef1234567890abcdef"
+      } as NodeJS.ProcessEnv
+    });
+
+    expect(result.workspace.dashboardPageId).toBe("dashboard-page-id");
+    expect(Object.keys(result.workspace.databaseIds)).toHaveLength(14);
+    expect(fs.existsSync(result.filePath)).toBe(true);
+    expect(fs.readFileSync(result.filePath, "utf8")).not.toContain("notion-secret");
+    expect(fetchMock).toHaveBeenCalledTimes(15);
   });
 });

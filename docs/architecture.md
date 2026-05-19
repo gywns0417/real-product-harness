@@ -20,6 +20,8 @@ The design mirrors a Hermes-style separation:
 - Runtime/control plane: keeps the active project, prompt, session, and command envelope.
 - Execution lanes: PM, PD, FE, BE, QA, GitHub, Notion, and Docs handlers execute bounded workflow actions.
 - Records: product state remains in `.rph/`; runtime command history is appended under `.rph/runtime/`.
+- AI run records: provider/model metadata and prompt/output previews are stored under `.rph/ai/runs/`; secrets stay in `.env`.
+- Settings: non-secret provider state lives in `.rph/config.json`; secrets stay in `.env`.
 - Handoff contract: every command either advances state, writes an artifact, reports a blocker, or recommends the next slash command.
 
 Automation can still call the same surface one-shot with `rph /pm start`; the old positional form is kept internally for compatibility but is no longer the primary UX.
@@ -29,7 +31,9 @@ Automation can still call the same surface one-shot with `rph /pm start`; the ol
 Project state lives under `.rph/` in the target product folder:
 
 - `.rph/project.json`
+- `.rph/config.json`
 - `.rph/state.json`
+- `.rph/ai/runs/<runId>.json`
 - `.rph/documents/<docId>/<version>.md`
 - `.rph/documents/<docId>/index.json`
 - `.rph/approvals/approvals.json`
@@ -71,3 +75,21 @@ Current high-level order:
 GitHub, Notion, Figma, Stitch, MCP, and cloud deploy integrations are adapters. They write local config/templates or print dry-run commands unless credentials and user approval are available. Cloud deploy hooks create a local plan first; no external deploy runs without approval.
 
 Notion integration uses the hosted MCP URL in generated config and writes a local workspace plan first. The plan covers PM/PD/FE/BE/QA/GitHub/Versions/Decision/Approval sections, 14 database schemas, and MCP tool names needed for database and view creation.
+
+## Setup And Connection Commands
+
+The runtime setup layer mirrors a Hermes-style boot sequence:
+
+1. `/setup auto` reads `.env`, detects AI providers and MCP servers, writes `.rph/config.json`, and refreshes `.mcp/config.json`.
+2. `/ai status` and `/mcp status` show configured, missing, enabled, and disabled connections without printing secrets.
+3. `/ai test [provider]` and `/mcp test [server]` run read-only live probes and write `.rph/connections/latest.json`.
+4. `/ai run --prompt <text>` sends an ad-hoc generation request through the active provider and writes an AI run record.
+5. `/pm draft <docId> --ai`, `/pd <artifact> --ai`, `/fe spec --ai`, and `/be spec --ai` bind the selected AI provider to role-specific artifact generation.
+6. `/settings set <key> <value>` stores custom runtime preferences such as `ui.theme`, `ui.color`, and deployment notes.
+7. `/doctor --live` combines runtime config checks with AI and MCP live probes.
+
+AI provider probes use read-only model-list endpoints for OpenAI, Anthropic, Gemini, and local model servers. MCP probes validate the underlying service credentials for Notion, GitHub, Figma, and Stitch where a stable probe exists.
+
+## Notion Live Mode
+
+Notion stays dry-run unless a live flag is present. `/notion setup --live` validates `NOTION_TOKEN` and `NOTION_PARENT_PAGE_ID`, creates a dashboard page under the parent, creates the planned tracking databases, and writes `.rph/notion/live-workspace.json`. `/notion sync --live` reads that workspace record and appends a sync summary page while keeping the full local payload in `.rph/notion/sync-payload.json`.

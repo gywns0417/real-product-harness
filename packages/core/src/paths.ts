@@ -16,6 +16,26 @@ export function setupChoicesFile(projectRoot: string): string {
   return path.join(rphDir(projectRoot), "setup-choices.json");
 }
 
+export function harnessConfigFile(projectRoot: string): string {
+  return path.join(rphDir(projectRoot), "config.json");
+}
+
+export function connectionReportsDir(projectRoot: string): string {
+  return path.join(rphDir(projectRoot), "connections");
+}
+
+export function connectionReportFile(projectRoot: string): string {
+  return path.join(connectionReportsDir(projectRoot), "latest.json");
+}
+
+export function aiRunsDir(projectRoot: string): string {
+  return path.join(rphDir(projectRoot), "ai", "runs");
+}
+
+export function aiRunFile(projectRoot: string, runId: string): string {
+  return path.join(aiRunsDir(projectRoot), `${runId}.json`);
+}
+
 export function documentsDir(projectRoot: string): string {
   return path.join(rphDir(projectRoot), "documents");
 }
@@ -130,4 +150,8 @@ export function notionPlanMarkdownFile(projectRoot: string): string {
 
 export function notionSyncPayloadFile(projectRoot: string): string {
   return path.join(notionDir(projectRoot), "sync-payload.json");
+}
+
+export function notionLiveWorkspaceFile(projectRoot: string): string {
+  return path.join(notionDir(projectRoot), "live-workspace.json");
 }

@@ -8,6 +8,7 @@ import {
   advanceAfterPmApproval,
   advanceAfterPmDraft,
   advanceAfterPdApproval,
+  applyNotionWorkspacePlan,
   approveDesignArtifact,
   approveDocument,
   approveEngineeringDocument,
@@ -25,6 +26,7 @@ import {
   createNotionWorkspacePlan,
   createObsidianProject,
   createHotfixPlan,
+  createAiRunRecord,
   createPullRequestDraft,
   createQaReview,
   createReleasePlan,
@@ -47,10 +49,13 @@ import {
   GITHUB_ENV_KEYS,
   initProject,
   isDocumentId,
+  AiProviderId,
+  McpServerId,
   listDocumentIndexes,
   listDesignArtifactIndexes,
   listPullRequests,
   listWorkIssues,
+  loadHarnessConfig,
   loadEnvFile,
   loadProject,
   loadState,
@@ -60,28 +65,44 @@ import {
   optionString,
   parseCli,
   parseCommandLine,
+  configuredAiProviders,
+  configuredMcpServers,
   prepareEngineeringDocumentState,
   preparePdArtifactState,
   preparePmDraftState,
   ProjectState,
   readDocumentIndex,
   readDesignArtifactIndex,
+  renderRuntimeHero,
+  renderStatusLine,
   renderInterview,
   runQaTests,
   finalizeQaReport,
+  generateAiText,
   requireInitialized,
   rollbackDocument,
   saveState,
+  setAiProviderEnabled,
+  setHarnessConfigValue,
+  setMcpServerEnabled,
   setupGitHubLabels,
   showDocument,
   showDesignArtifact,
   stripFrontmatter,
   syncStateDesignArtifacts,
   syncStateDocuments,
+  syncHarnessConfigFromEnv,
+  syncNotionPayloadLive,
+  testAiConnection,
+  testAllAiConnections,
+  testAllMcpConnections,
+  testMcpConnection,
   transitionState,
   validateEnv,
   SetupChoices,
   Workstream,
+  writeConnectionReport,
+  writeAiRunRecord,
   WORKFLOW_STAGES,
   writeGitHubBranchPlan,
   writeGitHubTemplates
@@ -130,23 +151,38 @@ async function runParsedCommand(
       case "cancel":
         handleCancel(projectRoot);
         break;
+      case "setup":
+        await handleSetup(projectRoot, parsed.subcommand, parsed.args, parsed.options);
+        break;
+      case "settings":
+        handleSettings(projectRoot, parsed.subcommand, parsed.args);
+        break;
+      case "ai":
+        await handleAi(projectRoot, parsed.subcommand, parsed.args, parsed.options);
+        break;
+      case "mcp":
+        await handleMcp(projectRoot, parsed.subcommand, parsed.args);
+        break;
+      case "doctor":
+        await handleDoctor(projectRoot, parsed.options);
+        break;
       case "pm":
-        handlePm(projectRoot, parsed.subcommand, parsed.args, parsed.options);
+        await handlePm(projectRoot, parsed.subcommand, parsed.args, parsed.options);
         break;
       case "pd":
-        handlePd(projectRoot, parsed.subcommand, parsed.args, parsed.options);
+        await handlePd(projectRoot, parsed.subcommand, parsed.args, parsed.options);
         break;
       case "fe":
-        handleFe(projectRoot, parsed.subcommand, parsed.args, parsed.options);
+        await handleFe(projectRoot, parsed.subcommand, parsed.args, parsed.options);
         break;
       case "be":
-        handleBe(projectRoot, parsed.subcommand, parsed.args, parsed.options);
+        await handleBe(projectRoot, parsed.subcommand, parsed.args, parsed.options);
         break;
       case "qa":
         handleQa(projectRoot, parsed.subcommand, parsed.args, parsed.options);
         break;
       case "notion":
-        handleNotion(projectRoot, parsed.subcommand);
+        await handleNotion(projectRoot, parsed.subcommand, parsed.options);
         break;
       case "docs":
         handleDocs(projectRoot, parsed.subcommand, parsed.args, parsed.options);
@@ -234,10 +270,13 @@ async function runRuntimeShell(initialRoot: string): Promise<void> {
 }
 
 function printRuntimeBanner(projectRoot: string, sessionId: string): void {
-  console.log("Real Product Harness runtime");
-  console.log(`session: ${sessionId}`);
-  console.log(`project: ${projectRoot}`);
-  console.log("commands: /help, /init --yes --project-name <name>, /pm start, /next, /status, /project <path>, /exit");
+  let config: ReturnType<typeof loadHarnessConfig> | undefined;
+  try {
+    config = loadHarnessConfig(projectRoot);
+  } catch {
+    config = undefined;
+  }
+  console.log(renderRuntimeHero(projectRoot, sessionId, config));
 }
 
 function runtimePrompt(projectRoot: string): string {
@@ -336,10 +375,13 @@ function handleStatus(projectRoot: string): void {
   requireInitialized(projectRoot);
   const project = loadProject(projectRoot);
   const state = loadState(projectRoot);
+  const config = loadHarnessConfig(projectRoot);
   const stage = WORKFLOW_STAGES[state.currentStage];
   console.log(`프로젝트: ${project.name}`);
   console.log(`현재 단계: ${stage.id} (${stage.name})`);
   console.log(`담당: ${stage.ownerAgent}`);
+  console.log(`AI: ${config.activeAiProvider}`);
+  console.log(`MCP: ${configuredMcpServers(config).map((server) => server.id).join(", ") || "none"}`);
   console.log(`paused: ${state.paused}`);
   const next = nextStage(state);
   console.log(`다음 단계: ${next ?? "없음"}`);
@@ -413,12 +455,253 @@ function handleCancel(projectRoot: string): void {
   console.log("현재 워크플로우 정지. 상태 파일은 보존됨.");
 }
 
-function handlePm(
+async function handleSetup(
+  projectRoot: string,
+  subcommand: string | undefined,
+  args: string[],
+  _options: Record<string, string | boolean>
+): Promise<void> {
+  requireInitialized(projectRoot);
+  switch (subcommand) {
+    case undefined:
+    case "auto": {
+      const config = syncHarnessConfigFromEnv(projectRoot);
+      console.log("설정 자동 감지 완료");
+      printConfigSummary(config);
+      return;
+    }
+    case "ai": {
+      const config = syncHarnessConfigFromEnv(projectRoot);
+      const providerId = args[0] ? parseAiProviderId(args[0]) : config.activeAiProvider;
+      if (providerId === "auto" || providerId === "none") {
+        printAiStatus(config);
+        return;
+      }
+      const next = setAiProviderEnabled(projectRoot, providerId, true);
+      console.log(`AI provider 활성화: ${providerId}`);
+      printAiStatus(next);
+      return;
+    }
+    case "mcp": {
+      const config = syncHarnessConfigFromEnv(projectRoot);
+      if (!args[0]) {
+        printMcpStatus(config);
+        return;
+      }
+      const serverId = parseMcpServerId(args[0]);
+      const next = setMcpServerEnabled(projectRoot, serverId, true);
+      console.log(`MCP server 활성화: ${serverId}`);
+      printMcpStatus(next);
+      return;
+    }
+    case "custom": {
+      if (!args[0] || !args[1]) {
+        throw new Error("usage: /setup custom <key> <value>");
+      }
+      const config = setHarnessConfigValue(projectRoot, args[0], args.slice(1).join(" "));
+      console.log(`custom setting 저장: ${args[0]}`);
+      printConfigSummary(config);
+      return;
+    }
+    default:
+      console.log("Setup 명령어: auto | ai [openai|anthropic|gemini|local] | mcp [notion|github|figma|stitch] | custom <key> <value>");
+  }
+}
+
+function handleSettings(projectRoot: string, subcommand: string | undefined, args: string[]): void {
+  requireInitialized(projectRoot);
+  switch (subcommand) {
+    case undefined:
+    case "show":
+      printConfigSummary(loadHarnessConfig(projectRoot));
+      return;
+    case "sync":
+      printConfigSummary(syncHarnessConfigFromEnv(projectRoot));
+      return;
+    case "set": {
+      if (!args[0] || !args[1]) {
+        throw new Error("usage: /settings set <key> <value>");
+      }
+      const config = setHarnessConfigValue(projectRoot, args[0], args.slice(1).join(" "));
+      console.log(`setting 저장: ${args[0]}`);
+      printConfigSummary(config);
+      return;
+    }
+    default:
+      console.log("Settings 명령어: show | sync | set <key> <value>");
+  }
+}
+
+async function handleAi(
   projectRoot: string,
   subcommand: string | undefined,
   args: string[],
   options: Record<string, string | boolean>
-): void {
+): Promise<void> {
+  requireInitialized(projectRoot);
+  const config = syncHarnessConfigFromEnv(projectRoot);
+  switch (subcommand) {
+    case undefined:
+    case "status":
+      printAiStatus(config);
+      return;
+    case "enable": {
+      const providerId = parseAiProviderId(args[0]);
+      const next = setAiProviderEnabled(projectRoot, providerId, true);
+      console.log(`AI provider 활성화: ${providerId}`);
+      printAiStatus(next);
+      return;
+    }
+    case "disable": {
+      const providerId = parseAiProviderId(args[0]);
+      const next = setAiProviderEnabled(projectRoot, providerId, false);
+      console.log(`AI provider 비활성화: ${providerId}`);
+      printAiStatus(next);
+      return;
+    }
+    case "test": {
+      const checks = args[0] ? [await testAiConnection(config, parseAiProviderId(args[0]))] : await testAllAiConnections(config);
+      const filePath = writeConnectionReport(projectRoot, checks);
+      printConnectionChecks(checks);
+      console.log(`report: ${filePath}`);
+      return;
+    }
+    case "run":
+    case "prompt": {
+      const prompt = optionString(options, "prompt") ?? args.join(" ");
+      if (!prompt.trim()) {
+        throw new Error("usage: /ai run --prompt <text> [--provider <provider>] [--max-tokens <n>]");
+      }
+      const provider = optionString(options, "provider");
+      const result = await generateAiText(config, {
+        providerId: provider ? parseAiProviderId(provider) : undefined,
+        prompt,
+        system: "You are Real Product Harness. Return concise, useful markdown without frontmatter.",
+        maxOutputTokens: parseOptionalPositiveInt(optionString(options, "max-tokens"))
+      });
+      const recordPath = writeAiRunRecord(projectRoot, createAiRunRecord(result, "/ai run", prompt, {
+        kind: "prompt",
+        id: "ad-hoc"
+      }));
+      console.log(result.text);
+      console.log(`ai_run: ${recordPath}`);
+      return;
+    }
+    default:
+      console.log("AI 명령어: status | enable <provider> | disable <provider> | test [provider] | run --prompt <text>");
+  }
+}
+
+async function handleMcp(projectRoot: string, subcommand: string | undefined, args: string[]): Promise<void> {
+  requireInitialized(projectRoot);
+  const config = syncHarnessConfigFromEnv(projectRoot);
+  switch (subcommand) {
+    case undefined:
+    case "status":
+      printMcpStatus(config);
+      return;
+    case "enable": {
+      const serverId = parseMcpServerId(args[0]);
+      const next = setMcpServerEnabled(projectRoot, serverId, true);
+      console.log(`MCP server 활성화: ${serverId}`);
+      printMcpStatus(next);
+      return;
+    }
+    case "disable": {
+      const serverId = parseMcpServerId(args[0]);
+      const next = setMcpServerEnabled(projectRoot, serverId, false);
+      console.log(`MCP server 비활성화: ${serverId}`);
+      printMcpStatus(next);
+      return;
+    }
+    case "test": {
+      const checks = args[0] ? [await testMcpConnection(config, parseMcpServerId(args[0]))] : await testAllMcpConnections(config);
+      const filePath = writeConnectionReport(projectRoot, checks);
+      printConnectionChecks(checks);
+      console.log(`report: ${filePath}`);
+      return;
+    }
+    default:
+      console.log("MCP 명령어: status | enable <server> | disable <server> | test [server]");
+  }
+}
+
+async function handleDoctor(projectRoot: string, options: Record<string, string | boolean>): Promise<void> {
+  requireInitialized(projectRoot);
+  const config = syncHarnessConfigFromEnv(projectRoot);
+  console.log(renderStatusLine("runtime config loaded", "configured"));
+  printConfigSummary(config);
+  if (!optionBool(options, "live")) {
+    console.log("live 연결 검사는 /doctor --live 또는 /ai test, /mcp test로 실행");
+    return;
+  }
+  const checks = [...await testAllAiConnections(config), ...await testAllMcpConnections(config)];
+  const filePath = writeConnectionReport(projectRoot, checks);
+  printConnectionChecks(checks);
+  console.log(`report: ${filePath}`);
+}
+
+function printConfigSummary(config: ReturnType<typeof loadHarnessConfig>): void {
+  console.log("Runtime Settings");
+  console.log(`- active_ai: ${config.activeAiProvider}`);
+  console.log(`- configured_ai: ${configuredAiProviders(config).map((provider) => provider.id).join(", ") || "none"}`);
+  console.log(`- configured_mcp: ${configuredMcpServers(config).map((server) => server.id).join(", ") || "none"}`);
+  console.log(`- deployment: ${config.deployment}`);
+  console.log(`- stack: ${config.stack}`);
+  console.log(`- ui: ${config.ui.theme}, color=${config.ui.color}, boot=${config.ui.bootAnimation}`);
+  printAiStatus(config);
+  printMcpStatus(config);
+}
+
+function printAiStatus(config: ReturnType<typeof loadHarnessConfig>): void {
+  console.log("AI Providers");
+  for (const provider of Object.values(config.aiProviders)) {
+    const status = provider.configured ? "configured" : "missing";
+    const enabled = provider.enabled ? "enabled" : "disabled";
+    const missing = provider.missingEnv.length > 0 ? ` missing=${provider.missingEnv.join(",")}` : "";
+    console.log(`- ${renderStatusLine(provider.id, status)} ${enabled} model=${provider.model}${missing}`);
+  }
+}
+
+function printMcpStatus(config: ReturnType<typeof loadHarnessConfig>): void {
+  console.log("MCP Servers");
+  for (const server of Object.values(config.mcpServers)) {
+    const status = server.configured ? "configured" : "missing";
+    const enabled = server.enabled ? "enabled" : "disabled";
+    const missing = server.missingEnv.length > 0 ? ` missing=${server.missingEnv.join(",")}` : "";
+    const target = server.url ?? server.command ?? "-";
+    console.log(`- ${renderStatusLine(server.id, status)} ${enabled} ${server.transport} ${target}${missing}`);
+  }
+}
+
+function printConnectionChecks(checks: Awaited<ReturnType<typeof testAllAiConnections>>): void {
+  for (const check of checks) {
+    const missing = check.missingEnv.length > 0 ? ` missing=${check.missingEnv.join(",")}` : "";
+    const endpoint = check.endpoint ? ` endpoint=${check.endpoint}` : "";
+    console.log(`- ${renderStatusLine(`${check.kind}:${check.id}`, check.status)} ${check.message}${missing}${endpoint}`);
+  }
+}
+
+function parseAiProviderId(value: string | undefined): AiProviderId {
+  if (value === "openai" || value === "anthropic" || value === "gemini" || value === "local") {
+    return value;
+  }
+  throw new Error(`invalid AI provider: ${value ?? "(empty)"}. allowed: openai, anthropic, gemini, local`);
+}
+
+function parseMcpServerId(value: string | undefined): McpServerId {
+  if (value === "notion" || value === "github" || value === "figma" || value === "stitch") {
+    return value;
+  }
+  throw new Error(`invalid MCP server: ${value ?? "(empty)"}. allowed: notion, github, figma, stitch`);
+}
+
+async function handlePm(
+  projectRoot: string,
+  subcommand: string | undefined,
+  args: string[],
+  options: Record<string, string | boolean>
+): Promise<void> {
   requireInitialized(projectRoot);
   switch (subcommand) {
     case "start":
@@ -428,7 +711,7 @@ function handlePm(
       pmInterview(projectRoot, args[0]);
       return;
     case "draft":
-      pmDraft(projectRoot, args[0], options);
+      await pmDraft(projectRoot, args[0], options);
       return;
     case "revise":
       pmRevise(projectRoot, args[0], options);
@@ -486,9 +769,14 @@ function pmInterview(projectRoot: string, docArg?: string): void {
   console.log(renderInterview(session));
 }
 
-function pmDraft(projectRoot: string, docArg: string | undefined, options: Record<string, string | boolean>): void {
+async function pmDraft(projectRoot: string, docArg: string | undefined, options: Record<string, string | boolean>): Promise<void> {
   const docId = parseDocId(docArg ?? "product-definition");
-  const body = bodyFromOptions(options);
+  const body = await bodyFromOptions(projectRoot, options, {
+    kind: "pm-document",
+    id: docId,
+    command: `/pm draft ${docId}`,
+    prompt: buildDocumentPrompt(projectRoot, docId, optionString(options, "prompt"))
+  });
   const prepared = preparePmDraftState(loadState(projectRoot), docId);
   const index = createDocumentVersion(projectRoot, docId, {
     changeSummary: optionString(options, "summary") ?? "Initial PM draft",
@@ -497,13 +785,16 @@ function pmDraft(projectRoot: string, docArg: string | undefined, options: Recor
   const state = advanceAfterPmDraft(syncStateDocuments(prepared, index), docId);
   saveState(projectRoot, state);
   console.log(`문서 초안 생성: ${docId} ${index.currentVersion}`);
+  if (optionBool(options, "ai")) {
+    console.log("AI provider로 초안을 생성했습니다.");
+  }
   console.log(`승인 전 다음 큰 단계 진행 금지: /pm approve ${docId}`);
 }
 
 function pmRevise(projectRoot: string, docArg: string | undefined, options: Record<string, string | boolean>): void {
   const docId = parseDocId(docArg ?? "product-definition");
   const fromVersion = optionString(options, "from");
-  const fileBody = bodyFromOptions(options);
+  const fileBody = bodyFromFileOptions(options);
   const body = fileBody ?? stripFrontmatter(showDocument(projectRoot, docId, fromVersion));
   const index = createDocumentVersion(projectRoot, docId, {
     changeSummary: optionString(options, "summary") ?? `Revision from ${fromVersion ?? "current"}`,
@@ -629,32 +920,32 @@ function docsApprove(projectRoot: string, docId: DocumentId, approvedBy: string)
   console.log(`승인자: ${approval.approvedBy}`);
 }
 
-function handlePd(
+async function handlePd(
   projectRoot: string,
   subcommand: string | undefined,
   args: string[],
   options: Record<string, string | boolean>
-): void {
+): Promise<void> {
   requireInitialized(projectRoot);
   switch (subcommand) {
     case "start":
       pdStart(projectRoot);
       return;
     case "references":
-      pdCreateArtifact(projectRoot, "references", options);
+      await pdCreateArtifact(projectRoot, "references", options);
       return;
     case "directions":
     case "moodboards":
-      pdCreateArtifact(projectRoot, "directions", options);
+      await pdCreateArtifact(projectRoot, "directions", options);
       return;
     case "landing-preview":
-      pdCreateArtifact(projectRoot, "landing-preview", options);
+      await pdCreateArtifact(projectRoot, "landing-preview", options);
       return;
     case "design-system":
-      pdCreateArtifact(projectRoot, "design-system", options);
+      await pdCreateArtifact(projectRoot, "design-system", options);
       return;
     case "pages":
-      pdCreateArtifact(projectRoot, "page-designs", options);
+      await pdCreateArtifact(projectRoot, "page-designs", options);
       return;
     case "show":
       pdShow(projectRoot, args[0], args[1]);
@@ -710,12 +1001,17 @@ function pdStart(projectRoot: string): void {
   console.log("다음: /pd references");
 }
 
-function pdCreateArtifact(
+async function pdCreateArtifact(
   projectRoot: string,
   artifactId: (typeof DESIGN_ARTIFACT_IDS)[number],
   options: Record<string, string | boolean>
-): void {
-  const body = bodyFromOptions(options);
+): Promise<void> {
+  const body = await bodyFromOptions(projectRoot, options, {
+    kind: "pd-artifact",
+    id: artifactId,
+    command: `/pd ${artifactCommandName(artifactId)}`,
+    prompt: buildDesignPrompt(projectRoot, artifactId, optionString(options, "prompt"))
+  });
   const prepared = preparePdArtifactState(loadState(projectRoot), artifactId);
   const index = createDesignArtifactVersion(projectRoot, artifactId, {
     changeSummary: optionString(options, "summary") ?? "Initial PD draft",
@@ -724,6 +1020,9 @@ function pdCreateArtifact(
   const state = syncStateDesignArtifacts(prepared, index);
   saveState(projectRoot, state);
   console.log(`PD 산출물 생성: ${artifactId} ${index.currentVersion}`);
+  if (optionBool(options, "ai")) {
+    console.log("AI provider로 PD 산출물을 생성했습니다.");
+  }
   if (artifactId === "landing-preview") {
     console.log(`HTML fallback preview: ${createLandingPreviewHtml(projectRoot)}`);
   }
@@ -738,7 +1037,7 @@ function pdShow(projectRoot: string, artifactArg?: string, version?: string): vo
 function pdRevise(projectRoot: string, artifactArg: string | undefined, options: Record<string, string | boolean>): void {
   const artifactId = parseDesignArtifactId(artifactArg);
   const fromVersion = optionString(options, "from");
-  const fileBody = bodyFromOptions(options);
+  const fileBody = bodyFromFileOptions(options);
   const body = fileBody ?? stripFrontmatter(showDesignArtifact(projectRoot, artifactId, fromVersion));
   const index = createDesignArtifactVersion(projectRoot, artifactId, {
     changeSummary: optionString(options, "summary") ?? `Revision from ${fromVersion ?? "current"}`,
@@ -774,19 +1073,19 @@ function pdFinalize(projectRoot: string): void {
   console.log("다음: FE/BE spec");
 }
 
-function handleFe(
+async function handleFe(
   projectRoot: string,
   subcommand: string | undefined,
   args: string[],
   options: Record<string, string | boolean>
-): void {
+): Promise<void> {
   requireInitialized(projectRoot);
   switch (subcommand) {
     case "spec":
-      engineeringDraft(projectRoot, FE_SPEC_DOC, options);
+      await engineeringDraft(projectRoot, FE_SPEC_DOC, options);
       return;
     case "sprint-plan":
-      engineeringDraft(projectRoot, FE_SPRINT_PLAN_DOC, options);
+      await engineeringDraft(projectRoot, FE_SPRINT_PLAN_DOC, options);
       return;
     case "approve":
       engineeringApprove(projectRoot, parseFeTarget(args[0]), optionString(options, "by") ?? "user");
@@ -805,22 +1104,22 @@ function handleFe(
   }
 }
 
-function handleBe(
+async function handleBe(
   projectRoot: string,
   subcommand: string | undefined,
   args: string[],
   options: Record<string, string | boolean>
-): void {
+): Promise<void> {
   requireInitialized(projectRoot);
   switch (subcommand) {
     case "spec":
-      engineeringDraft(projectRoot, BE_SPEC_DOC, options);
+      await engineeringDraft(projectRoot, BE_SPEC_DOC, options);
       return;
     case "api-contract":
-      engineeringDraft(projectRoot, API_CONTRACT_DOC, options);
+      await engineeringDraft(projectRoot, API_CONTRACT_DOC, options);
       return;
     case "sprint-plan":
-      engineeringDraft(projectRoot, BE_SPRINT_PLAN_DOC, options);
+      await engineeringDraft(projectRoot, BE_SPRINT_PLAN_DOC, options);
       return;
     case "approve":
       engineeringApprove(projectRoot, parseBeTarget(args[0]), optionString(options, "by") ?? "user");
@@ -880,7 +1179,11 @@ function handleQa(
   }
 }
 
-function handleNotion(projectRoot: string, subcommand: string | undefined): void {
+async function handleNotion(
+  projectRoot: string,
+  subcommand: string | undefined,
+  options: Record<string, string | boolean>
+): Promise<void> {
   requireInitialized(projectRoot);
   switch (subcommand) {
     case "plan":
@@ -889,7 +1192,16 @@ function handleNotion(projectRoot: string, subcommand: string | undefined): void
       console.log(`Notion workspace plan 생성: ${result.files.length} files`);
       result.files.forEach((file) => console.log(`- ${file}`));
       console.log(`mode: ${result.plan.executionMode}`);
-      console.log("Notion MCP/API 쓰기는 사용자 승인 전 실행하지 않음");
+      if (optionBool(options, "live")) {
+        const applied = await applyNotionWorkspacePlan(projectRoot, {
+          title: optionString(options, "title")
+        });
+        console.log(`Notion live workspace 생성: ${applied.filePath}`);
+        console.log(`dashboard: ${applied.workspace.dashboardUrl ?? applied.workspace.dashboardPageId}`);
+        console.log(`databases: ${Object.keys(applied.workspace.databaseIds).length}`);
+      } else {
+        console.log("Notion MCP/API 쓰기는 /notion setup --live에서만 실행");
+      }
       return;
     }
     case "sync":
@@ -900,20 +1212,30 @@ function handleNotion(projectRoot: string, subcommand: string | undefined): void
       console.log(`designArtifacts: ${result.counts.designArtifacts}`);
       console.log(`issues: ${result.counts.issues}`);
       console.log(`pullRequests: ${result.counts.pullRequests}`);
-      console.log("Notion 반영은 dry-run payload만 생성");
+      if (optionBool(options, "live")) {
+        const synced = await syncNotionPayloadLive(projectRoot);
+        console.log(`Notion live sync 완료: ${synced.synced} records summarized`);
+      } else {
+        console.log("Notion 반영은 /notion sync --live에서만 실행");
+      }
       return;
     }
     default:
-      console.log("Notion 명령어: plan | setup | sync | export-docs");
+      console.log("Notion 명령어: plan | setup [--live] [--title <title>] | sync [--live] | export-docs");
   }
 }
 
-function engineeringDraft(
+async function engineeringDraft(
   projectRoot: string,
   docId: DocumentId,
   options: Record<string, string | boolean>
-): void {
-  const body = bodyFromOptions(options);
+): Promise<void> {
+  const body = await bodyFromOptions(projectRoot, options, {
+    kind: "engineering-document",
+    id: docId,
+    command: engineeringCommandForDoc(docId),
+    prompt: buildEngineeringPrompt(projectRoot, docId, optionString(options, "prompt"))
+  });
   const prepared = prepareEngineeringDocumentState(loadState(projectRoot), docId);
   const index = createEngineeringDocumentVersion(projectRoot, docId, {
     changeSummary: optionString(options, "summary") ?? "Initial engineering draft",
@@ -922,6 +1244,9 @@ function engineeringDraft(
   const state = syncStateDocuments(prepared, index);
   saveState(projectRoot, state);
   console.log(`엔지니어링 문서 생성: ${docId} ${index.currentVersion}`);
+  if (optionBool(options, "ai")) {
+    console.log("AI provider로 엔지니어링 문서를 생성했습니다.");
+  }
   console.log(`승인 전 다음 큰 단계 진행 금지: ${approvalCommandForEngineeringDoc(docId)}`);
 }
 
@@ -1224,12 +1549,179 @@ function parseDesignArtifactId(value: string | undefined): (typeof DESIGN_ARTIFA
   return value as (typeof DESIGN_ARTIFACT_IDS)[number];
 }
 
-function bodyFromOptions(options: Record<string, string | boolean>): string | undefined {
+interface AiBodyRequest {
+  kind: "pm-document" | "pd-artifact" | "engineering-document";
+  id: string;
+  command: string;
+  prompt: string;
+}
+
+async function bodyFromOptions(
+  projectRoot: string,
+  options: Record<string, string | boolean>,
+  request: AiBodyRequest
+): Promise<string | undefined> {
+  const fileBody = bodyFromFileOptions(options);
+  if (fileBody && optionBool(options, "ai")) {
+    throw new Error("--file and --ai cannot be used together");
+  }
+  if (fileBody) {
+    return fileBody;
+  }
+  if (!optionBool(options, "ai")) {
+    return undefined;
+  }
+  const provider = optionString(options, "provider");
+  const config = syncHarnessConfigFromEnv(projectRoot);
+  const result = await generateAiText(config, {
+    providerId: provider ? parseAiProviderId(provider) : undefined,
+    prompt: request.prompt,
+    system: [
+      "You are Real Product Harness, a role-separated product delivery agent runtime.",
+      "Return only the requested markdown body. Do not include YAML frontmatter.",
+      "Be concrete, implementation-ready, and preserve approval-gate wording where relevant.",
+      "Use Korean by default unless the product context is clearly English."
+    ].join(" "),
+    maxOutputTokens: parseOptionalPositiveInt(optionString(options, "max-tokens")) ?? 2400
+  });
+  const recordPath = writeAiRunRecord(projectRoot, createAiRunRecord(result, request.command, request.prompt, {
+    kind: request.kind,
+    id: request.id
+  }));
+  console.log(`ai_run: ${recordPath}`);
+  return sanitizeGeneratedMarkdown(result.text);
+}
+
+function bodyFromFileOptions(options: Record<string, string | boolean>): string | undefined {
   const filePath = optionString(options, "file");
   if (!filePath) {
     return undefined;
   }
   return fs.readFileSync(path.resolve(filePath), "utf8");
+}
+
+function buildDocumentPrompt(projectRoot: string, docId: DocumentId, extraInstruction?: string): string {
+  return [
+    artifactContext(projectRoot),
+    "",
+    `작업: PM Agent가 "${DOCUMENT_TITLES[docId]}" 문서를 완성한다.`,
+    `문서 ID: ${docId}`,
+    "요구사항:",
+    "- 실제 제품 개발에 바로 쓸 수 있는 markdown 문서 본문을 작성한다.",
+    "- TBD로 남기지 말고, 정보가 부족한 부분은 명확한 가정으로 채운다.",
+    "- 승인 게이트를 고려해 범위, 제외 범위, 리스크, 다음 액션을 포함한다.",
+    "- 출력은 markdown 본문만 반환한다.",
+    extraInstruction ? `추가 지시: ${extraInstruction}` : ""
+  ].filter(Boolean).join("\n");
+}
+
+function buildDesignPrompt(projectRoot: string, artifactId: DesignArtifactId, extraInstruction?: string): string {
+  return [
+    artifactContext(projectRoot),
+    "",
+    `작업: PD Agent가 "${DESIGN_ARTIFACT_TITLES[artifactId]}" 산출물을 완성한다.`,
+    `산출물 ID: ${artifactId}`,
+    "요구사항:",
+    "- PM 산출물과 현재 단계에 맞는 디자인 산출물 markdown 본문을 작성한다.",
+    "- 레퍼런스, 방향성, 토큰, 컴포넌트, 페이지 설계를 구체적으로 다룬다.",
+    "- Figma/Stitch가 미설정이어도 HTML fallback으로 구현 가능한 수준으로 쓴다.",
+    "- 출력은 markdown 본문만 반환한다.",
+    extraInstruction ? `추가 지시: ${extraInstruction}` : ""
+  ].filter(Boolean).join("\n");
+}
+
+function buildEngineeringPrompt(projectRoot: string, docId: DocumentId, extraInstruction?: string): string {
+  return [
+    artifactContext(projectRoot),
+    "",
+    `작업: ${engineeringOwnerForDoc(docId)} Agent가 "${DOCUMENT_TITLES[docId]}" 문서를 완성한다.`,
+    `문서 ID: ${docId}`,
+    "요구사항:",
+    "- 실제 구현자가 바로 작업을 쪼갤 수 있는 markdown 본문을 작성한다.",
+    "- 아키텍처, 데이터/상태, API, 테스트, 배포/운영 리스크를 필요한 만큼 포함한다.",
+    "- 승인 전에는 큰 단계 진행 금지라는 workflow 원칙을 반영한다.",
+    "- 출력은 markdown 본문만 반환한다.",
+    extraInstruction ? `추가 지시: ${extraInstruction}` : ""
+  ].filter(Boolean).join("\n");
+}
+
+function artifactContext(projectRoot: string): string {
+  const project = loadProject(projectRoot);
+  const state = loadState(projectRoot);
+  const docs = listDocumentIndexes(projectRoot)
+    .map((doc) => `${doc.docId}:${doc.status}:${doc.currentVersion}`)
+    .join(", ") || "none";
+  const designArtifacts = listDesignArtifactIndexes(projectRoot)
+    .map((artifact) => `${artifact.artifactId}:${artifact.status}:${artifact.currentVersion}`)
+    .join(", ") || "none";
+  return [
+    "프로젝트 컨텍스트:",
+    `- product: ${project.name}`,
+    `- stage: ${state.currentStage}`,
+    `- documents: ${docs}`,
+    `- design_artifacts: ${designArtifacts}`
+  ].join("\n");
+}
+
+function sanitizeGeneratedMarkdown(text: string): string {
+  const trimmed = text.trim();
+  const fenced = trimmed.match(/^```(?:markdown|md)?\s*\n([\s\S]*?)\n```$/);
+  return (fenced ? fenced[1] : trimmed).trim();
+}
+
+function parseOptionalPositiveInt(value: string | undefined): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(`expected positive integer, got: ${value}`);
+  }
+  return parsed;
+}
+
+function artifactCommandName(artifactId: DesignArtifactId): string {
+  switch (artifactId) {
+    case "references":
+      return "references";
+    case "directions":
+      return "directions";
+    case "landing-preview":
+      return "landing-preview";
+    case "design-system":
+      return "design-system";
+    case "page-designs":
+      return "pages";
+    default:
+      return String(artifactId);
+  }
+}
+
+function engineeringCommandForDoc(docId: DocumentId): string {
+  switch (docId) {
+    case FE_SPEC_DOC:
+      return "/fe spec";
+    case BE_SPEC_DOC:
+      return "/be spec";
+    case API_CONTRACT_DOC:
+      return "/be api-contract";
+    case FE_SPRINT_PLAN_DOC:
+      return "/fe sprint-plan";
+    case BE_SPRINT_PLAN_DOC:
+      return "/be sprint-plan";
+    default:
+      return `/docs ${docId}`;
+  }
+}
+
+function engineeringOwnerForDoc(docId: DocumentId): string {
+  if (docId === FE_SPEC_DOC || docId === FE_SPRINT_PLAN_DOC) {
+    return "FE";
+  }
+  if (docId === BE_SPEC_DOC || docId === API_CONTRACT_DOC || docId === BE_SPRINT_PLAN_DOC) {
+    return "BE";
+  }
+  return "Engineering";
 }
 
 function recommendedCommand(state: ProjectState, stage: string): string {
@@ -1438,35 +1930,42 @@ function printHelp(): void {
     "  /project <path>",
     "  /pwd",
     "  /exit",
+    "  /setup auto",
+    "  /setup ai [openai|anthropic|gemini|local]",
+    "  /setup mcp [notion|github|figma|stitch]",
+    "  /settings show | sync | set <key> <value>",
+    "  /ai status | test [provider] | enable <provider> | disable <provider> | run --prompt <text>",
+    "  /mcp status | test [server] | enable <server> | disable <server>",
+    "  /doctor [--live]",
     "  /pm start",
     "  /pm interview [docId]",
-    "  /pm draft <docId> [--file <markdown>] [--summary <text>]",
+    "  /pm draft <docId> [--file <markdown>] [--ai] [--provider <provider>] [--summary <text>]",
     "  /pm revise <docId> [--from <version>] [--file <markdown>] [--summary <text>]",
     "  /pm approve <docId> [--by <name>]",
     "  /pm diff <docId> <fromVersion> <toVersion>",
     "  /pm rollback <docId> --to <version>",
     "  /pm finalize",
     "  /pd start",
-    "  /pd references",
-    "  /pd directions",
-    "  /pd landing-preview",
-    "  /pd design-system",
-    "  /pd pages",
+    "  /pd references [--ai]",
+    "  /pd directions [--ai]",
+    "  /pd landing-preview [--ai]",
+    "  /pd design-system [--ai]",
+    "  /pd pages [--ai]",
     "  /pd show <artifactId> [version]",
     "  /pd revise <artifactId> [--from <version>] [--file <markdown>] [--summary <text>]",
     "  /pd approve <artifactId> [--by <name>]",
     "  /pd export obsidian <artifactId|all> --path <vaultProjectPath>",
     "  /pd finalize",
-    "  /fe spec",
+    "  /fe spec [--ai]",
     "  /fe approve <spec|sprint-plan> [--by <name>]",
-    "  /fe sprint-plan",
+    "  /fe sprint-plan [--ai]",
     "  /fe issue-create [--title <title>] [--label <label>]",
     "  /fe work --issue <number>",
     "  /fe pr --issue <number> [--target <dev|release|main>]",
-    "  /be spec",
-    "  /be api-contract",
+    "  /be spec [--ai]",
+    "  /be api-contract [--ai]",
     "  /be approve <spec|api-contract|sprint-plan> [--by <name>]",
-    "  /be sprint-plan",
+    "  /be sprint-plan [--ai]",
     "  /be issue-create [--title <title>] [--label <label>]",
     "  /be work --issue <number>",
     "  /be deploy-dev [--provider <provider>]",
@@ -1476,7 +1975,8 @@ function printHelp(): void {
     "  /qa test --pr <number>",
     "  /qa report --pr <number>",
     "  /notion plan",
-    "  /notion sync",
+    "  /notion setup [--live] [--title <title>]",
+    "  /notion sync [--live]",
     "  /docs list",
     "  /docs show <docId> [version]",
     "  /docs diff <docId> <fromVersion> <toVersion>",

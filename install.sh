@@ -9,12 +9,44 @@ RPH_BIN_DIR="${RPH_BIN_DIR:-$HOME/.local/bin}"
 RPH_BIN_NAME="${RPH_BIN_NAME:-rph}"
 PNPM_VERSION="${PNPM_VERSION:-10.18.3}"
 
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  C_RESET="$(printf '\033[0m')"
+  C_BOLD="$(printf '\033[1m')"
+  C_DIM="$(printf '\033[2m')"
+  C_CYAN="$(printf '\033[36m')"
+  C_GREEN="$(printf '\033[32m')"
+  C_MAGENTA="$(printf '\033[35m')"
+  C_RED="$(printf '\033[31m')"
+else
+  C_RESET=""
+  C_BOLD=""
+  C_DIM=""
+  C_CYAN=""
+  C_GREEN=""
+  C_MAGENTA=""
+  C_RED=""
+fi
+
+banner() {
+  printf '%s\n' "${C_CYAN}  ____  ____  _   _${C_RESET}"
+  printf '%s\n' "${C_CYAN} |  _ \\|  _ \\| | | |${C_RESET}"
+  printf '%s\n' "${C_MAGENTA} | |_) | |_) | |_| |${C_RESET}"
+  printf '%s\n' "${C_MAGENTA} |  _ <|  __/|  _  |${C_RESET}"
+  printf '%s\n' "${C_GREEN} |_| \\_\\_|   |_| |_|${C_RESET}"
+  printf '%s\n' "${C_BOLD} Real Product Harness installer${C_RESET}"
+  printf '%s\n\n' "${C_DIM} control plane bootstrap${C_RESET}"
+}
+
 info() {
-  printf '[rph] %s\n' "$*"
+  printf '%s[rph]%s %s\n' "$C_CYAN" "$C_RESET" "$*"
+}
+
+success() {
+  printf '%s[rph:ok]%s %s\n' "$C_GREEN" "$C_RESET" "$*"
 }
 
 fail() {
-  printf '[rph:error] %s\n' "$*" >&2
+  printf '%s[rph:error]%s %s\n' "$C_RED" "$C_RESET" "$*" >&2
   exit 1
 }
 
@@ -24,6 +56,8 @@ need_command() {
 
 need_command git
 need_command node
+
+banner
 
 clone_repository() {
   if [ "${RPH_USE_GH:-auto}" != "0" ] && command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
@@ -75,7 +109,7 @@ chmod +x "$wrapper"
 
 "$wrapper" help >/dev/null
 
-info "installed: $wrapper"
+success "installed: $wrapper"
 case ":$PATH:" in
   *":$RPH_BIN_DIR:"*) ;;
   *)
@@ -84,4 +118,5 @@ case ":$PATH:" in
     ;;
 esac
 
-info "try: rph init --yes --project-name \"My Product\""
+success "try: rph"
+info "inside runtime: /init --yes --project-name \"My Product\""

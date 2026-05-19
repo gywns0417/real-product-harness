@@ -1,5 +1,7 @@
 export * from "./approvals";
+export * from "./ai";
 export * from "./commands";
+export * from "./connections";
 export * from "./documents";
 export * from "./design";
 export * from "./engineering";
@@ -16,6 +18,8 @@ export * from "./pd";
 export * from "./project";
 export * from "./qa";
 export * from "./release";
+export * from "./settings";
+export * from "./terminal";
 export * from "./time";
 export * from "./types";
 export * from "./workflow";

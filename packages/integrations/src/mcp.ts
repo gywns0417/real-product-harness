@@ -11,11 +11,12 @@ export interface McpServerConfig {
   notes: string;
 }
 
-export function createMcpConfig(): McpConfig {
+export function createMcpConfig(enabledServers: string[] = []): McpConfig {
+  const enabled = (name: string) => enabledServers.includes(name);
   return {
     mcpServers: {
       notion: {
-        enabled: false,
+        enabled: enabled("notion"),
         transport: "http",
         url: "https://mcp.notion.com/mcp",
         env: {
@@ -24,7 +25,7 @@ export function createMcpConfig(): McpConfig {
         notes: "Enable only after user approval and workspace/page permission review."
       },
       github: {
-        enabled: false,
+        enabled: enabled("github"),
         transport: "stdio",
         command: "gh",
         env: {
@@ -33,13 +34,22 @@ export function createMcpConfig(): McpConfig {
         notes: "Phase 1 uses local templates and dry-run commands by default."
       },
       figma: {
-        enabled: false,
+        enabled: enabled("figma"),
         transport: "http",
         url: "https://api.figma.com",
         env: {
           FIGMA_TOKEN: "${FIGMA_TOKEN}"
         },
         notes: "Fallback to HTML/CSS preview when disabled."
+      },
+      stitch: {
+        enabled: enabled("stitch"),
+        transport: "http",
+        url: "https://stitch.withgoogle.com",
+        env: {
+          STITCH_API_KEY: "${STITCH_API_KEY}"
+        },
+        notes: "Enable only when a live Stitch workflow is approved."
       }
     }
   };
