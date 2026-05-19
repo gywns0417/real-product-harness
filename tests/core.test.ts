@@ -10,6 +10,7 @@ import {
   diffDocumentVersions,
   exportDocumentToObsidian,
   initProject,
+  loadEnvFile,
   loadState,
   normalizeLabel,
   parseCli,
@@ -105,6 +106,16 @@ describe("command parser and env validation", () => {
     expect(result.valid).toBe(false);
     expect(result.present).toEqual(["GITHUB_TOKEN"]);
     expect(result.missing).toEqual(["GITHUB_OWNER"]);
+  });
+
+  it("loads env files without overwriting existing env", () => {
+    const envFile = path.join(root, ".env.test");
+    fs.writeFileSync(envFile, "GITHUB_OWNER=owner\nGITHUB_REPO=repo\n");
+    const env = { GITHUB_OWNER: "existing" } as NodeJS.ProcessEnv;
+    const loaded = loadEnvFile(envFile, env);
+    expect(loaded).toEqual(["GITHUB_REPO"]);
+    expect(env.GITHUB_OWNER).toBe("existing");
+    expect(env.GITHUB_REPO).toBe("repo");
   });
 });
 

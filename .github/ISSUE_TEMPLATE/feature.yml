@@ -8,10 +8,14 @@ body:
     attributes:
       label: Summary
   - type: textarea
+    id: background
+    attributes:
+      label: Background
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+  - type: textarea
     id: acceptance
     attributes:
       label: Acceptance Criteria
-  - type: textarea
-    id: tests
-    attributes:
-      label: Test Requirements

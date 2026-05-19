@@ -1,4 +1,5 @@
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { githubDir } from "./paths";
 import { ensureDir, writeJson, writeText } from "./fs";
 import { GitHubLabel } from "./types";
@@ -44,6 +45,39 @@ export function setupGitHubLabels(projectRoot: string): { labels: GitHubLabel[];
       `gh label create ${label.name} --color ${label.color} --description "${label.description}" --force`
   );
   return { labels: DEFAULT_GITHUB_LABELS, commands };
+}
+
+export interface GitHubApplyResult {
+  label: string;
+  ok: boolean;
+  message: string;
+}
+
+export function applyGitHubLabels(owner: string, repo: string, labels: GitHubLabel[] = DEFAULT_GITHUB_LABELS): GitHubApplyResult[] {
+  const repoName = `${owner}/${repo}`;
+  return labels.map((label) => {
+    const result = spawnSync(
+      "gh",
+      [
+        "label",
+        "create",
+        label.name,
+        "--repo",
+        repoName,
+        "--color",
+        label.color,
+        "--description",
+        label.description,
+        "--force"
+      ],
+      { encoding: "utf8" }
+    );
+    return {
+      label: label.name,
+      ok: result.status === 0,
+      message: result.status === 0 ? "applied" : (result.stderr || result.stdout || "unknown error").trim()
+    };
+  });
 }
 
 export function writeGitHubTemplates(projectRoot: string): string[] {

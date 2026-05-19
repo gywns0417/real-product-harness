@@ -12,6 +12,6 @@ body:
     attributes:
       label: Reproduction
   - type: textarea
-    id: acceptance
+    id: tests
     attributes:
-      label: Acceptance Criteria
+      label: Test Requirements

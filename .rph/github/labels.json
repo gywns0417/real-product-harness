@@ -1,0 +1,42 @@
+[
+  {
+    "name": "feat",
+    "color": "0E8A16",
+    "description": "New feature implementation"
+  },
+  {
+    "name": "refactor",
+    "color": "5319E7",
+    "description": "Code restructuring without behavior change"
+  },
+  {
+    "name": "chore",
+    "color": "C5DEF5",
+    "description": "Maintenance or tooling work"
+  },
+  {
+    "name": "test",
+    "color": "FBCA04",
+    "description": "Test additions or updates"
+  },
+  {
+    "name": "fix",
+    "color": "D73A4A",
+    "description": "Bug fix"
+  },
+  {
+    "name": "hotfix",
+    "color": "B60205",
+    "description": "Urgent production fix"
+  },
+  {
+    "name": "docs",
+    "color": "0075CA",
+    "description": "Documentation update"
+  },
+  {
+    "name": "release",
+    "color": "7057FF",
+    "description": "Release preparation"
+  }
+]

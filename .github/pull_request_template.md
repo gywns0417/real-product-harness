@@ -14,7 +14,7 @@
 
 - [ ] Requirements checked
 - [ ] Tests run
-- [ ] Conflicts checked
+- [ ] Conflict status checked
 - [ ] User approval required before merge
 
 ## Risk

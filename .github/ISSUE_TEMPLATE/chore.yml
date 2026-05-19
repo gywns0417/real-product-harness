@@ -8,10 +8,6 @@ body:
     attributes:
       label: Summary
   - type: textarea
-    id: scope
+    id: risk
     attributes:
-      label: Scope
-  - type: textarea
-    id: risks
-    attributes:
-      label: Risks
+      label: Risk

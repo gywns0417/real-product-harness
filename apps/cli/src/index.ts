@@ -2,8 +2,10 @@
 import path from "node:path";
 import process from "node:process";
 import readline from "node:readline/promises";
+import { spawnSync } from "node:child_process";
 import {
   approveDocument,
+  applyGitHubLabels,
   createDocumentVersion,
   createInterviewSession,
   createObsidianProject,
@@ -15,6 +17,7 @@ import {
   initProject,
   isDocumentId,
   listDocumentIndexes,
+  loadEnvFile,
   loadProject,
   loadState,
   nextStage,
@@ -38,6 +41,7 @@ import {
 async function main(): Promise<void> {
   const parsed = parseCli(process.argv.slice(2));
   const cwd = path.resolve(process.cwd());
+  loadEnvFile(path.join(cwd, ".env"));
   try {
     switch (parsed.command) {
       case "init":
@@ -293,10 +297,17 @@ function handleDocs(
 }
 
 function handleGitHub(projectRoot: string, subcommand: string | undefined): void {
-  requireInitialized(projectRoot);
   switch (subcommand) {
     case "setup-labels": {
-      const env = validateEnv(process.env, GITHUB_ENV_KEYS);
+      const repoTarget = resolveGitHubTarget(projectRoot);
+      const env = validateEnv(
+        {
+          ...process.env,
+          GITHUB_OWNER: repoTarget.owner,
+          GITHUB_REPO: repoTarget.repo
+        },
+        GITHUB_ENV_KEYS
+      );
       const result = setupGitHubLabels(projectRoot);
       console.log("GitHub label 설정 파일 생성");
       console.log(`labels: ${result.labels.length}`);
@@ -304,6 +315,18 @@ function handleGitHub(projectRoot: string, subcommand: string | undefined): void
         console.log(`[dry-run] 누락 env: ${env.missing.join(", ")}`);
         console.log("실행할 명령:");
         result.commands.forEach((command) => console.log(`- ${command}`));
+      } else {
+        const owner = repoTarget.owner;
+        const repo = repoTarget.repo;
+        if (!owner || !repo) {
+          throw new Error("GITHUB_OWNER/GITHUB_REPO missing after env validation");
+        }
+        const applied = applyGitHubLabels(owner, repo, result.labels);
+        const failed = applied.filter((item) => !item.ok);
+        applied.forEach((item) => console.log(`- ${item.label}: ${item.ok ? "applied" : item.message}`));
+        if (failed.length > 0) {
+          throw new Error(`GitHub label apply failed: ${failed.map((item) => item.label).join(", ")}`);
+        }
       }
       return;
     }
@@ -316,6 +339,38 @@ function handleGitHub(projectRoot: string, subcommand: string | undefined): void
     default:
       console.log("GitHub 명령어: setup-labels | setup-templates");
   }
+}
+
+function resolveGitHubTarget(projectRoot: string): { owner?: string; repo?: string } {
+  const fromEnv = {
+    owner: process.env.GITHUB_OWNER,
+    repo: process.env.GITHUB_REPO
+  };
+  if (fromEnv.owner && fromEnv.repo) {
+    return fromEnv;
+  }
+  const remote = spawnSync("git", ["remote", "get-url", "origin"], {
+    cwd: projectRoot,
+    encoding: "utf8"
+  });
+  const url = remote.status === 0 ? remote.stdout.trim() : "";
+  const parsed = parseGitHubRemote(url);
+  return {
+    owner: fromEnv.owner || parsed?.owner,
+    repo: fromEnv.repo || parsed?.repo
+  };
+}
+
+function parseGitHubRemote(url: string): { owner: string; repo: string } | null {
+  const httpsMatch = url.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?$/);
+  if (httpsMatch) {
+    return { owner: httpsMatch[1], repo: httpsMatch[2].replace(/\.git$/, "") };
+  }
+  const sshMatch = url.match(/^git@github\.com:([^/]+)\/([^/]+?)(?:\.git)?$/);
+  if (sshMatch) {
+    return { owner: sshMatch[1], repo: sshMatch[2].replace(/\.git$/, "") };
+  }
+  return null;
 }
 
 function parseDocId(value: string | undefined): (typeof DOCUMENT_IDS)[number] {
