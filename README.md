@@ -4,6 +4,21 @@ AI agent workflow CLI for real product delivery: PM interview, versioned documen
 
 ## Install
 
+One-command install:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/gywns0417/real-product-harness/main/install.sh | bash
+```
+
+This installs the CLI into `~/.real-product-harness` and creates `~/.local/bin/rph`.
+If `rph` is not found after install, add `~/.local/bin` to your shell `PATH`.
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Manual local install:
+
 ```bash
 pnpm install
 pnpm build
