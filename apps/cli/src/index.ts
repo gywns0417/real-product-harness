@@ -1,11 +1,15 @@
 #!/usr/bin/env node
+import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import readline from "node:readline/promises";
 import { spawnSync } from "node:child_process";
 import {
+  advanceAfterPmApproval,
+  advanceAfterPmDraft,
   approveDocument,
   applyGitHubLabels,
+  canFinalizePm,
   createDocumentVersion,
   createGitHubRepo,
   createInterviewSession,
@@ -25,6 +29,7 @@ import {
   optionBool,
   optionString,
   parseCli,
+  preparePmDraftState,
   readDocumentIndex,
   renderInterview,
   requireInitialized,
@@ -32,6 +37,7 @@ import {
   saveState,
   setupGitHubLabels,
   showDocument,
+  stripFrontmatter,
   syncStateDocuments,
   transitionState,
   validateEnv,
@@ -185,13 +191,19 @@ function handlePm(
       pmInterview(projectRoot, args[0]);
       return;
     case "draft":
-      pmDraft(projectRoot, args[0]);
+      pmDraft(projectRoot, args[0], options);
+      return;
+    case "revise":
+      pmRevise(projectRoot, args[0], options);
       return;
     case "approve":
       pmApprove(projectRoot, args[0], optionString(options, "by") ?? "user");
       return;
+    case "finalize":
+      pmFinalize(projectRoot);
+      return;
     default:
-      console.log("PM 명령어: start | interview | draft <docId> | approve <docId>");
+      console.log("PM 명령어: start | interview | draft <docId> | revise <docId> | approve <docId> | finalize");
   }
 }
 
@@ -211,20 +223,34 @@ function pmInterview(projectRoot: string, docArg?: string): void {
   console.log(renderInterview(session));
 }
 
-function pmDraft(projectRoot: string, docArg?: string): void {
+function pmDraft(projectRoot: string, docArg: string | undefined, options: Record<string, string | boolean>): void {
   const docId = parseDocId(docArg ?? "product-definition");
+  const body = bodyFromOptions(options);
   const index = createDocumentVersion(projectRoot, docId, {
-    changeSummary: "Initial PM draft",
-    body: undefined
+    changeSummary: optionString(options, "summary") ?? "Initial PM draft",
+    body
   });
-  let state = syncStateDocuments(loadState(projectRoot), index);
-  if (docId === "product-definition" && state.currentStage === "PM_PRODUCT_DEFINITION_INTERVIEW") {
-    state = transitionState(state, "PM_PRODUCT_DEFINITION_DRAFT", "product definition draft created");
-    state = transitionState(state, "PM_PRODUCT_DEFINITION_REVIEW", "product definition ready for review");
-  }
+  const prepared = preparePmDraftState(loadState(projectRoot), docId);
+  const state = advanceAfterPmDraft(syncStateDocuments(prepared, index), docId);
   saveState(projectRoot, state);
   console.log(`문서 초안 생성: ${docId} ${index.currentVersion}`);
   console.log(`승인 전 다음 큰 단계 진행 금지: rph pm approve ${docId}`);
+}
+
+function pmRevise(projectRoot: string, docArg: string | undefined, options: Record<string, string | boolean>): void {
+  const docId = parseDocId(docArg ?? "product-definition");
+  const fromVersion = optionString(options, "from");
+  const fileBody = bodyFromOptions(options);
+  const body = fileBody ?? stripFrontmatter(showDocument(projectRoot, docId, fromVersion));
+  const index = createDocumentVersion(projectRoot, docId, {
+    changeSummary: optionString(options, "summary") ?? `Revision from ${fromVersion ?? "current"}`,
+    status: "revised",
+    body
+  });
+  const state = syncStateDocuments(loadState(projectRoot), index);
+  saveState(projectRoot, state);
+  console.log(`문서 수정본 생성: ${docId} ${index.currentVersion}`);
+  console.log(`검토 후 승인: rph pm approve ${docId}`);
 }
 
 function pmApprove(projectRoot: string, docArg?: string, approvedBy = "user"): void {
@@ -232,12 +258,24 @@ function pmApprove(projectRoot: string, docArg?: string, approvedBy = "user"): v
   const approval = approveDocument(projectRoot, docId, approvedBy);
   let state = loadState(projectRoot);
   state = syncStateDocuments(state, readDocumentIndex(projectRoot, docId));
-  if (docId === "product-definition" && state.currentStage === "PM_PRODUCT_DEFINITION_REVIEW") {
-    state = transitionState(state, "PM_PRODUCT_DEFINITION_APPROVED", "product definition approved by user");
-  }
+  state = advanceAfterPmApproval(state, docId);
   saveState(projectRoot, state);
   console.log(`[승인 완료] ${approval.docId} ${approval.version}`);
   console.log(`승인자: ${approval.approvedBy}`);
+}
+
+function pmFinalize(projectRoot: string): void {
+  const state = loadState(projectRoot);
+  const check = canFinalizePm(state);
+  if (!check.ok) {
+    throw new Error(`PM finalize blocked. missing approvals: ${check.missing.join(", ")}`);
+  }
+  const next = state.currentStage === "PM_FEATURE_DEFINITION_APPROVED"
+    ? transitionState(state, "PM_APPROVED", "all PM documents approved")
+    : state;
+  saveState(projectRoot, next);
+  console.log("PM 산출물 최종 확정 완료");
+  console.log("다음: rph status");
 }
 
 function handleDocs(
@@ -283,13 +321,19 @@ function handleDocs(
       if (args[0] !== "obsidian") {
         throw new Error("usage: rph docs export obsidian <docId> --path <vaultProjectPath>");
       }
-      const docId = parseDocId(args[1]);
       const target = optionString(options, "path");
       if (!target) {
         throw new Error("Obsidian target missing: --path <vaultProjectPath>");
       }
-      const filePath = exportDocumentToObsidian(projectRoot, target, docId);
-      console.log(`Obsidian export 완료: ${filePath}`);
+      if (args[1] === "all") {
+        const files = listDocumentIndexes(projectRoot).map((index) => exportDocumentToObsidian(projectRoot, target, index.docId));
+        console.log(`Obsidian export 완료: ${files.length} files`);
+        files.forEach((file) => console.log(`- ${file}`));
+      } else {
+        const docId = parseDocId(args[1]);
+        const filePath = exportDocumentToObsidian(projectRoot, target, docId);
+        console.log(`Obsidian export 완료: ${filePath}`);
+      }
       return;
     }
     default:
@@ -411,17 +455,47 @@ function parseDocId(value: string | undefined): (typeof DOCUMENT_IDS)[number] {
   return value;
 }
 
+function bodyFromOptions(options: Record<string, string | boolean>): string | undefined {
+  const filePath = optionString(options, "file");
+  if (!filePath) {
+    return undefined;
+  }
+  return fs.readFileSync(path.resolve(filePath), "utf8");
+}
+
 function recommendedCommand(stage: string): string {
   if (stage.includes("INTERVIEW")) {
-    return "rph pm interview";
+    return `rph pm interview ${recommendedDoc(stage)}`;
   }
   if (stage.includes("DRAFT")) {
-    return "rph pm draft product-definition";
+    return `rph pm draft ${recommendedDoc(stage)}`;
+  }
+  if (stage === "PM_COMPETITOR_ANALYSIS") {
+    return "rph pm draft competitor-analysis";
+  }
+  if (stage === "PM_DIFFERENTIATION") {
+    return "rph pm draft differentiation";
   }
   if (stage.includes("REVIEW")) {
-    return "rph pm approve product-definition";
+    return `rph pm approve ${recommendedDoc(stage)}`;
+  }
+  if (stage === "PM_FEATURE_DEFINITION_APPROVED") {
+    return "rph pm finalize";
   }
   return "rph status";
+}
+
+function recommendedDoc(stage: string): string {
+  if (stage.includes("REQUIREMENTS")) {
+    return "requirements";
+  }
+  if (stage.includes("SCREEN_DEFINITION")) {
+    return "screen-definition";
+  }
+  if (stage.includes("FEATURE_DEFINITION")) {
+    return "feature-definition";
+  }
+  return "product-definition";
 }
 
 async function runInitialWizard(
@@ -457,13 +531,15 @@ function printHelp(): void {
     "  rph pause | resume | cancel",
     "  rph pm start",
     "  rph pm interview [docId]",
-    "  rph pm draft <docId>",
+    "  rph pm draft <docId> [--file <markdown>] [--summary <text>]",
+    "  rph pm revise <docId> [--from <version>] [--file <markdown>] [--summary <text>]",
     "  rph pm approve <docId> [--by <name>]",
+    "  rph pm finalize",
     "  rph docs list",
     "  rph docs show <docId> [version]",
     "  rph docs diff <docId> <fromVersion> <toVersion>",
     "  rph docs rollback <docId> --to <version>",
-    "  rph docs export obsidian <docId> --path <vaultProjectPath>",
+    "  rph docs export obsidian <docId|all> --path <vaultProjectPath>",
     "  rph github create-repo",
     "  rph github setup-labels",
     "  rph github setup-templates",

@@ -4,6 +4,9 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   approveDocument,
+  advanceAfterPmApproval,
+  advanceAfterPmDraft,
+  canFinalizePm,
   createGitHubRepo,
   createBranchName,
   createDocumentVersion,
@@ -15,6 +18,7 @@ import {
   loadState,
   normalizeLabel,
   parseCli,
+  preparePmDraftState,
   readDocumentIndex,
   setupGitHubLabels,
   showDocument,
@@ -44,6 +48,34 @@ describe("workflow state machine", () => {
   it("blocks approval stage without required approval", () => {
     const state = loadState(root);
     expect(() => transitionState(state, "PM_PRODUCT_DEFINITION_APPROVED", "test")).toThrow(/required approval|cannot move/);
+  });
+
+  it("advances PM documents through approval gates", () => {
+    let state = transitionState(loadState(root), "PM_PRODUCT_DEFINITION_INTERVIEW", "start");
+    let index = createDocumentVersion(root, "product-definition", { changeSummary: "initial" });
+    state = advanceAfterPmDraft(syncStateDocuments(state, index), "product-definition");
+    expect(state.currentStage).toBe("PM_PRODUCT_DEFINITION_REVIEW");
+    approveDocument(root, "product-definition", "tester");
+    state = advanceAfterPmApproval(syncStateDocuments(state, readDocumentIndex(root, "product-definition")), "product-definition");
+    expect(state.currentStage).toBe("PM_PRODUCT_DEFINITION_APPROVED");
+
+    state = preparePmDraftState(state, "competitor-analysis");
+    expect(state.currentStage).toBe("PM_COMPETITOR_ANALYSIS");
+    index = createDocumentVersion(root, "competitor-analysis", { changeSummary: "initial" });
+    approveDocument(root, "competitor-analysis", "tester");
+    state = advanceAfterPmApproval(syncStateDocuments(state, readDocumentIndex(root, "competitor-analysis")), "competitor-analysis");
+    expect(state.currentStage).toBe("PM_DIFFERENTIATION");
+
+    index = createDocumentVersion(root, "differentiation", { changeSummary: "initial" });
+    approveDocument(root, "differentiation", "tester");
+    state = advanceAfterPmApproval(syncStateDocuments(state, readDocumentIndex(root, "differentiation")), "differentiation");
+    expect(state.currentStage).toBe("PM_REQUIREMENTS_INTERVIEW");
+    expect(index.docId).toBe("differentiation");
+  });
+
+  it("reports PM finalize blockers", () => {
+    const state = loadState(root);
+    expect(canFinalizePm(state).missing).toContain("product-definition");
   });
 });
 

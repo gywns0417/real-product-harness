@@ -22,9 +22,12 @@
 - `rph pm interview`
 - `rph pm draft product-definition`
 - `rph pm approve product-definition`
+- `rph pm revise <docId> --from <version> --file <markdown>`
+- `rph pm finalize`
 - `rph docs list`
 - `rph docs show <docId>`
 - `rph docs diff <docId> <fromVersion> <toVersion>`
 - `rph docs rollback <docId> --to <version>`
+- `rph docs export obsidian all --path <vaultProjectPath>`
 - `rph github setup-labels`
 - `rph github setup-templates`

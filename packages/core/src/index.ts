@@ -6,6 +6,7 @@ export * from "./fs";
 export * from "./github";
 export * from "./interviews";
 export * from "./obsidian";
+export * from "./pm";
 export * from "./paths";
 export * from "./project";
 export * from "./time";
