@@ -9,6 +9,16 @@ export const DOCUMENT_IDS = [
 
 export type DocumentId = (typeof DOCUMENT_IDS)[number];
 
+export const DESIGN_ARTIFACT_IDS = [
+  "references",
+  "directions",
+  "landing-preview",
+  "design-system",
+  "page-designs"
+] as const;
+
+export type DesignArtifactId = (typeof DESIGN_ARTIFACT_IDS)[number];
+
 export type AgentRole = "Orchestrator" | "PM" | "PD" | "FE" | "BE" | "QA";
 
 export type DocumentStatus = "draft" | "review" | "revised" | "approved";
@@ -59,6 +69,8 @@ export interface WorkflowStage {
   prerequisites: WorkflowStageId[];
   requiredDocuments: DocumentId[];
   requiredApprovals: DocumentId[];
+  requiredDesignArtifacts: DesignArtifactId[];
+  requiredDesignApprovals: DesignArtifactId[];
   allowedCommands: string[];
   nextStages: WorkflowStageId[];
   rollbackTargets: WorkflowStageId[];
@@ -92,6 +104,7 @@ export interface ProjectState {
   paused: boolean;
   history: StageHistoryEntry[];
   documents: Partial<Record<DocumentId, DocumentIndex>>;
+  designArtifacts?: Partial<Record<DesignArtifactId, DesignArtifactIndex>>;
   updatedAt: string;
 }
 
@@ -127,6 +140,35 @@ export interface DocumentVersionMeta {
 export interface Approval {
   id: string;
   docId: DocumentId;
+  version: string;
+  approvedBy: string;
+  approvedAt: string;
+  summary: string;
+}
+
+export interface DesignArtifactIndex {
+  artifactId: DesignArtifactId;
+  currentVersion: string | null;
+  status: DocumentStatus;
+  versions: DesignArtifactVersionMeta[];
+}
+
+export interface DesignArtifactVersionMeta {
+  version: string;
+  status: DocumentStatus;
+  ownerAgent: "PD";
+  createdAt: string;
+  updatedAt: string;
+  changeSummary: string;
+  filePath: string;
+  approvedBy: string | null;
+  approvedAt: string | null;
+  rollbackAvailable: boolean;
+}
+
+export interface DesignApproval {
+  id: string;
+  artifactId: DesignArtifactId;
   version: string;
   approvedBy: string;
   approvedAt: string;

@@ -28,10 +28,26 @@ export function approvalsFile(projectRoot: string): string {
   return path.join(rphDir(projectRoot), "approvals", "approvals.json");
 }
 
+export function designApprovalsFile(projectRoot: string): string {
+  return path.join(rphDir(projectRoot), "approvals", "design-approvals.json");
+}
+
 export function interviewsDir(projectRoot: string, docId: string): string {
   return path.join(rphDir(projectRoot), "interviews", docId);
 }
 
 export function githubDir(projectRoot: string): string {
   return path.join(rphDir(projectRoot), "github");
+}
+
+export function designDir(projectRoot: string): string {
+  return path.join(rphDir(projectRoot), "design");
+}
+
+export function designArtifactDir(projectRoot: string, artifactId: string): string {
+  return path.join(designDir(projectRoot), artifactId);
+}
+
+export function designArtifactIndexFile(projectRoot: string, artifactId: string): string {
+  return path.join(designArtifactDir(projectRoot, artifactId), "index.json");
 }

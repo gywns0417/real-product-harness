@@ -1,4 +1,4 @@
-import { DocumentId, ProjectState, WorkflowStage, WorkflowStageId } from "./types";
+import { DesignArtifactId, DocumentId, ProjectState, WorkflowStage, WorkflowStageId } from "./types";
 import { nowIso } from "./time";
 
 export const WORKFLOW_STAGES: Record<WorkflowStageId, WorkflowStage> = {
@@ -24,12 +24,12 @@ export const WORKFLOW_STAGES: Record<WorkflowStageId, WorkflowStage> = {
   PM_FEATURE_DEFINITION_APPROVED: stage("PM_FEATURE_DEFINITION_APPROVED", "Feature definition approved", "PM", ["PM_FEATURE_DEFINITION_REVIEW"], ["feature-definition"], ["feature-definition"], ["PM_APPROVED"], ["PM_FEATURE_DEFINITION_REVIEW"]),
   PM_APPROVED: stage("PM_APPROVED", "PM approved", "Orchestrator", ["PM_FEATURE_DEFINITION_APPROVED"], ["product-definition", "competitor-analysis", "differentiation", "requirements", "screen-definition", "feature-definition"], ["product-definition", "competitor-analysis", "differentiation", "requirements", "screen-definition", "feature-definition"], ["PD_REFERENCES"], ["PM_FEATURE_DEFINITION_APPROVED"]),
   PD_REFERENCES: stage("PD_REFERENCES", "PD references", "PD", ["PM_APPROVED"], [], [], ["PD_DIRECTIONS"], ["PM_APPROVED"]),
-  PD_DIRECTIONS: stage("PD_DIRECTIONS", "PD directions", "PD", ["PD_REFERENCES"], [], [], ["PD_LANDING_PREVIEWS"], ["PD_REFERENCES"]),
-  PD_LANDING_PREVIEWS: stage("PD_LANDING_PREVIEWS", "Landing previews", "PD", ["PD_DIRECTIONS"], [], [], ["PD_DESIGN_SYSTEM"], ["PD_DIRECTIONS"]),
-  PD_DESIGN_SYSTEM: stage("PD_DESIGN_SYSTEM", "Design system", "PD", ["PD_LANDING_PREVIEWS"], [], [], ["PD_PAGE_DESIGNS"], ["PD_LANDING_PREVIEWS"]),
-  PD_PAGE_DESIGNS: stage("PD_PAGE_DESIGNS", "Page designs", "PD", ["PD_DESIGN_SYSTEM"], [], [], ["PD_REVIEW"], ["PD_DESIGN_SYSTEM"]),
-  PD_REVIEW: stage("PD_REVIEW", "PD review", "PD", ["PD_PAGE_DESIGNS"], [], [], ["PD_APPROVED"], ["PD_PAGE_DESIGNS"]),
-  PD_APPROVED: stage("PD_APPROVED", "PD approved", "PD", ["PD_REVIEW"], [], [], ["FE_SPEC", "BE_SPEC"], ["PD_REVIEW"]),
+  PD_DIRECTIONS: stage("PD_DIRECTIONS", "PD directions", "PD", ["PD_REFERENCES"], [], [], ["PD_LANDING_PREVIEWS"], ["PD_REFERENCES"], ["references"], ["references"]),
+  PD_LANDING_PREVIEWS: stage("PD_LANDING_PREVIEWS", "Landing previews", "PD", ["PD_DIRECTIONS"], [], [], ["PD_DESIGN_SYSTEM"], ["PD_DIRECTIONS"], ["directions"], ["directions"]),
+  PD_DESIGN_SYSTEM: stage("PD_DESIGN_SYSTEM", "Design system", "PD", ["PD_LANDING_PREVIEWS"], [], [], ["PD_PAGE_DESIGNS"], ["PD_LANDING_PREVIEWS"], ["landing-preview"], ["landing-preview"]),
+  PD_PAGE_DESIGNS: stage("PD_PAGE_DESIGNS", "Page designs", "PD", ["PD_DESIGN_SYSTEM"], [], [], ["PD_REVIEW"], ["PD_DESIGN_SYSTEM"], ["design-system"], ["design-system"]),
+  PD_REVIEW: stage("PD_REVIEW", "PD review", "PD", ["PD_PAGE_DESIGNS"], [], [], ["PD_APPROVED"], ["PD_PAGE_DESIGNS"], ["page-designs"], ["page-designs"]),
+  PD_APPROVED: stage("PD_APPROVED", "PD approved", "PD", ["PD_REVIEW"], [], [], ["FE_SPEC", "BE_SPEC"], ["PD_REVIEW"], ["references", "directions", "landing-preview", "design-system", "page-designs"], ["references", "directions", "landing-preview", "design-system", "page-designs"]),
   FE_SPEC: stage("FE_SPEC", "FE specification", "FE", ["PD_APPROVED"], [], [], ["SPRINT_PLANNING"], ["PD_APPROVED"]),
   BE_SPEC: stage("BE_SPEC", "BE specification", "BE", ["PD_APPROVED"], [], [], ["SPRINT_PLANNING"], ["PD_APPROVED"]),
   SPRINT_PLANNING: stage("SPRINT_PLANNING", "Sprint planning", "Orchestrator", ["FE_SPEC", "BE_SPEC"], [], [], ["IMPLEMENTATION"], ["FE_SPEC", "BE_SPEC"]),
@@ -49,7 +49,9 @@ function stage(
   requiredDocuments: DocumentId[],
   requiredApprovals: DocumentId[],
   nextStages: WorkflowStageId[],
-  rollbackTargets: WorkflowStageId[]
+  rollbackTargets: WorkflowStageId[],
+  requiredDesignArtifacts: DesignArtifactId[] = [],
+  requiredDesignApprovals: DesignArtifactId[] = []
 ): WorkflowStage {
   return {
     id,
@@ -58,6 +60,8 @@ function stage(
     prerequisites,
     requiredDocuments,
     requiredApprovals,
+    requiredDesignArtifacts,
+    requiredDesignApprovals,
     allowedCommands: ["status", "docs list", "docs show", "pause", "resume", "cancel"],
     nextStages,
     rollbackTargets
@@ -81,6 +85,18 @@ export function canTransition(state: ProjectState, to: WorkflowStageId): { ok: b
     const doc = state.documents[docId];
     if (doc?.status !== "approved") {
       reasons.push(`required approval missing: ${docId}`);
+    }
+  }
+  for (const artifactId of target.requiredDesignArtifacts) {
+    const artifact = state.designArtifacts?.[artifactId];
+    if (!artifact?.currentVersion) {
+      reasons.push(`required design artifact missing: ${artifactId}`);
+    }
+  }
+  for (const artifactId of target.requiredDesignApprovals) {
+    const artifact = state.designArtifacts?.[artifactId];
+    if (artifact?.status !== "approved") {
+      reasons.push(`required design approval missing: ${artifactId}`);
     }
   }
   return { ok: reasons.length === 0, reasons };

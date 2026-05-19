@@ -7,21 +7,31 @@ import { spawnSync } from "node:child_process";
 import {
   advanceAfterPmApproval,
   advanceAfterPmDraft,
+  advanceAfterPdApproval,
+  approveDesignArtifact,
   approveDocument,
   applyGitHubLabels,
   canFinalizePm,
+  canFinalizePd,
   createDocumentVersion,
+  createDesignArtifactVersion,
   createGitHubRepo,
   createInterviewSession,
+  createLandingPreviewHtml,
   createObsidianProject,
+  DESIGN_ARTIFACT_IDS,
+  DESIGN_ARTIFACT_TITLES,
   diffDocumentVersions,
   DOCUMENT_IDS,
   DOCUMENT_TITLES,
+  DesignArtifactId,
   exportDocumentToObsidian,
+  exportDesignArtifactToObsidian,
   GITHUB_ENV_KEYS,
   initProject,
   isDocumentId,
   listDocumentIndexes,
+  listDesignArtifactIndexes,
   loadEnvFile,
   loadProject,
   loadState,
@@ -29,15 +39,20 @@ import {
   optionBool,
   optionString,
   parseCli,
+  preparePdArtifactState,
   preparePmDraftState,
+  ProjectState,
   readDocumentIndex,
+  readDesignArtifactIndex,
   renderInterview,
   requireInitialized,
   rollbackDocument,
   saveState,
   setupGitHubLabels,
   showDocument,
+  showDesignArtifact,
   stripFrontmatter,
+  syncStateDesignArtifacts,
   syncStateDocuments,
   transitionState,
   validateEnv,
@@ -71,6 +86,9 @@ async function main(): Promise<void> {
         break;
       case "pm":
         handlePm(cwd, parsed.subcommand, parsed.args, parsed.options);
+        break;
+      case "pd":
+        handlePd(cwd, parsed.subcommand, parsed.args, parsed.options);
         break;
       case "docs":
         handleDocs(cwd, parsed.subcommand, parsed.args, parsed.options);
@@ -143,10 +161,27 @@ function handleStatus(projectRoot: string): void {
       console.log(`승인 완료: ${fulfilled.join(", ")}`);
     }
   }
+  if (stage.requiredDesignApprovals.length > 0) {
+    const pending = stage.requiredDesignApprovals.filter((artifactId) => state.designArtifacts?.[artifactId]?.status !== "approved");
+    const fulfilled = stage.requiredDesignApprovals.filter((artifactId) => state.designArtifacts?.[artifactId]?.status === "approved");
+    if (pending.length > 0) {
+      console.log(`PD 승인 필요: ${pending.join(", ")}`);
+    }
+    if (fulfilled.length > 0) {
+      console.log(`PD 승인 완료: ${fulfilled.join(", ")}`);
+    }
+  }
   const docs = listDocumentIndexes(projectRoot);
   console.log(`문서: ${docs.length}`);
   for (const doc of docs) {
     console.log(`- ${doc.docId} ${doc.currentVersion} ${doc.status}`);
+  }
+  const designArtifacts = Object.values(state.designArtifacts ?? {}).filter((artifact) => artifact?.currentVersion);
+  console.log(`PD 산출물: ${designArtifacts.length}`);
+  for (const artifact of designArtifacts) {
+    if (artifact) {
+      console.log(`- ${artifact.artifactId} ${artifact.currentVersion} ${artifact.status}`);
+    }
   }
 }
 
@@ -159,7 +194,7 @@ function handleNext(projectRoot: string): void {
     return;
   }
   console.log(`다음 권장 단계: ${next}`);
-  console.log(`명령어: ${recommendedCommand(next)}`);
+  console.log(`명령어: ${recommendedCommand(state, next)}`);
 }
 
 function handlePause(projectRoot: string, paused: boolean): void {
@@ -226,11 +261,11 @@ function pmInterview(projectRoot: string, docArg?: string): void {
 function pmDraft(projectRoot: string, docArg: string | undefined, options: Record<string, string | boolean>): void {
   const docId = parseDocId(docArg ?? "product-definition");
   const body = bodyFromOptions(options);
+  const prepared = preparePmDraftState(loadState(projectRoot), docId);
   const index = createDocumentVersion(projectRoot, docId, {
     changeSummary: optionString(options, "summary") ?? "Initial PM draft",
     body
   });
-  const prepared = preparePmDraftState(loadState(projectRoot), docId);
   const state = advanceAfterPmDraft(syncStateDocuments(prepared, index), docId);
   saveState(projectRoot, state);
   console.log(`문서 초안 생성: ${docId} ${index.currentVersion}`);
@@ -339,6 +374,151 @@ function handleDocs(
     default:
       console.log("Docs 명령어: list | show <docId> | diff <docId> <from> <to> | rollback <docId> --to <version> | export obsidian <docId> --path <path>");
   }
+}
+
+function handlePd(
+  projectRoot: string,
+  subcommand: string | undefined,
+  args: string[],
+  options: Record<string, string | boolean>
+): void {
+  requireInitialized(projectRoot);
+  switch (subcommand) {
+    case "start":
+      pdStart(projectRoot);
+      return;
+    case "references":
+      pdCreateArtifact(projectRoot, "references", options);
+      return;
+    case "directions":
+    case "moodboards":
+      pdCreateArtifact(projectRoot, "directions", options);
+      return;
+    case "landing-preview":
+      pdCreateArtifact(projectRoot, "landing-preview", options);
+      return;
+    case "design-system":
+      pdCreateArtifact(projectRoot, "design-system", options);
+      return;
+    case "pages":
+      pdCreateArtifact(projectRoot, "page-designs", options);
+      return;
+    case "show":
+      pdShow(projectRoot, args[0], args[1]);
+      return;
+    case "revise":
+      pdRevise(projectRoot, args[0], options);
+      return;
+    case "approve":
+      pdApprove(projectRoot, args[0], optionString(options, "by") ?? "user");
+      return;
+    case "finalize":
+      pdFinalize(projectRoot);
+      return;
+    case "export":
+      pdExport(projectRoot, args, options);
+      return;
+    default:
+      console.log("PD 명령어: start | references | directions | landing-preview | design-system | pages | show <artifactId> | revise <artifactId> | approve <artifactId> | finalize");
+  }
+}
+
+function pdExport(projectRoot: string, args: string[], options: Record<string, string | boolean>): void {
+  if (args[0] !== "obsidian") {
+    throw new Error("usage: rph pd export obsidian <artifactId|all> --path <vaultProjectPath>");
+  }
+  const target = optionString(options, "path");
+  if (!target) {
+    throw new Error("Obsidian target missing: --path <vaultProjectPath>");
+  }
+  if (args[1] === "all") {
+    const files = listDesignArtifactIndexes(projectRoot).map((index) =>
+      exportDesignArtifactToObsidian(projectRoot, target, index.artifactId)
+    );
+    console.log(`PD Obsidian export 완료: ${files.length} files`);
+    files.forEach((file) => console.log(`- ${file}`));
+    return;
+  }
+  const artifactId = parseDesignArtifactId(args[1]);
+  const filePath = exportDesignArtifactToObsidian(projectRoot, target, artifactId);
+  console.log(`PD Obsidian export 완료: ${filePath}`);
+}
+
+function pdStart(projectRoot: string): void {
+  const state = loadState(projectRoot);
+  if (state.currentStage !== "PM_APPROVED" && state.currentStage !== "PD_REFERENCES") {
+    throw new Error(`PD start blocked. current stage must be PM_APPROVED. current: ${state.currentStage}`);
+  }
+  const next = state.currentStage === "PM_APPROVED"
+    ? transitionState(state, "PD_REFERENCES", "PD workflow started")
+    : state;
+  saveState(projectRoot, next);
+  console.log("PD 워크플로우 시작");
+  console.log("다음: rph pd references");
+}
+
+function pdCreateArtifact(
+  projectRoot: string,
+  artifactId: (typeof DESIGN_ARTIFACT_IDS)[number],
+  options: Record<string, string | boolean>
+): void {
+  const body = bodyFromOptions(options);
+  const prepared = preparePdArtifactState(loadState(projectRoot), artifactId);
+  const index = createDesignArtifactVersion(projectRoot, artifactId, {
+    changeSummary: optionString(options, "summary") ?? "Initial PD draft",
+    body
+  });
+  const state = syncStateDesignArtifacts(prepared, index);
+  saveState(projectRoot, state);
+  console.log(`PD 산출물 생성: ${artifactId} ${index.currentVersion}`);
+  if (artifactId === "landing-preview") {
+    console.log(`HTML fallback preview: ${createLandingPreviewHtml(projectRoot)}`);
+  }
+  console.log(`승인 전 다음 큰 단계 진행 금지: rph pd approve ${artifactId}`);
+}
+
+function pdShow(projectRoot: string, artifactArg?: string, version?: string): void {
+  const artifactId = parseDesignArtifactId(artifactArg);
+  console.log(showDesignArtifact(projectRoot, artifactId, version));
+}
+
+function pdRevise(projectRoot: string, artifactArg: string | undefined, options: Record<string, string | boolean>): void {
+  const artifactId = parseDesignArtifactId(artifactArg);
+  const fromVersion = optionString(options, "from");
+  const fileBody = bodyFromOptions(options);
+  const body = fileBody ?? stripFrontmatter(showDesignArtifact(projectRoot, artifactId, fromVersion));
+  const index = createDesignArtifactVersion(projectRoot, artifactId, {
+    changeSummary: optionString(options, "summary") ?? `Revision from ${fromVersion ?? "current"}`,
+    status: "revised",
+    body
+  });
+  const state = syncStateDesignArtifacts(loadState(projectRoot), index);
+  saveState(projectRoot, state);
+  console.log(`PD 산출물 수정본 생성: ${artifactId} ${index.currentVersion}`);
+}
+
+function pdApprove(projectRoot: string, artifactArg: string | undefined, approvedBy = "user"): void {
+  const artifactId = parseDesignArtifactId(artifactArg);
+  const approval = approveDesignArtifact(projectRoot, artifactId, approvedBy);
+  let state = syncStateDesignArtifacts(loadState(projectRoot), readDesignArtifactIndex(projectRoot, artifactId));
+  state = advanceAfterPdApproval(state, artifactId);
+  saveState(projectRoot, state);
+  console.log(`[승인 완료] ${approval.artifactId} ${approval.version}`);
+  console.log(`승인자: ${approval.approvedBy}`);
+}
+
+function pdFinalize(projectRoot: string): void {
+  const state = loadState(projectRoot);
+  const check = canFinalizePd(state);
+  if (!check.ok) {
+    throw new Error(`PD finalize blocked. missing approvals: ${check.missing.join(", ")}`);
+  }
+  const next = state.currentStage === "PD_REVIEW"
+    ? transitionState(state, "PD_APPROVED", "all PD artifacts approved")
+    : state;
+  saveState(projectRoot, next);
+  console.log("PD 산출물 최종 확정 완료");
+  console.log("다음: FE/BE spec");
 }
 
 function handleGitHub(projectRoot: string, subcommand: string | undefined): void {
@@ -455,6 +635,13 @@ function parseDocId(value: string | undefined): (typeof DOCUMENT_IDS)[number] {
   return value;
 }
 
+function parseDesignArtifactId(value: string | undefined): (typeof DESIGN_ARTIFACT_IDS)[number] {
+  if (!value || !(DESIGN_ARTIFACT_IDS as readonly string[]).includes(value)) {
+    throw new Error(`invalid design artifact id: ${value ?? "(empty)"}. allowed: ${DESIGN_ARTIFACT_IDS.join(", ")}`);
+  }
+  return value as (typeof DESIGN_ARTIFACT_IDS)[number];
+}
+
 function bodyFromOptions(options: Record<string, string | boolean>): string | undefined {
   const filePath = optionString(options, "file");
   if (!filePath) {
@@ -463,7 +650,11 @@ function bodyFromOptions(options: Record<string, string | boolean>): string | un
   return fs.readFileSync(path.resolve(filePath), "utf8");
 }
 
-function recommendedCommand(stage: string): string {
+function recommendedCommand(state: ProjectState, stage: string): string {
+  const pdCommand = recommendedPdCommand(state);
+  if (pdCommand) {
+    return pdCommand;
+  }
   if (stage.includes("INTERVIEW")) {
     return `rph pm interview ${recommendedDoc(stage)}`;
   }
@@ -481,6 +672,42 @@ function recommendedCommand(stage: string): string {
   }
   if (stage === "PM_FEATURE_DEFINITION_APPROVED") {
     return "rph pm finalize";
+  }
+  return "rph status";
+}
+
+function recommendedPdCommand(state: ProjectState): string | null {
+  switch (state.currentStage) {
+    case "PM_APPROVED":
+      return "rph pd start";
+    case "PD_REFERENCES":
+      return recommendedDesignArtifactAction(state, "references", "rph pd references");
+    case "PD_DIRECTIONS":
+      return recommendedDesignArtifactAction(state, "directions", "rph pd directions");
+    case "PD_LANDING_PREVIEWS":
+      return recommendedDesignArtifactAction(state, "landing-preview", "rph pd landing-preview");
+    case "PD_DESIGN_SYSTEM":
+      return recommendedDesignArtifactAction(state, "design-system", "rph pd design-system");
+    case "PD_PAGE_DESIGNS":
+      return recommendedDesignArtifactAction(state, "page-designs", "rph pd pages");
+    case "PD_REVIEW":
+      return "rph pd finalize";
+    default:
+      return null;
+  }
+}
+
+function recommendedDesignArtifactAction(
+  state: ProjectState,
+  artifactId: DesignArtifactId,
+  createCommand: string
+): string {
+  const artifact = state.designArtifacts?.[artifactId];
+  if (!artifact?.currentVersion) {
+    return createCommand;
+  }
+  if (artifact.status !== "approved") {
+    return `rph pd approve ${artifactId}`;
   }
   return "rph status";
 }
@@ -535,6 +762,17 @@ function printHelp(): void {
     "  rph pm revise <docId> [--from <version>] [--file <markdown>] [--summary <text>]",
     "  rph pm approve <docId> [--by <name>]",
     "  rph pm finalize",
+    "  rph pd start",
+    "  rph pd references",
+    "  rph pd directions",
+    "  rph pd landing-preview",
+    "  rph pd design-system",
+    "  rph pd pages",
+    "  rph pd show <artifactId> [version]",
+    "  rph pd revise <artifactId> [--from <version>] [--file <markdown>] [--summary <text>]",
+    "  rph pd approve <artifactId> [--by <name>]",
+    "  rph pd export obsidian <artifactId|all> --path <vaultProjectPath>",
+    "  rph pd finalize",
     "  rph docs list",
     "  rph docs show <docId> [version]",
     "  rph docs diff <docId> <fromVersion> <toVersion>",
@@ -544,7 +782,8 @@ function printHelp(): void {
     "  rph github setup-labels",
     "  rph github setup-templates",
     "",
-    `Document IDs: ${DOCUMENT_IDS.map((docId) => `${docId}(${DOCUMENT_TITLES[docId]})`).join(", ")}`
+    `Document IDs: ${DOCUMENT_IDS.map((docId) => `${docId}(${DOCUMENT_TITLES[docId]})`).join(", ")}`,
+    `Design Artifact IDs: ${DESIGN_ARTIFACT_IDS.map((artifactId) => `${artifactId}(${DESIGN_ARTIFACT_TITLES[artifactId]})`).join(", ")}`
   ].join("\n"));
 }
 

@@ -1,7 +1,8 @@
 import path from "node:path";
-import { DOCUMENT_IDS, DocumentId } from "./types";
+import { DESIGN_ARTIFACT_IDS, DesignArtifactId, DOCUMENT_IDS, DocumentId } from "./types";
 import { ensureDir, writeText } from "./fs";
 import { showDocument } from "./documents";
+import { showDesignArtifact } from "./design";
 
 export const OBSIDIAN_STRUCTURE = [
   "00_Meta",
@@ -12,8 +13,8 @@ export const OBSIDIAN_STRUCTURE = [
   "01_PM/screen-definition",
   "01_PM/feature-definition",
   "02_PD/references",
-  "02_PD/moodboards",
-  "02_PD/landing-previews",
+  "02_PD/directions",
+  "02_PD/landing-preview",
   "02_PD/design-system",
   "02_PD/page-designs",
   "03_FE/technical-spec",
@@ -70,4 +71,20 @@ export function documentObsidianPath(vaultProjectPath: string, docId: DocumentId
     throw new Error(`unsupported document id: ${docId}`);
   }
   return path.join(vaultProjectPath, "01_PM", docId, `${docId}.md`);
+}
+
+export function exportDesignArtifactToObsidian(projectRoot: string, vaultProjectPath: string, artifactId: DesignArtifactId): string {
+  const markdown = showDesignArtifact(projectRoot, artifactId);
+  const targetDir = path.join(vaultProjectPath, "02_PD", artifactId);
+  ensureDir(targetDir);
+  const filePath = path.join(targetDir, `${artifactId}.md`);
+  writeText(filePath, markdown);
+  return filePath;
+}
+
+export function designArtifactObsidianPath(vaultProjectPath: string, artifactId: DesignArtifactId): string {
+  if (!DESIGN_ARTIFACT_IDS.includes(artifactId)) {
+    throw new Error(`unsupported design artifact id: ${artifactId}`);
+  }
+  return path.join(vaultProjectPath, "02_PD", artifactId, `${artifactId}.md`);
 }

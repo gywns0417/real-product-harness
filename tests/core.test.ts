@@ -3,26 +3,36 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  approveDesignArtifact,
   approveDocument,
   advanceAfterPmApproval,
   advanceAfterPmDraft,
+  advanceAfterPdApproval,
   canFinalizePm,
+  canFinalizePd,
+  createDesignArtifactVersion,
   createGitHubRepo,
+  createLandingPreviewHtml,
   createBranchName,
   createDocumentVersion,
   createObsidianProject,
   diffDocumentVersions,
   exportDocumentToObsidian,
+  exportDesignArtifactToObsidian,
   initProject,
   loadEnvFile,
   loadState,
   normalizeLabel,
   parseCli,
+  preparePdArtifactState,
   preparePmDraftState,
+  ProjectState,
   readDocumentIndex,
+  readDesignArtifactIndex,
   setupGitHubLabels,
   showDocument,
   syncStateDocuments,
+  syncStateDesignArtifacts,
   transitionState,
   validateEnv
 } from "../packages/core/src";
@@ -107,6 +117,57 @@ describe("approval gate", () => {
   });
 });
 
+describe("PD workflow", () => {
+  it("blocks PD direction before references approval", () => {
+    let state = transitionState(loadState(root), "PM_PRODUCT_DEFINITION_INTERVIEW", "start");
+    state = { ...state, currentStage: "PM_APPROVED" as const };
+    state = transitionState(state, "PD_REFERENCES", "pd start");
+    expect(() => preparePdArtifactState(state, "directions")).toThrow(/required design/);
+  });
+
+  it("creates and approves PD artifacts through review", () => {
+    let state: ProjectState = { ...loadState(root), currentStage: "PM_APPROVED" };
+    state = transitionState(state, "PD_REFERENCES", "pd start");
+
+    let index = createDesignArtifactVersion(root, "references", { changeSummary: "initial" });
+    state = syncStateDesignArtifacts(state, index);
+    state = syncStateDesignArtifacts(state, approveAndReadDesign(root, "references"));
+    state = advanceAfterPdApproval(state, "references");
+    expect(state.currentStage).toBe("PD_DIRECTIONS");
+
+    index = createDesignArtifactVersion(root, "directions", { changeSummary: "initial" });
+    state = syncStateDesignArtifacts(state, index);
+    state = syncStateDesignArtifacts(state, approveAndReadDesign(root, "directions"));
+    state = advanceAfterPdApproval(state, "directions");
+    expect(state.currentStage).toBe("PD_LANDING_PREVIEWS");
+
+    index = createDesignArtifactVersion(root, "landing-preview", { changeSummary: "initial" });
+    state = syncStateDesignArtifacts(state, index);
+    expect(fs.existsSync(createLandingPreviewHtml(root))).toBe(true);
+    state = syncStateDesignArtifacts(state, approveAndReadDesign(root, "landing-preview"));
+    state = advanceAfterPdApproval(state, "landing-preview");
+    expect(state.currentStage).toBe("PD_DESIGN_SYSTEM");
+
+    index = createDesignArtifactVersion(root, "design-system", { changeSummary: "initial" });
+    state = syncStateDesignArtifacts(state, index);
+    state = syncStateDesignArtifacts(state, approveAndReadDesign(root, "design-system"));
+    state = advanceAfterPdApproval(state, "design-system");
+    expect(state.currentStage).toBe("PD_PAGE_DESIGNS");
+
+    index = createDesignArtifactVersion(root, "page-designs", { changeSummary: "initial" });
+    state = syncStateDesignArtifacts(state, index);
+    state = syncStateDesignArtifacts(state, approveAndReadDesign(root, "page-designs"));
+    state = advanceAfterPdApproval(state, "page-designs");
+    expect(state.currentStage).toBe("PD_REVIEW");
+    expect(canFinalizePd(state).ok).toBe(true);
+  });
+});
+
+function approveAndReadDesign(rootPath: string, artifactId: Parameters<typeof readDesignArtifactIndex>[1]) {
+  approveDesignArtifact(rootPath, artifactId, "tester");
+  return readDesignArtifactIndex(rootPath, artifactId);
+}
+
 describe("github helpers", () => {
   it("normalizes labels and creates branch names", () => {
     expect(normalizeLabel("refator")).toBe("refactor");
@@ -165,5 +226,15 @@ describe("obsidian export", () => {
     expect(files.length).toBeGreaterThan(0);
     expect(fs.existsSync(exported)).toBe(true);
     expect(exported).toContain(path.join("01_PM", "product-definition"));
+  });
+
+  it("exports PD artifacts to matching vault folders", () => {
+    const vault = path.join(root, "vault-project");
+    createObsidianProject(vault);
+    createDesignArtifactVersion(root, "directions", { changeSummary: "initial" });
+    const exported = exportDesignArtifactToObsidian(root, vault, "directions");
+    expect(fs.existsSync(path.join(vault, "02_PD", "landing-preview"))).toBe(true);
+    expect(fs.existsSync(exported)).toBe(true);
+    expect(exported).toContain(path.join("02_PD", "directions", "directions.md"));
   });
 });

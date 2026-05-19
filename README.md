@@ -20,6 +20,11 @@ pnpm rph pm draft product-definition
 pnpm rph pm revise product-definition --from v1.0.0
 pnpm rph pm approve product-definition
 pnpm rph pm finalize
+pnpm rph pd start
+pnpm rph pd references
+pnpm rph pd approve references
+pnpm rph pd landing-preview
+pnpm rph pd export obsidian all --path "/path/to/Obsidian/Project"
 pnpm rph docs list
 pnpm rph docs export obsidian all --path "/path/to/Obsidian/Project"
 pnpm rph github create-repo
