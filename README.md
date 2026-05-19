@@ -36,7 +36,12 @@ pnpm rph be sprint-plan
 pnpm rph fe issue-create --title "Build dashboard shell"
 pnpm rph fe work --issue 1
 pnpm rph fe pr --issue 1
+pnpm rph qa review --pr 1
+pnpm rph qa conflicts --pr 1
+pnpm rph qa test --pr 1
+pnpm rph qa report --pr 1
 pnpm rph be deploy-dev --provider local
+pnpm rph github release-plan --version v0.1.0
 pnpm rph docs list
 pnpm rph docs export obsidian all --path "/path/to/Obsidian/Project"
 pnpm rph github create-repo

@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { approvalsFile, designApprovalsFile, githubDir, interviewsDir, issueIndexFile, projectFile, rphDir, stateFile } from "./paths";
+import { approvalsFile, designApprovalsFile, githubDir, interviewsDir, issueIndexFile, projectFile, pullRequestIndexFile, rphDir, stateFile } from "./paths";
 import { ensureDir, fileExists, readJson, writeJson, writeText } from "./fs";
 import { Project, ProjectState } from "./types";
 import { newId, nowIso } from "./time";
@@ -50,6 +50,7 @@ export function initProject(projectRoot: string, options: InitProjectOptions): {
     approvalsFile(root),
     designApprovalsFile(root),
     issueIndexFile(root),
+    pullRequestIndexFile(root),
     path.join(githubDir(root), "labels.json"),
     path.join(root, ".mcp", "config.json"),
     path.join(root, ".env.example")
@@ -64,6 +65,7 @@ export function initProject(projectRoot: string, options: InitProjectOptions): {
   writeJson(approvalsFile(root), []);
   writeJson(designApprovalsFile(root), []);
   writeJson(issueIndexFile(root), { nextIssueNumber: 1, issues: [] });
+  writeJson(pullRequestIndexFile(root), { nextPrNumber: 1, pullRequests: [] });
   writeJson(path.join(root, ".mcp", "config.json"), createMcpConfig());
   if (!fileExists(path.join(root, ".env.example")) || options.force) {
     writeText(path.join(root, ".env.example"), envExample());

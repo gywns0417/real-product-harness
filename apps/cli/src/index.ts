@@ -22,8 +22,12 @@ import {
   createInterviewSession,
   createLandingPreviewHtml,
   createObsidianProject,
+  createHotfixPlan,
   createPullRequestDraft,
+  createQaReview,
+  createReleasePlan,
   createWorkIssue,
+  checkQaConflicts,
   DESIGN_ARTIFACT_IDS,
   DESIGN_ARTIFACT_TITLES,
   diffDocumentVersions,
@@ -43,6 +47,7 @@ import {
   isDocumentId,
   listDocumentIndexes,
   listDesignArtifactIndexes,
+  listPullRequests,
   listWorkIssues,
   loadEnvFile,
   loadProject,
@@ -59,6 +64,8 @@ import {
   readDocumentIndex,
   readDesignArtifactIndex,
   renderInterview,
+  runQaTests,
+  finalizeQaReport,
   requireInitialized,
   rollbackDocument,
   saveState,
@@ -111,11 +118,14 @@ async function main(): Promise<void> {
       case "be":
         handleBe(cwd, parsed.subcommand, parsed.args, parsed.options);
         break;
+      case "qa":
+        handleQa(cwd, parsed.subcommand, parsed.args, parsed.options);
+        break;
       case "docs":
         handleDocs(cwd, parsed.subcommand, parsed.args, parsed.options);
         break;
       case "github":
-        handleGitHub(cwd, parsed.subcommand);
+        handleGitHub(cwd, parsed.subcommand, parsed.args, parsed.options);
         break;
       case "help":
       default:
@@ -208,6 +218,11 @@ function handleStatus(projectRoot: string): void {
   console.log(`작업 issue: ${issues.length}`);
   for (const issue of issues.slice(0, 8)) {
     console.log(`- #${issue.issueNumber} ${issue.assigneeAgent} ${issue.label} ${issue.status} ${issue.branchName}`);
+  }
+  const prs = listPullRequests(projectRoot);
+  console.log(`PR draft: ${prs.length}`);
+  for (const pr of prs.slice(0, 8)) {
+    console.log(`- PR #${pr.prNumber} issue #${pr.issueNumber} ${pr.sourceBranch} -> ${pr.targetBranch} qa=${pr.qaStatus}`);
   }
 }
 
@@ -615,6 +630,44 @@ function handleBe(
   }
 }
 
+function handleQa(
+  projectRoot: string,
+  subcommand: string | undefined,
+  _args: string[],
+  options: Record<string, string | boolean>
+): void {
+  requireInitialized(projectRoot);
+  switch (subcommand) {
+    case "review": {
+      const report = createQaReview(projectRoot, parseIssueNumber(optionString(options, "pr")));
+      console.log(`QA review 기록: PR #${report.prNumber}`);
+      console.log(`report: ${report.reportPath}`);
+      return;
+    }
+    case "conflicts": {
+      const report = checkQaConflicts(projectRoot, parseIssueNumber(optionString(options, "pr")));
+      console.log(`conflict status: ${report.conflictStatus}`);
+      console.log(`report: ${report.reportPath}`);
+      return;
+    }
+    case "test": {
+      const report = runQaTests(projectRoot, parseIssueNumber(optionString(options, "pr")));
+      console.log(`test status: ${report.testStatus}`);
+      console.log(`report: ${report.reportPath}`);
+      return;
+    }
+    case "report": {
+      const report = finalizeQaReport(projectRoot, parseIssueNumber(optionString(options, "pr")));
+      console.log(`QA report finalized: PR #${report.prNumber}`);
+      console.log(`status: ${report.status}`);
+      console.log(`사용자 merge 승인 필요: ${report.userMergeDecisionRequired}`);
+      return;
+    }
+    default:
+      console.log("QA 명령어: review --pr <n> | conflicts --pr <n> | test --pr <n> | report --pr <n>");
+  }
+}
+
 function engineeringDraft(
   projectRoot: string,
   docId: DocumentId,
@@ -744,6 +797,14 @@ function parseIssueNumber(value: string | undefined): number {
   return issueNumber;
 }
 
+function parseWorkstream(value: string): Workstream {
+  const normalized = value.toUpperCase();
+  if (normalized === "FE" || normalized === "BE") {
+    return normalized;
+  }
+  throw new Error("agent must be FE or BE");
+}
+
 function requireImplementationStage(projectRoot: string): void {
   const state = loadState(projectRoot);
   if (!["IMPLEMENTATION", "QA_REVIEW", "READY_FOR_RELEASE"].includes(state.currentStage)) {
@@ -751,7 +812,12 @@ function requireImplementationStage(projectRoot: string): void {
   }
 }
 
-function handleGitHub(projectRoot: string, subcommand: string | undefined): void {
+function handleGitHub(
+  projectRoot: string,
+  subcommand: string | undefined,
+  args: string[],
+  options: Record<string, string | boolean>
+): void {
   switch (subcommand) {
     case "create-repo": {
       const repoTarget = resolveGitHubTarget(projectRoot);
@@ -821,8 +887,47 @@ function handleGitHub(projectRoot: string, subcommand: string | undefined): void
       files.forEach((file) => console.log(`- ${file}`));
       return;
     }
+    case "create-issue": {
+      requireInitialized(projectRoot);
+      workIssueCreate(projectRoot, parseWorkstream(optionString(options, "agent") ?? "FE"), args, options);
+      return;
+    }
+    case "create-pr": {
+      requireInitialized(projectRoot);
+      workPrDraft(projectRoot, options);
+      return;
+    }
+    case "sync": {
+      requireInitialized(projectRoot);
+      const issues = listWorkIssues(projectRoot).length;
+      const prs = listPullRequests(projectRoot).length;
+      console.log("GitHub sync dry-run");
+      console.log(`local issues: ${issues}`);
+      console.log(`local PR drafts: ${prs}`);
+      console.log("외부 GitHub 쓰기는 사용자 승인 전 실행하지 않음");
+      return;
+    }
+    case "release-plan": {
+      requireInitialized(projectRoot);
+      const version = optionString(options, "version") ?? args[0];
+      if (!version) {
+        throw new Error("usage: rph github release-plan --version <version>");
+      }
+      const plan = createReleasePlan(projectRoot, version);
+      console.log(`release plan 생성: ${plan.filePath}`);
+      console.log("main merge는 사용자 승인 전 실행하지 않음");
+      return;
+    }
+    case "hotfix-plan": {
+      requireInitialized(projectRoot);
+      const title = optionString(options, "title") ?? (args.join(" ") || "Critical hotfix");
+      const plan = createHotfixPlan(projectRoot, title);
+      console.log(`hotfix plan 생성: ${plan.filePath}`);
+      console.log("hotfix merge/deploy는 사용자 승인 전 실행하지 않음");
+      return;
+    }
     default:
-      console.log("GitHub 명령어: create-repo | setup-labels | setup-templates");
+      console.log("GitHub 명령어: create-repo | setup-labels | setup-templates | create-issue | create-pr | sync | release-plan | hotfix-plan");
   }
 }
 
@@ -1060,6 +1165,10 @@ function printHelp(): void {
     "  rph be work --issue <number>",
     "  rph be deploy-dev [--provider <provider>]",
     "  rph be pr --issue <number> [--target <dev|release|main>]",
+    "  rph qa review --pr <number>",
+    "  rph qa conflicts --pr <number>",
+    "  rph qa test --pr <number>",
+    "  rph qa report --pr <number>",
     "  rph docs list",
     "  rph docs show <docId> [version]",
     "  rph docs diff <docId> <fromVersion> <toVersion>",
@@ -1068,6 +1177,11 @@ function printHelp(): void {
     "  rph github create-repo",
     "  rph github setup-labels",
     "  rph github setup-templates",
+    "  rph github create-issue --agent <FE|BE> --title <title>",
+    "  rph github create-pr --issue <number>",
+    "  rph github sync",
+    "  rph github release-plan --version <version>",
+    "  rph github hotfix-plan --title <title>",
     "",
     `Document IDs: ${DOCUMENT_IDS.map((docId) => `${docId}(${DOCUMENT_TITLES[docId]})`).join(", ")}`,
     `Design Artifact IDs: ${DESIGN_ARTIFACT_IDS.map((artifactId) => `${artifactId}(${DESIGN_ARTIFACT_TITLES[artifactId]})`).join(", ")}`

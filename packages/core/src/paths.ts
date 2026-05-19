@@ -68,8 +68,16 @@ export function pullRequestsDir(projectRoot: string): string {
   return path.join(rphDir(projectRoot), "prs");
 }
 
+export function pullRequestIndexFile(projectRoot: string): string {
+  return path.join(pullRequestsDir(projectRoot), "index.json");
+}
+
 export function pullRequestFile(projectRoot: string, issueNumber: number): string {
   return path.join(pullRequestsDir(projectRoot), `issue-${issueNumber}.json`);
+}
+
+export function pullRequestNumberFile(projectRoot: string, prNumber: number): string {
+  return path.join(pullRequestsDir(projectRoot), `pr-${prNumber}.json`);
 }
 
 export function deploymentsDir(projectRoot: string): string {
@@ -78,4 +86,24 @@ export function deploymentsDir(projectRoot: string): string {
 
 export function deploymentPlanFile(projectRoot: string, environment: string): string {
   return path.join(deploymentsDir(projectRoot), `${environment}-deployment-plan.md`);
+}
+
+export function qaDir(projectRoot: string): string {
+  return path.join(rphDir(projectRoot), "qa");
+}
+
+export function qaReportFile(projectRoot: string, prNumber: number): string {
+  return path.join(qaDir(projectRoot), `pr-${prNumber}-report.json`);
+}
+
+export function qaReportMarkdownFile(projectRoot: string, prNumber: number): string {
+  return path.join(qaDir(projectRoot), `pr-${prNumber}-report.md`);
+}
+
+export function releasesDir(projectRoot: string): string {
+  return path.join(rphDir(projectRoot), "releases");
+}
+
+export function releasePlanFile(projectRoot: string, id: string): string {
+  return path.join(releasesDir(projectRoot), `${id}.md`);
 }

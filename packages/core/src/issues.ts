@@ -1,10 +1,18 @@
 import path from "node:path";
-import { deploymentPlanFile, issueFile, issueIndexFile, pullRequestFile } from "./paths";
+import {
+  deploymentPlanFile,
+  issueFile,
+  issueIndexFile,
+  pullRequestFile,
+  pullRequestIndexFile,
+  pullRequestNumberFile
+} from "./paths";
 import { readJson, readJsonIfExists, writeJson, writeText } from "./fs";
 import { createBranchName, normalizeLabel } from "./github";
 import {
   DeploymentRecord,
   DocumentId,
+  PullRequestIndex,
   PullRequestRecord,
   WorkIssue,
   WorkIssueIndex,
@@ -87,10 +95,12 @@ export function createPullRequestDraft(
   targetBranch: PullRequestRecord["targetBranch"] = "dev"
 ): PullRequestRecord {
   const issue = readWorkIssue(projectRoot, issueNumber);
+  const index = readPullRequestIndex(projectRoot);
+  const prNumber = index.nextPrNumber;
   const now = nowIso();
   const record: PullRequestRecord = {
     issueNumber,
-    prNumber: null,
+    prNumber,
     sourceBranch: issue.branchName,
     targetBranch,
     status: "draft",
@@ -103,8 +113,34 @@ export function createPullRequestDraft(
     updatedAt: now
   };
   writeJson(pullRequestFile(projectRoot, issueNumber), record);
+  writeJson(pullRequestNumberFile(projectRoot, prNumber), record);
   writeText(path.join(projectRoot, ".rph", "prs", `issue-${issueNumber}.md`), renderPullRequestBody(issue));
+  writePullRequestIndex(projectRoot, {
+    nextPrNumber: prNumber + 1,
+    pullRequests: [...index.pullRequests, record]
+  });
   updateIssue(projectRoot, { ...issue, status: "pr-ready", updatedAt: now });
+  return record;
+}
+
+export function readPullRequestIndex(projectRoot: string): PullRequestIndex {
+  return readJsonIfExists<PullRequestIndex>(pullRequestIndexFile(projectRoot), { nextPrNumber: 1, pullRequests: [] });
+}
+
+export function listPullRequests(projectRoot: string): PullRequestRecord[] {
+  return readPullRequestIndex(projectRoot).pullRequests;
+}
+
+export function readPullRequest(projectRoot: string, prNumber: number): PullRequestRecord {
+  return readJson<PullRequestRecord>(pullRequestNumberFile(projectRoot, prNumber));
+}
+
+export function updatePullRequest(projectRoot: string, record: PullRequestRecord): PullRequestRecord {
+  const index = readPullRequestIndex(projectRoot);
+  const pullRequests = index.pullRequests.map((item) => (item.prNumber === record.prNumber ? record : item));
+  writeJson(pullRequestNumberFile(projectRoot, record.prNumber), record);
+  writeJson(pullRequestFile(projectRoot, record.issueNumber), record);
+  writePullRequestIndex(projectRoot, { ...index, pullRequests });
   return record;
 }
 
@@ -141,6 +177,10 @@ function writeIssue(projectRoot: string, issue: WorkIssue): void {
 
 function writeIssueIndex(projectRoot: string, index: WorkIssueIndex): void {
   writeJson(issueIndexFile(projectRoot), index);
+}
+
+function writePullRequestIndex(projectRoot: string, index: PullRequestIndex): void {
+  writeJson(pullRequestIndexFile(projectRoot), index);
 }
 
 function defaultRelatedDocs(workstream: Workstream): DocumentId[] {

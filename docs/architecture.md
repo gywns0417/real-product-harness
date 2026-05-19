@@ -25,7 +25,11 @@ Project state lives under `.rph/` in the target product folder:
 - `.rph/design/<artifactId>/<version>.md`
 - `.rph/issues/index.json`
 - `.rph/issues/issue-<number>.json`
+- `.rph/prs/index.json`
 - `.rph/prs/issue-<number>.json`
+- `.rph/prs/pr-<number>.json`
+- `.rph/qa/pr-<number>-report.md`
+- `.rph/releases/<release-or-hotfix-id>.md`
 - `.rph/deployments/dev-deployment-plan.md`
 - `.rph/github/labels.json`
 
@@ -43,6 +47,8 @@ Current high-level order:
 4. BE technical spec and API contract approved
 5. FE/BE sprint plans approved
 6. Implementation issue/branch/PR skeleton
+7. QA review, conflict, test, and report records
+8. Release/hotfix plans with user merge approval gate
 
 ## External Services
 

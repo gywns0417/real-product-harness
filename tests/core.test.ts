@@ -13,7 +13,10 @@ import {
   createDevDeploymentPlan,
   createDesignArtifactVersion,
   createEngineeringDocumentVersion,
+  createHotfixPlan,
   createPullRequestDraft,
+  createQaReview,
+  createReleasePlan,
   createWorkIssue,
   createGitHubRepo,
   createLandingPreviewHtml,
@@ -29,6 +32,9 @@ import {
   markIssueInProgress,
   normalizeLabel,
   parseCli,
+  readPullRequest,
+  runQaTests,
+  finalizeQaReport,
   prepareEngineeringDocumentState,
   preparePdArtifactState,
   preparePmDraftState,
@@ -231,13 +237,35 @@ describe("FE/BE workflow", () => {
     expect(started.status).toBe("in-progress");
 
     const pr = createPullRequestDraft(root, issue.issueNumber);
+    expect(pr.prNumber).toBe(1);
     expect(pr.targetBranch).toBe("dev");
     expect(pr.userApproval).toBe("required");
     expect(fs.existsSync(path.join(root, ".rph", "prs", "issue-1.json"))).toBe(true);
+    expect(readPullRequest(root, 1).issueNumber).toBe(1);
 
     const deployment = createDevDeploymentPlan(root, "local");
     expect(deployment.approvalRequired).toBe(true);
     expect(fs.existsSync(deployment.filePath)).toBe(true);
+  });
+
+  it("records QA reports and release gates without merging", () => {
+    const issue = createWorkIssue(root, { workstream: "BE", title: "Add health endpoint" });
+    const pr = createPullRequestDraft(root, issue.issueNumber);
+    const review = createQaReview(root, pr.prNumber);
+    expect(review.userMergeDecisionRequired).toBe(true);
+    expect(fs.existsSync(path.join(root, ".rph", "qa", "pr-1-report.md"))).toBe(true);
+
+    const testReport = runQaTests(root, pr.prNumber);
+    expect(testReport.testStatus).toBe("not-run");
+    const finalReport = finalizeQaReport(root, pr.prNumber);
+    expect(finalReport.status).toBe("blocked");
+
+    const release = createReleasePlan(root, "v0.1.0");
+    const hotfix = createHotfixPlan(root, "Patch auth regression");
+    expect(release.userApproval).toBe("required");
+    expect(hotfix.kind).toBe("hotfix");
+    expect(fs.existsSync(release.filePath)).toBe(true);
+    expect(fs.existsSync(hotfix.filePath)).toBe(true);
   });
 });
 

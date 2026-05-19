@@ -244,7 +244,7 @@ export interface WorkIssueIndex {
 
 export interface PullRequestRecord {
   issueNumber: number;
-  prNumber: number | null;
+  prNumber: number;
   sourceBranch: string;
   targetBranch: "dev" | "release" | "main";
   status: "draft" | "ready" | "merged" | "closed";
@@ -253,6 +253,43 @@ export interface PullRequestRecord {
   testStatus: "not-run" | "passed" | "failed";
   userApproval: "required" | "approved" | "rejected";
   dryRunCommand: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PullRequestIndex {
+  nextPrNumber: number;
+  pullRequests: PullRequestRecord[];
+}
+
+export interface QAReportRecord {
+  prNumber: number;
+  status: "approved" | "changes-requested" | "blocked";
+  conflictStatus: "unknown" | "clean" | "conflict";
+  testStatus: "not-run" | "passed" | "failed";
+  requirementStatus: "unknown" | "matched" | "gap";
+  designStatus: "unknown" | "matched" | "gap";
+  apiContractStatus: "unknown" | "matched" | "gap";
+  securityStatus: "unknown" | "clear" | "risk";
+  accessibilityStatus: "unknown" | "clear" | "risk";
+  findings: string[];
+  reportPath: string;
+  userMergeDecisionRequired: true;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ReleasePlanRecord {
+  id: string;
+  kind: "release" | "hotfix";
+  sourceBranch: string;
+  targetBranch: "main" | "release" | "dev";
+  version: string | null;
+  title: string;
+  status: "planned" | "approved" | "blocked";
+  userApproval: "required" | "approved" | "rejected";
+  rollbackPlan: string;
+  filePath: string;
   createdAt: string;
   updatedAt: string;
 }

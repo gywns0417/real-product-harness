@@ -13,6 +13,8 @@ export * from "./pm";
 export * from "./paths";
 export * from "./pd";
 export * from "./project";
+export * from "./qa";
+export * from "./release";
 export * from "./time";
 export * from "./types";
 export * from "./workflow";
