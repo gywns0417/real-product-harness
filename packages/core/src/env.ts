@@ -1,5 +1,6 @@
 import { EnvValidation } from "./types";
 import fs from "node:fs";
+import path from "node:path";
 
 export function validateEnv(env: NodeJS.ProcessEnv, keys: string[]): EnvValidation {
   const missing: string[] = [];
@@ -46,9 +47,66 @@ export function loadEnvFile(filePath: string, env: NodeJS.ProcessEnv = process.e
   return loaded;
 }
 
+export interface EnvWriteResult {
+  filePath: string;
+  updatedKeys: string[];
+  appendedKeys: string[];
+}
+
+export function upsertEnvFileValues(filePath: string, values: Record<string, string>): EnvWriteResult {
+  const entries = Object.entries(values).filter(([key, value]) => key.trim() && value.trim());
+  const updatedKeys: string[] = [];
+  const appendedKeys: string[] = [];
+  const existing = fs.existsSync(filePath) ? fs.readFileSync(filePath, "utf8") : "";
+  const lines = existing ? existing.split(/\r?\n/) : [];
+  const seen = new Set<string>();
+  const nextLines = lines.map((line) => {
+    const match = line.match(/^(\s*([A-Za-z_][A-Za-z0-9_]*)\s*=)(.*)$/);
+    if (!match) {
+      return line;
+    }
+    const key = match[2];
+    const nextValue = values[key];
+    if (nextValue === undefined || !nextValue.trim()) {
+      return line;
+    }
+    seen.add(key);
+    updatedKeys.push(key);
+    return `${key}=${formatEnvValue(nextValue)}`;
+  });
+
+  for (const [key, value] of entries) {
+    if (seen.has(key)) {
+      continue;
+    }
+    appendedKeys.push(key);
+    nextLines.push(`${key}=${formatEnvValue(value)}`);
+  }
+
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const output = trimTrailingBlankLines(nextLines).join("\n");
+  fs.writeFileSync(filePath, output ? `${output}\n` : "");
+  return { filePath, updatedKeys, appendedKeys };
+}
+
 function unquoteEnvValue(value: string): string {
   if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
     return value.slice(1, -1);
   }
   return value;
+}
+
+function formatEnvValue(value: string): string {
+  if (/^[A-Za-z0-9_./:@%+=,-]+$/.test(value)) {
+    return value;
+  }
+  return JSON.stringify(value);
+}
+
+function trimTrailingBlankLines(lines: string[]): string[] {
+  const next = [...lines];
+  while (next.length > 0 && next[next.length - 1] === "") {
+    next.pop();
+  }
+  return next;
 }

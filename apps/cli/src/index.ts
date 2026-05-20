@@ -102,6 +102,9 @@ import {
   testAllMcpConnections,
   testMcpConnection,
   transitionState,
+  AI_PROVIDER_DEFINITIONS,
+  MCP_SERVER_DEFINITIONS,
+  upsertEnvFileValues,
   validateEnv,
   SetupChoices,
   Workstream,
@@ -112,6 +115,14 @@ import {
   writeGitHubBranchPlan,
   writeGitHubTemplates
 } from "../../../packages/core/src";
+
+interface SetupPrompter {
+  question(query: string): Promise<string>;
+}
+
+interface CommandContext {
+  prompter?: SetupPrompter;
+}
 
 async function main(): Promise<void> {
   const cwd = path.resolve(process.cwd());
@@ -130,7 +141,8 @@ async function main(): Promise<void> {
 async function runParsedCommand(
   projectRoot: string,
   parsed: ReturnType<typeof parseCli>,
-  setExitCode = true
+  setExitCode = true,
+  context: CommandContext = {}
 ): Promise<boolean> {
   try {
     switch (parsed.command) {
@@ -157,7 +169,7 @@ async function runParsedCommand(
         handleCancel(projectRoot);
         break;
       case "setup":
-        await handleSetup(projectRoot, parsed.subcommand, parsed.args, parsed.options);
+        await handleSetup(projectRoot, parsed.subcommand, parsed.args, parsed.options, context);
         break;
       case "settings":
         handleSettings(projectRoot, parsed.subcommand, parsed.args);
@@ -263,7 +275,7 @@ async function runRuntimeShell(initialRoot: string): Promise<void> {
           parsed.options.yes = true;
           console.log("runtime init은 비대화형 기본값으로 실행합니다. 필요한 값은 /init --project-name <name>처럼 넘기세요.");
         }
-        ok = await runParsedCommand(projectRoot, parsed, false);
+        ok = await runParsedCommand(projectRoot, parsed, false, { prompter: rl });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         console.error(`[error] ${message}`);
@@ -590,25 +602,18 @@ async function handleSetup(
   projectRoot: string,
   subcommand: string | undefined,
   args: string[],
-  options: Record<string, string | boolean>
+  options: Record<string, string | boolean>,
+  context: CommandContext = {}
 ): Promise<void> {
   requireInitialized(projectRoot);
   switch (subcommand) {
     case undefined:
     case "auto": {
-      const config = syncHarnessConfigFromEnv(projectRoot);
-      console.log(renderSetupGuide(config));
-      if (optionBool(options, "live")) {
-        console.log("");
-        console.log("Live connection check");
-        const checks = [...await testAllAiConnections(config), ...await testAllMcpConnections(config)];
-        const filePath = writeConnectionReport(projectRoot, checks);
-        printConnectionChecks(checks);
-        console.log(`report: ${filePath}`);
-      } else {
-        console.log("");
-        console.log("Live 검증까지 바로 진행하려면: /setup auto --live");
+      if (shouldRunInteractiveSetup(options, context)) {
+        await runAutoSetupWizard(projectRoot, options, context);
+        return;
       }
+      await printSetupGuideAndOptionalChecks(projectRoot, options);
       return;
     }
     case "ai": {
@@ -647,6 +652,313 @@ async function handleSetup(
     default:
       console.log("Setup 명령어: auto | ai [openai|anthropic|gemini|local] | mcp [notion|github|figma|stitch] | custom <key> <value>");
   }
+}
+
+async function printSetupGuideAndOptionalChecks(
+  projectRoot: string,
+  options: Record<string, string | boolean>
+): Promise<void> {
+  const config = syncHarnessConfigFromEnv(projectRoot);
+  console.log(renderSetupGuide(config));
+  if (optionBool(options, "live")) {
+    console.log("");
+    console.log("Live connection check");
+    const checks = [...await testAllAiConnections(config), ...await testAllMcpConnections(config)];
+    const filePath = writeConnectionReport(projectRoot, checks);
+    printConnectionChecks(checks);
+    console.log(`report: ${filePath}`);
+  } else {
+    console.log("");
+    console.log("대화형 연결 마법사로 값 입력까지 진행하려면 TTY에서 `/setup auto`를 실행하세요.");
+    console.log("Live 검증만 바로 진행하려면: /setup auto --live");
+  }
+}
+
+function shouldRunInteractiveSetup(options: Record<string, string | boolean>, context: CommandContext): boolean {
+  if (optionBool(options, "guide") || optionBool(options, "status") || optionBool(options, "non-interactive")) {
+    return false;
+  }
+  return Boolean(context.prompter) || Boolean(process.stdin.isTTY && process.stdout.isTTY);
+}
+
+async function runAutoSetupWizard(
+  projectRoot: string,
+  options: Record<string, string | boolean>,
+  context: CommandContext
+): Promise<void> {
+  await withSetupPrompter(context, async (prompter) => {
+    console.log("RPH Setup Auto");
+    console.log("AI agent와 MCP를 실제로 연결합니다. Enter는 기본값/건너뛰기입니다.");
+    console.log("터미널이 입력 문자를 echo할 수는 있지만, RPH는 secret 값을 로그/설정 JSON에 다시 출력하지 않습니다.");
+    console.log("");
+
+    let config = syncHarnessConfigFromEnv(projectRoot);
+    const selectedAi = await chooseAiProvider(prompter, config, options);
+    const envValues: Record<string, string> = {};
+
+    if (selectedAi) {
+      Object.assign(envValues, await collectAiEnvValues(prompter, selectedAi));
+    }
+    const selectedMcp = await chooseMcpServers(prompter, config, options, projectRoot);
+    for (const serverId of selectedMcp) {
+      Object.assign(envValues, await collectMcpEnvValues(prompter, serverId, projectRoot));
+    }
+
+    if (Object.keys(envValues).length > 0) {
+      const result = upsertEnvFileValues(path.join(projectRoot, ".env"), envValues);
+      Object.assign(process.env, envValues);
+      const keys = [...new Set([...result.updatedKeys, ...result.appendedKeys])].sort();
+      console.log("");
+      console.log(`.env 저장 완료: ${keys.join(", ")}`);
+    } else {
+      console.log("");
+      console.log(".env에 새로 저장할 값은 없습니다.");
+    }
+
+    loadEnvFile(path.join(projectRoot, ".env"));
+    config = syncHarnessConfigFromEnv(projectRoot);
+    if (selectedAi) {
+      config = setAiProviderEnabled(projectRoot, selectedAi, true);
+    }
+    for (const serverId of selectedMcp) {
+      config = setMcpServerEnabled(projectRoot, serverId, true);
+    }
+    config = syncHarnessConfigFromEnv(projectRoot);
+
+    console.log("");
+    console.log("연결 테스트");
+    const checks = await runSelectedConnectionChecks(config, selectedAi, selectedMcp, optionBool(options, "live"));
+    if (checks.length > 0) {
+      const filePath = writeConnectionReport(projectRoot, checks);
+      printConnectionChecks(checks);
+      console.log(`report: ${filePath}`);
+    } else {
+      console.log("- 테스트할 연결이 아직 없습니다. AI provider 또는 MCP 값을 입력하면 자동 검증합니다.");
+    }
+
+    console.log("");
+    console.log("최종 상태");
+    console.log(renderSetupGuide(syncHarnessConfigFromEnv(projectRoot)));
+  });
+}
+
+async function withSetupPrompter<T>(
+  context: CommandContext,
+  callback: (prompter: SetupPrompter) => Promise<T>
+): Promise<T> {
+  if (context.prompter) {
+    return callback(context.prompter);
+  }
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return await callback(rl);
+  } finally {
+    rl.close();
+  }
+}
+
+async function chooseAiProvider(
+  prompter: SetupPrompter,
+  config: ReturnType<typeof loadHarnessConfig>,
+  options: Record<string, string | boolean>
+): Promise<AiProviderId | null> {
+  const optionValue = optionString(options, "ai") ?? optionString(options, "provider");
+  if (optionValue) {
+    return optionValue === "none" || optionValue === "skip" || optionValue === "later" ? null : parseAiProviderId(optionValue);
+  }
+  const defaultProvider = defaultAiProvider(config);
+  console.log("1. AI agent 선택");
+  console.log("  1 OpenAI/Codex");
+  console.log("  2 Claude");
+  console.log("  3 Gemini");
+  console.log("  4 Local");
+  console.log("  5 건너뛰기");
+  const answer = await askText(prompter, `AI provider`, defaultProvider);
+  const normalized = answer.toLowerCase();
+  if (["5", "skip", "later", "none", "no", "n"].includes(normalized)) {
+    return null;
+  }
+  if (normalized === "1" || normalized === "openai" || normalized === "codex") {
+    return "openai";
+  }
+  if (normalized === "2" || normalized === "anthropic" || normalized === "claude") {
+    return "anthropic";
+  }
+  if (normalized === "3" || normalized === "gemini" || normalized === "google") {
+    return "gemini";
+  }
+  if (normalized === "4" || normalized === "local" || normalized === "ollama") {
+    return "local";
+  }
+  return parseAiProviderId(normalized);
+}
+
+async function chooseMcpServers(
+  prompter: SetupPrompter,
+  config: ReturnType<typeof loadHarnessConfig>,
+  options: Record<string, string | boolean>,
+  projectRoot: string
+): Promise<McpServerId[]> {
+  const optionValue = optionString(options, "mcp");
+  if (optionValue) {
+    return parseMcpSelection(optionValue);
+  }
+  const defaultServers = defaultMcpServers(config, projectRoot);
+  console.log("");
+  console.log("2. MCP 선택");
+  console.log("  notion, github, figma, stitch 중 연결할 항목을 쉼표로 입력하세요.");
+  console.log("  all = 전체, none = 건너뛰기");
+  const answer = await askText(prompter, "MCP", defaultServers.join(","));
+  return parseMcpSelection(answer);
+}
+
+async function collectAiEnvValues(prompter: SetupPrompter, providerId: AiProviderId): Promise<Record<string, string>> {
+  const definition = AI_PROVIDER_DEFINITIONS[providerId];
+  const values: Record<string, string> = {};
+  console.log("");
+  console.log(`AI 연결: ${definition.name}`);
+  for (const key of definition.envKeys) {
+    if (process.env[key]) {
+      console.log(`- ${key}: 이미 설정됨`);
+      continue;
+    }
+    const answer = await askEnvValue(prompter, key, "");
+    if (answer) {
+      values[key] = answer;
+    }
+  }
+  const currentModel = process.env[definition.modelEnv] || definition.defaultModel;
+  const model = await askText(prompter, `${definition.modelEnv}`, currentModel);
+  if (model && model !== process.env[definition.modelEnv]) {
+    values[definition.modelEnv] = model;
+  }
+  if (providerId !== "local") {
+    const currentBaseUrl = process.env[definition.baseUrlEnv] || definition.defaultBaseUrl;
+    const baseUrl = await askText(prompter, `${definition.baseUrlEnv}`, currentBaseUrl);
+    if (baseUrl && baseUrl !== definition.defaultBaseUrl && baseUrl !== process.env[definition.baseUrlEnv]) {
+      values[definition.baseUrlEnv] = baseUrl;
+    }
+  }
+  return values;
+}
+
+async function collectMcpEnvValues(
+  prompter: SetupPrompter,
+  serverId: McpServerId,
+  projectRoot: string
+): Promise<Record<string, string>> {
+  const definition = MCP_SERVER_DEFINITIONS[serverId];
+  const values: Record<string, string> = {};
+  const discovered = serverId === "github" ? discoverGitHubEnv(projectRoot) : {};
+  console.log("");
+  console.log(`MCP 연결: ${definition.name}`);
+  for (const key of definition.envKeys) {
+    if (process.env[key]) {
+      console.log(`- ${key}: 이미 설정됨`);
+      continue;
+    }
+    const defaultValue = discovered[key] ?? "";
+    if (defaultValue) {
+      console.log(`- ${key}: 로컬 환경에서 기본값 감지`);
+    }
+    const answer = await askEnvValue(prompter, key, defaultValue);
+    if (answer) {
+      values[key] = answer;
+    }
+  }
+  return values;
+}
+
+async function runSelectedConnectionChecks(
+  config: ReturnType<typeof loadHarnessConfig>,
+  selectedAi: AiProviderId | null,
+  selectedMcp: McpServerId[],
+  includeAllConfigured: boolean
+) {
+  if (includeAllConfigured) {
+    return [...await testAllAiConnections(config), ...await testAllMcpConnections(config)];
+  }
+  const checks = [];
+  if (selectedAi) {
+    checks.push(await testAiConnection(config, selectedAi));
+  }
+  for (const serverId of selectedMcp) {
+    checks.push(await testMcpConnection(config, serverId));
+  }
+  return checks;
+}
+
+async function askText(prompter: SetupPrompter, label: string, defaultValue: string): Promise<string> {
+  const suffix = defaultValue ? ` (${defaultValue})` : "";
+  const answer = (await prompter.question(`${label}${suffix}: `)).trim();
+  return answer || defaultValue;
+}
+
+async function askEnvValue(prompter: SetupPrompter, key: string, defaultValue: string): Promise<string> {
+  const suffix = defaultValue
+    ? ` (${isSecretEnvKey(key) ? "감지됨, Enter로 사용" : defaultValue})`
+    : " (Enter로 건너뛰기)";
+  const answer = (await prompter.question(`${key}${suffix}: `)).trim();
+  return answer || defaultValue;
+}
+
+function isSecretEnvKey(key: string): boolean {
+  return /(?:TOKEN|KEY|SECRET|PASSWORD|CREDENTIAL)/i.test(key);
+}
+
+function defaultAiProvider(config: ReturnType<typeof loadHarnessConfig>): string {
+  if (config.activeAiProvider !== "auto" && config.activeAiProvider !== "none" && config.aiProviders[config.activeAiProvider]?.configured) {
+    return config.activeAiProvider;
+  }
+  const configured = configuredAiProviders(config)[0]?.id;
+  return configured ?? "openai";
+}
+
+function defaultMcpServers(config: ReturnType<typeof loadHarnessConfig>, projectRoot: string): McpServerId[] {
+  const configured = configuredMcpServers(config).map((server) => server.id);
+  if (configured.length > 0) {
+    return configured;
+  }
+  const discovered = discoverGitHubEnv(projectRoot);
+  return discovered.GITHUB_OWNER && discovered.GITHUB_REPO ? ["github", "notion"] : ["notion", "github"];
+}
+
+function parseMcpSelection(value: string): McpServerId[] {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized || ["none", "skip", "later", "no", "n"].includes(normalized)) {
+    return [];
+  }
+  if (normalized === "all") {
+    return Object.keys(MCP_SERVER_DEFINITIONS) as McpServerId[];
+  }
+  const seen = new Set<McpServerId>();
+  for (const item of normalized.split(",").map((part) => part.trim()).filter(Boolean)) {
+    seen.add(parseMcpServerId(item));
+  }
+  return [...seen];
+}
+
+function discoverGitHubEnv(projectRoot: string): Record<string, string> {
+  const values: Record<string, string> = {};
+  const token = runCapture("gh", ["auth", "token"], projectRoot);
+  if (token) {
+    values.GITHUB_TOKEN = token;
+  }
+  const remote = runCapture("git", ["config", "--get", "remote.origin.url"], projectRoot);
+  const parsed = remote ? parseGitHubRemote(remote) : null;
+  if (parsed) {
+    values.GITHUB_OWNER = parsed.owner;
+    values.GITHUB_REPO = parsed.repo;
+  }
+  return values;
+}
+
+function runCapture(command: string, args: string[], cwd: string): string {
+  const result = spawnSync(command, args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  if (result.status !== 0) {
+    return "";
+  }
+  return result.stdout.trim();
 }
 
 function handleSettings(projectRoot: string, subcommand: string | undefined, args: string[]): void {
@@ -2074,7 +2386,7 @@ function printHelp(): void {
     "  /exit",
     "  /agent status | clear",
     "  /chat status | clear",
-    "  /setup auto [--live]",
+    "  /setup auto [--live|--guide|--non-interactive]",
     "  /setup ai [openai|anthropic|gemini|local]",
     "  /setup mcp [notion|github|figma|stitch]",
     "  /settings show | sync | set <key> <value>",

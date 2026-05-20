@@ -57,6 +57,7 @@ import {
   syncStateDocuments,
   syncStateDesignArtifacts,
   transitionState,
+  upsertEnvFileValues,
   validateEnv,
   writeAiChatTurnRecord,
   writeGitHubBranchPlan
@@ -364,6 +365,26 @@ describe("command parser and env validation", () => {
     expect(loaded).toEqual(["GITHUB_REPO"]);
     expect(env.GITHUB_OWNER).toBe("existing");
     expect(env.GITHUB_REPO).toBe("repo");
+  });
+
+  it("upserts env values while preserving comments and quoting only when needed", () => {
+    const envFile = path.join(root, ".env");
+    fs.writeFileSync(envFile, "# local secrets\nOPENAI_API_KEY=old\nGITHUB_OWNER=king\n");
+
+    const result = upsertEnvFileValues(envFile, {
+      OPENAI_API_KEY: "new-secret",
+      GITHUB_REPO: "real-product-harness",
+      NOTION_PARENT_PAGE_ID: "page id with spaces"
+    });
+    const content = fs.readFileSync(envFile, "utf8");
+
+    expect(result.updatedKeys).toEqual(["OPENAI_API_KEY"]);
+    expect(result.appendedKeys).toEqual(["GITHUB_REPO", "NOTION_PARENT_PAGE_ID"]);
+    expect(content).toContain("# local secrets");
+    expect(content).toContain("OPENAI_API_KEY=new-secret");
+    expect(content).toContain("GITHUB_OWNER=king");
+    expect(content).toContain("GITHUB_REPO=real-product-harness");
+    expect(content).toContain('NOTION_PARENT_PAGE_ID="page id with spaces"');
   });
 
   it("initializes setup choices for the project wizard", () => {
