@@ -61,7 +61,18 @@ export async function testMcpConnection(
         "X-Figma-Token": env.FIGMA_TOKEN ?? ""
       });
     case "stitch":
-      return skipped("mcp", serverId, "Stitch API probe is not standardized; env validation passed", server.envKeys, []);
+      return probe("mcp", serverId, server.envKeys, server.url ?? "https://stitch.googleapis.com/mcp", {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": env.STITCH_API_KEY ?? ""
+      }, {
+        method: "POST",
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: "rph-connection-check",
+          method: "tools/list",
+          params: {}
+        })
+      });
     default:
       return skipped("mcp", serverId, "no probe is defined for this MCP server", server.envKeys, []);
   }
@@ -82,15 +93,17 @@ async function probe(
   id: string,
   requiredEnv: string[],
   endpoint: string,
-  headers: Record<string, string>
+  headers: Record<string, string>,
+  init: Pick<RequestInit, "method" | "body"> = {}
 ): Promise<ConnectionCheck> {
   const checkedAt = nowIso();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 10000);
   try {
     const response = await fetch(endpoint, {
-      method: "GET",
+      method: init.method ?? "GET",
       headers,
+      body: init.body,
       signal: controller.signal
     });
     if (response.ok) {

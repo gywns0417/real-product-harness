@@ -678,7 +678,7 @@ function shouldRunInteractiveSetup(options: Record<string, string | boolean>, co
   if (optionBool(options, "guide") || optionBool(options, "status") || optionBool(options, "non-interactive")) {
     return false;
   }
-  return Boolean(context.prompter) || Boolean(process.stdin.isTTY && process.stdout.isTTY);
+  return optionBool(options, "from-env") || Boolean(context.prompter) || Boolean(process.stdin.isTTY && process.stdout.isTTY);
 }
 
 async function runAutoSetupWizard(
@@ -686,22 +686,25 @@ async function runAutoSetupWizard(
   options: Record<string, string | boolean>,
   context: CommandContext
 ): Promise<void> {
-  await withSetupPrompter(context, async (prompter) => {
+  const fromEnv = optionBool(options, "from-env");
+  await withSetupPrompter(context, fromEnv, async (prompter) => {
     console.log("RPH Setup Auto");
-    console.log("AI agent와 MCP를 실제로 연결합니다. Enter는 기본값/건너뛰기입니다.");
+    console.log(fromEnv
+      ? "AI agent와 MCP를 현재 shell env에서 읽어 fresh .env로 연결합니다."
+      : "AI agent와 MCP를 실제로 연결합니다. Enter는 기본값/건너뛰기입니다.");
     console.log("터미널이 입력 문자를 echo할 수는 있지만, RPH는 secret 값을 로그/설정 JSON에 다시 출력하지 않습니다.");
     console.log("");
 
     let config = syncHarnessConfigFromEnv(projectRoot);
-    const selectedAi = await chooseAiProvider(prompter, config, options);
+    const selectedAi = await chooseAiProviders(prompter, config, options);
     const envValues: Record<string, string> = {};
 
-    if (selectedAi) {
-      Object.assign(envValues, await collectAiEnvValues(prompter, selectedAi));
+    for (const providerId of selectedAi) {
+      Object.assign(envValues, await collectAiEnvValues(prompter, providerId, fromEnv));
     }
     const selectedMcp = await chooseMcpServers(prompter, config, options, projectRoot);
     for (const serverId of selectedMcp) {
-      Object.assign(envValues, await collectMcpEnvValues(prompter, serverId, projectRoot));
+      Object.assign(envValues, await collectMcpEnvValues(prompter, serverId, projectRoot, fromEnv));
     }
 
     if (Object.keys(envValues).length > 0) {
@@ -717,8 +720,11 @@ async function runAutoSetupWizard(
 
     loadEnvFile(path.join(projectRoot, ".env"));
     config = syncHarnessConfigFromEnv(projectRoot);
-    if (selectedAi) {
-      config = setAiProviderEnabled(projectRoot, selectedAi, true);
+    for (const providerId of selectedAi) {
+      config = setAiProviderEnabled(projectRoot, providerId, true);
+    }
+    if (selectedAi[0]) {
+      config = setHarnessConfigValue(projectRoot, "ai.active", selectedAi[0]);
     }
     for (const serverId of selectedMcp) {
       config = setMcpServerEnabled(projectRoot, serverId, true);
@@ -744,10 +750,14 @@ async function runAutoSetupWizard(
 
 async function withSetupPrompter<T>(
   context: CommandContext,
+  nonInteractive: boolean,
   callback: (prompter: SetupPrompter) => Promise<T>
 ): Promise<T> {
   if (context.prompter) {
     return callback(context.prompter);
+  }
+  if (nonInteractive) {
+    return callback({ question: async () => "" });
   }
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   try {
@@ -757,14 +767,14 @@ async function withSetupPrompter<T>(
   }
 }
 
-async function chooseAiProvider(
+async function chooseAiProviders(
   prompter: SetupPrompter,
   config: ReturnType<typeof loadHarnessConfig>,
   options: Record<string, string | boolean>
-): Promise<AiProviderId | null> {
+): Promise<AiProviderId[]> {
   const optionValue = optionString(options, "ai") ?? optionString(options, "provider");
   if (optionValue) {
-    return optionValue === "none" || optionValue === "skip" || optionValue === "later" ? null : parseAiProviderId(optionValue);
+    return parseAiSelection(optionValue);
   }
   const defaultProvider = defaultAiProvider(config);
   console.log("1. AI agent 선택");
@@ -773,24 +783,40 @@ async function chooseAiProvider(
   console.log("  3 Gemini");
   console.log("  4 Local");
   console.log("  5 건너뛰기");
+  console.log("  all 전체 검증");
   const answer = await askText(prompter, `AI provider`, defaultProvider);
-  const normalized = answer.toLowerCase();
+  const selected = parseAiSelection(answer);
+  if (selected.length > 0) {
+    return selected;
+  }
+  return [];
+}
+
+function parseAiSelection(value: string): AiProviderId[] {
+  const normalized = value.trim().toLowerCase();
   if (["5", "skip", "later", "none", "no", "n"].includes(normalized)) {
-    return null;
+    return [];
+  }
+  if (normalized === "all") {
+    return Object.keys(AI_PROVIDER_DEFINITIONS) as AiProviderId[];
   }
   if (normalized === "1" || normalized === "openai" || normalized === "codex") {
-    return "openai";
+    return ["openai"];
   }
   if (normalized === "2" || normalized === "anthropic" || normalized === "claude") {
-    return "anthropic";
+    return ["anthropic"];
   }
   if (normalized === "3" || normalized === "gemini" || normalized === "google") {
-    return "gemini";
+    return ["gemini"];
   }
   if (normalized === "4" || normalized === "local" || normalized === "ollama") {
-    return "local";
+    return ["local"];
   }
-  return parseAiProviderId(normalized);
+  const seen = new Set<AiProviderId>();
+  for (const item of normalized.split(",").map((part: string) => part.trim()).filter(Boolean)) {
+    seen.add(parseAiProviderId(item));
+  }
+  return [...seen];
 }
 
 async function chooseMcpServers(
@@ -812,7 +838,11 @@ async function chooseMcpServers(
   return parseMcpSelection(answer);
 }
 
-async function collectAiEnvValues(prompter: SetupPrompter, providerId: AiProviderId): Promise<Record<string, string>> {
+async function collectAiEnvValues(
+  prompter: SetupPrompter,
+  providerId: AiProviderId,
+  writeExistingEnv = false
+): Promise<Record<string, string>> {
   const definition = AI_PROVIDER_DEFINITIONS[providerId];
   const values: Record<string, string> = {};
   console.log("");
@@ -820,6 +850,9 @@ async function collectAiEnvValues(prompter: SetupPrompter, providerId: AiProvide
   for (const key of definition.envKeys) {
     if (process.env[key]) {
       console.log(`- ${key}: 이미 설정됨`);
+      if (writeExistingEnv) {
+        values[key] = process.env[key] ?? "";
+      }
       continue;
     }
     const answer = await askEnvValue(prompter, key, "");
@@ -845,7 +878,8 @@ async function collectAiEnvValues(prompter: SetupPrompter, providerId: AiProvide
 async function collectMcpEnvValues(
   prompter: SetupPrompter,
   serverId: McpServerId,
-  projectRoot: string
+  projectRoot: string,
+  writeExistingEnv = false
 ): Promise<Record<string, string>> {
   const definition = MCP_SERVER_DEFINITIONS[serverId];
   const values: Record<string, string> = {};
@@ -855,6 +889,9 @@ async function collectMcpEnvValues(
   for (const key of definition.envKeys) {
     if (process.env[key]) {
       console.log(`- ${key}: 이미 설정됨`);
+      if (writeExistingEnv) {
+        values[key] = process.env[key] ?? "";
+      }
       continue;
     }
     const defaultValue = discovered[key] ?? "";
@@ -871,7 +908,7 @@ async function collectMcpEnvValues(
 
 async function runSelectedConnectionChecks(
   config: ReturnType<typeof loadHarnessConfig>,
-  selectedAi: AiProviderId | null,
+  selectedAi: AiProviderId[],
   selectedMcp: McpServerId[],
   includeAllConfigured: boolean
 ) {
@@ -879,8 +916,8 @@ async function runSelectedConnectionChecks(
     return [...await testAllAiConnections(config), ...await testAllMcpConnections(config)];
   }
   const checks = [];
-  if (selectedAi) {
-    checks.push(await testAiConnection(config, selectedAi));
+  for (const providerId of selectedAi) {
+    checks.push(await testAiConnection(config, providerId));
   }
   for (const serverId of selectedMcp) {
     checks.push(await testMcpConnection(config, serverId));
@@ -2386,7 +2423,7 @@ function printHelp(): void {
     "  /exit",
     "  /agent status | clear",
     "  /chat status | clear",
-    "  /setup auto [--live|--guide|--non-interactive]",
+    "  /setup auto [--live|--guide|--from-env|--non-interactive]",
     "  /setup ai [openai|anthropic|gemini|local]",
     "  /setup mcp [notion|github|figma|stitch]",
     "  /settings show | sync | set <key> <value>",

@@ -106,7 +106,7 @@ export const MCP_SERVER_DEFINITIONS: Record<McpServerId, McpDefinition> = {
     id: "stitch",
     name: "Stitch",
     transport: "http",
-    url: "https://stitch.withgoogle.com",
+    url: "https://stitch.googleapis.com/mcp",
     envKeys: ["STITCH_API_KEY"],
     notes: "Optional UI generation adapter. Live API details are provider-specific."
   }

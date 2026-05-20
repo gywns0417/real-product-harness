@@ -90,7 +90,7 @@ The runtime setup layer mirrors a Hermes-style boot sequence:
 6. `/pm draft <docId> --ai`, `/pd <artifact> --ai`, `/fe spec --ai`, and `/be spec --ai` bind the selected AI provider to role-specific artifact generation.
 7. `/agent status` shows the active conversational provider; `/agent clear` resets the in-memory conversation context.
 8. `/settings set <key> <value>` stores custom runtime preferences such as `ui.theme`, `ui.color`, and deployment notes.
-9. `/setup auto --guide` keeps the old read-only status guide for scripts, while `/setup auto --live` and `/doctor --live` combine runtime config checks with AI and MCP live probes.
+9. `/setup auto --guide` keeps the old read-only status guide for scripts, while `/setup auto --from-env --live` performs non-echo fresh-project credential verification from the current shell environment and `/doctor --live` combines runtime config checks with AI and MCP live probes.
 
 AI provider probes use read-only model-list endpoints for OpenAI, Anthropic, Gemini, and local model servers. MCP probes validate the underlying service credentials for Notion, GitHub, Figma, and Stitch where a stable probe exists.
 
