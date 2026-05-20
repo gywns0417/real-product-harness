@@ -45,6 +45,7 @@ Inside the runtime, type normal messages to chat with the connected AI agent. Us
 ```text
 /init --yes --project-name "My Product"
 /setup auto
+/setup auto --live
 /doctor
 /status
 /ai status
@@ -109,6 +110,7 @@ and writes MCP client config to `.mcp/config.json`.
 
 ```text
 /setup auto
+/setup auto --live
 /setup ai openai
 /setup mcp notion
 /settings show
@@ -127,6 +129,8 @@ and writes MCP client config to `.mcp/config.json`.
 
 Configured credentials are never copied into `.rph/config.json`; only env key names,
 configured/missing status, selected provider, and non-secret model/base URL metadata are stored.
+
+`/setup auto` runs the setup assistant: it detects configured AI/MCP services, explains missing env keys, recommends next commands, and keeps secrets out of `.rph/config.json`. Add `--live` to run connection probes in the same flow.
 
 Plain runtime chat writes non-secret turn records to `.rph/ai/chat/`. AI-generated artifacts write non-secret run records to `.rph/ai/runs/`. Notion remains dry-run by default;
 `/notion setup --live` creates a dashboard page and tracking databases under `NOTION_PARENT_PAGE_ID`,

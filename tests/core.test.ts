@@ -50,6 +50,7 @@ import {
   ProjectState,
   readDocumentIndex,
   readDesignArtifactIndex,
+  renderSetupGuide,
   setupGitHubLabels,
   showDocument,
   advanceAfterEngineeringApproval,
@@ -393,6 +394,25 @@ describe("command parser and env validation", () => {
     expect(config.mcpServers.github.enabled).toBe(true);
     expect(config.mcpServers.figma.enabled).toBe(false);
     expect(JSON.stringify(config)).not.toContain("openai-secret");
+  });
+
+  it("renders a friendly setup assistant without secrets", () => {
+    const config = createHarnessConfig({
+      OPENAI_API_KEY: "openai-secret",
+      GITHUB_TOKEN: "github-secret",
+      GITHUB_OWNER: "owner",
+      GITHUB_REPO: "repo"
+    } as NodeJS.ProcessEnv);
+
+    const guide = renderSetupGuide(config);
+
+    expect(guide).toContain("RPH Setup Assistant");
+    expect(guide).toContain("1. AI agent 연결");
+    expect(guide).toContain("2. MCP 연결");
+    expect(guide).toContain("/setup auto --live");
+    expect(guide).toContain("OPENAI_API_KEY");
+    expect(guide).not.toContain("openai-secret");
+    expect(guide).not.toContain("github-secret");
   });
 
   it("generates text through the active AI provider without exposing secrets", async () => {

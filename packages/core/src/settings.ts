@@ -233,6 +233,57 @@ export function configuredMcpServers(config: HarnessConfig): McpServerRuntimeCon
   return Object.values(config.mcpServers).filter((server) => server.enabled && server.configured);
 }
 
+export function renderSetupGuide(config: HarnessConfig): string {
+  const activeProvider = resolveGuideActiveProvider(config);
+  const readyAi = Object.values(config.aiProviders).filter((provider) => provider.configured);
+  const readyMcp = Object.values(config.mcpServers).filter((server) => server.configured);
+  return [
+    "RPH Setup Assistant",
+    "",
+    "목표",
+    "- 일반 텍스트 입력은 연결된 AI agent와 대화합니다.",
+    "- /pm start 같은 slash command는 workflow 상태를 제어합니다.",
+    "- 비밀값은 .env에만 두고, .rph/config.json에는 상태와 env key 이름만 저장합니다.",
+    "",
+    "1. AI agent 연결",
+    ...Object.values(config.aiProviders).map((provider) => {
+      const ready = provider.configured ? "ready" : "needs env";
+      const selected = provider.id === activeProvider ? " active" : "";
+      const envKeys = ` env: ${provider.envKeys.join(", ")}`;
+      const missing = provider.missingEnv.length > 0 ? ` | add: ${provider.missingEnv.join(", ")}` : "";
+      return `- [${ready}] ${provider.name} (${provider.id}) model=${provider.model}${selected} |${envKeys}${missing}`;
+    }),
+    readyAi.length > 0
+      ? `다음: 일반 문장을 입력하면 ${activeProvider ?? readyAi[0].id} agent와 바로 대화할 수 있습니다.`
+      : "다음: .env에 OPENAI_API_KEY, GEMINI_API_KEY, ANTHROPIC_API_KEY 또는 LOCAL_AI_BASE_URL 중 하나를 추가하세요.",
+    "",
+    "2. MCP 연결",
+    ...Object.values(config.mcpServers).map((server) => {
+      const ready = server.configured ? "ready" : "needs env";
+      const enabled = server.enabled && server.configured ? " enabled" : "";
+      const envKeys = ` env: ${server.envKeys.join(", ")}`;
+      const missing = server.missingEnv.length > 0 ? ` | add: ${server.missingEnv.join(", ")}` : "";
+      return `- [${ready}] ${server.name} (${server.id}) ${server.transport}${enabled} |${envKeys}${missing}`;
+    }),
+    readyMcp.length > 0
+      ? `다음: 활성 MCP는 ${configuredMcpServers(config).map((server) => server.id).join(", ") || "아직 없음"} 입니다.`
+      : "다음: .env에 NOTION_TOKEN/GITHUB_TOKEN/FIGMA_TOKEN 등 필요한 MCP env를 추가하세요.",
+    "",
+    "3. 바로 실행할 검증 명령",
+    "- /setup auto --live",
+    "- /ai status",
+    "- /mcp status",
+    "- /doctor --live",
+    activeProvider ? `- /ai test ${activeProvider}` : "- /setup ai <openai|anthropic|gemini|local>",
+    configuredMcpServers(config)[0] ? `- /mcp test ${configuredMcpServers(config)[0].id}` : "- /setup mcp <notion|github|figma|stitch>",
+    "",
+    "4. 연결 후 사용",
+    "- 터미널에 그냥 질문을 입력하면 AI agent가 답합니다.",
+    "- 산출물 생성은 /pm draft product-definition --ai 처럼 실행합니다.",
+    "- 연결 상태가 바뀌면 /setup auto를 다시 실행하세요."
+  ].join("\n");
+}
+
 function buildAiProviderConfig(
   definition: ProviderDefinition,
   env: NodeJS.ProcessEnv,
@@ -319,6 +370,13 @@ function setupChoiceToProvider(choice: SetupChoices["aiProvider"] | undefined): 
     default:
       return null;
   }
+}
+
+function resolveGuideActiveProvider(config: HarnessConfig): AiProviderId | null {
+  if (config.activeAiProvider !== "auto" && config.activeAiProvider !== "none" && config.aiProviders[config.activeAiProvider]?.configured) {
+    return config.activeAiProvider;
+  }
+  return configuredAiProviders(config)[0]?.id ?? null;
 }
 
 function missingEnvKeys(env: NodeJS.ProcessEnv, keys: string[]): string[] {

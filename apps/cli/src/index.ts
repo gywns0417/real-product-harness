@@ -77,6 +77,7 @@ import {
   readDocumentIndex,
   readDesignArtifactIndex,
   renderRuntimeHero,
+  renderSetupGuide,
   renderStatusLine,
   renderInterview,
   runQaTests,
@@ -589,15 +590,25 @@ async function handleSetup(
   projectRoot: string,
   subcommand: string | undefined,
   args: string[],
-  _options: Record<string, string | boolean>
+  options: Record<string, string | boolean>
 ): Promise<void> {
   requireInitialized(projectRoot);
   switch (subcommand) {
     case undefined:
     case "auto": {
       const config = syncHarnessConfigFromEnv(projectRoot);
-      console.log("설정 자동 감지 완료");
-      printConfigSummary(config);
+      console.log(renderSetupGuide(config));
+      if (optionBool(options, "live")) {
+        console.log("");
+        console.log("Live connection check");
+        const checks = [...await testAllAiConnections(config), ...await testAllMcpConnections(config)];
+        const filePath = writeConnectionReport(projectRoot, checks);
+        printConnectionChecks(checks);
+        console.log(`report: ${filePath}`);
+      } else {
+        console.log("");
+        console.log("Live 검증까지 바로 진행하려면: /setup auto --live");
+      }
       return;
     }
     case "ai": {
@@ -2063,7 +2074,7 @@ function printHelp(): void {
     "  /exit",
     "  /agent status | clear",
     "  /chat status | clear",
-    "  /setup auto",
+    "  /setup auto [--live]",
     "  /setup ai [openai|anthropic|gemini|local]",
     "  /setup mcp [notion|github|figma|stitch]",
     "  /settings show | sync | set <key> <value>",

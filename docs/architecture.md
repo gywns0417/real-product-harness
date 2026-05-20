@@ -82,7 +82,7 @@ Notion integration uses the hosted MCP URL in generated config and writes a loca
 
 The runtime setup layer mirrors a Hermes-style boot sequence:
 
-1. `/setup auto` reads `.env`, detects AI providers and MCP servers, writes `.rph/config.json`, and refreshes `.mcp/config.json`.
+1. `/setup auto` reads `.env`, detects AI providers and MCP servers, writes `.rph/config.json`, refreshes `.mcp/config.json`, and renders a friendly setup assistant with missing env keys plus next commands.
 2. `/ai status` and `/mcp status` show configured, missing, enabled, and disabled connections without printing secrets.
 3. `/ai test [provider]` and `/mcp test [server]` run read-only live probes and write `.rph/connections/latest.json`.
 4. `/ai run --prompt <text>` sends an ad-hoc generation request through the active provider and writes an AI run record.
@@ -90,7 +90,7 @@ The runtime setup layer mirrors a Hermes-style boot sequence:
 6. `/pm draft <docId> --ai`, `/pd <artifact> --ai`, `/fe spec --ai`, and `/be spec --ai` bind the selected AI provider to role-specific artifact generation.
 7. `/agent status` shows the active conversational provider; `/agent clear` resets the in-memory conversation context.
 8. `/settings set <key> <value>` stores custom runtime preferences such as `ui.theme`, `ui.color`, and deployment notes.
-9. `/doctor --live` combines runtime config checks with AI and MCP live probes.
+9. `/setup auto --live` and `/doctor --live` combine runtime config checks with AI and MCP live probes.
 
 AI provider probes use read-only model-list endpoints for OpenAI, Anthropic, Gemini, and local model servers. MCP probes validate the underlying service credentials for Notion, GitHub, Figma, and Stitch where a stable probe exists.
 
