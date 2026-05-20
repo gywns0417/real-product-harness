@@ -1,7 +1,10 @@
-import { aiRunFile } from "./paths";
+import fs from "node:fs";
+import { aiChatFile, aiRunFile } from "./paths";
 import { ensureDir, writeJson } from "./fs";
 import { nowIso } from "./time";
 import {
+  AiChatMessage,
+  AiChatTurnRecord,
   AiGenerationRequest,
   AiGenerationResult,
   AiProviderConfig,
@@ -40,6 +43,13 @@ export function writeAiRunRecord(projectRoot: string, record: AiRunRecord): stri
   return filePath;
 }
 
+export function writeAiChatTurnRecord(projectRoot: string, record: AiChatTurnRecord): string {
+  const filePath = aiChatFile(projectRoot, record.sessionId);
+  ensureDir(`${projectRoot}/.rph/ai/chat`);
+  fs.appendFileSync(filePath, `${JSON.stringify(record)}\n`);
+  return filePath;
+}
+
 export function createAiRunRecord(
   result: AiGenerationResult,
   command: string,
@@ -56,6 +66,54 @@ export function createAiRunRecord(
     outputPreview: preview(result.text),
     generatedAt: result.generatedAt
   };
+}
+
+export function createAiChatTurnRecord(
+  result: AiGenerationResult,
+  sessionId: string,
+  userInput: string,
+  prompt: string
+): AiChatTurnRecord {
+  const generatedAt = result.generatedAt;
+  return {
+    id: result.id,
+    sessionId,
+    providerId: result.providerId,
+    model: result.model,
+    user: {
+      role: "user",
+      content: userInput,
+      at: generatedAt
+    },
+    assistant: {
+      role: "assistant",
+      content: result.text,
+      at: generatedAt
+    },
+    promptPreview: preview(prompt),
+    generatedAt
+  };
+}
+
+export function buildAiChatPrompt(
+  userInput: string,
+  history: AiChatMessage[],
+  context: string,
+  maxHistoryMessages = 12
+): string {
+  const recent = history.slice(-maxHistoryMessages);
+  const transcript = recent.length > 0
+    ? recent.map((message) => `${message.role.toUpperCase()}: ${message.content}`).join("\n\n")
+    : "No prior messages in this runtime session.";
+  return [
+    context,
+    "",
+    "Runtime chat history:",
+    transcript,
+    "",
+    "Current user message:",
+    userInput
+  ].join("\n");
 }
 
 function resolveGenerationProvider(config: HarnessConfig, preferred?: AiProviderId): AiProviderConfig {

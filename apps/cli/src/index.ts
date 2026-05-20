@@ -26,7 +26,9 @@ import {
   createNotionWorkspacePlan,
   createObsidianProject,
   createHotfixPlan,
+  buildAiChatPrompt,
   createAiRunRecord,
+  createAiChatTurnRecord,
   createPullRequestDraft,
   createQaReview,
   createReleasePlan,
@@ -39,6 +41,7 @@ import {
   DOCUMENT_TITLES,
   DesignArtifactId,
   DocumentId,
+  AiChatMessage,
   exportDocumentToObsidian,
   exportDesignArtifactToObsidian,
   FE_SPEC_DOC,
@@ -103,6 +106,7 @@ import {
   Workstream,
   writeConnectionReport,
   writeAiRunRecord,
+  writeAiChatTurnRecord,
   WORKFLOW_STAGES,
   writeGitHubBranchPlan,
   writeGitHubTemplates
@@ -216,6 +220,7 @@ function shouldStartRuntime(argv: string[]): boolean {
 async function runRuntimeShell(initialRoot: string): Promise<void> {
   let projectRoot = initialRoot;
   const sessionId = `session-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+  const chatHistory: AiChatMessage[] = [];
   printRuntimeBanner(projectRoot, sessionId);
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
@@ -240,12 +245,15 @@ async function runRuntimeShell(initialRoot: string): Promise<void> {
         const control = handleRuntimeControlCommand(projectRoot, line);
         if (control.handled) {
           projectRoot = control.projectRoot;
+          if (control.clearChat) {
+            chatHistory.splice(0);
+          }
           ok = true;
           continue;
         }
 
         if (!line.startsWith("/")) {
-          console.log("slash command만 입력하세요. 예: /pm start, /status, /next");
+          ok = await handleRuntimeChat(projectRoot, sessionId, chatHistory, line);
           continue;
         }
 
@@ -296,15 +304,18 @@ function isExitCommand(line: string): boolean {
 function handleRuntimeControlCommand(
   projectRoot: string,
   line: string
-): { handled: true; projectRoot: string } | { handled: false; projectRoot: string } {
+): { handled: true; projectRoot: string; clearChat?: boolean } | { handled: false; projectRoot: string } {
   const argv = parseCommandLine(line);
-  const [command, target] = argv;
-  if (command !== "/project" && command !== "/cd" && command !== "/pwd") {
+  const [command, target, ...rest] = argv;
+  if (!["/project", "/cd", "/pwd", "/chat", "/agent"].includes(command ?? "")) {
     return { handled: false, projectRoot };
   }
   if (command === "/pwd") {
     console.log(projectRoot);
     return { handled: true, projectRoot };
+  }
+  if (command === "/chat" || command === "/agent") {
+    return handleRuntimeAgentCommand(projectRoot, target, rest);
   }
   if (!target) {
     console.log("usage: /project <path>");
@@ -317,7 +328,30 @@ function handleRuntimeControlCommand(
   }
   loadEnvFile(path.join(nextRoot, ".env"));
   console.log(`project switched: ${nextRoot}`);
-  return { handled: true, projectRoot: nextRoot };
+  return { handled: true, projectRoot: nextRoot, clearChat: true };
+}
+
+function handleRuntimeAgentCommand(
+  projectRoot: string,
+  subcommand: string | undefined,
+  _args: string[]
+): { handled: true; projectRoot: string; clearChat?: boolean } {
+  const config = loadRuntimeChatConfig(projectRoot);
+  switch (subcommand) {
+    case undefined:
+    case "status":
+      console.log(`AI agent: ${config.activeAiProvider}`);
+      printAiStatus(config);
+      console.log("일반 텍스트를 입력하면 AI agent와 대화합니다. Slash command는 /pm start처럼 /로 시작합니다.");
+      return { handled: true, projectRoot };
+    case "clear":
+    case "reset":
+      console.log("AI chat context cleared");
+      return { handled: true, projectRoot, clearChat: true };
+    default:
+      console.log("Agent 명령어: /agent status | /agent clear");
+      return { handled: true, projectRoot };
+  }
 }
 
 function appendRuntimeLog(projectRoot: string, sessionId: string, command: string, ok: boolean): void {
@@ -334,6 +368,102 @@ function appendRuntimeLog(projectRoot: string, sessionId: string, command: strin
     ok
   };
   fs.appendFileSync(path.join(runtimeDir, `${sessionId}.jsonl`), `${JSON.stringify(record)}\n`);
+}
+
+async function handleRuntimeChat(
+  projectRoot: string,
+  sessionId: string,
+  chatHistory: AiChatMessage[],
+  userInput: string
+): Promise<boolean> {
+  const config = loadRuntimeChatConfig(projectRoot);
+  const context = buildRuntimeAgentContext(projectRoot);
+  const prompt = buildAiChatPrompt(userInput, chatHistory, context);
+  console.log(renderStatusLine("agent thinking", "skipped"));
+  const result = await generateAiText(config, {
+    prompt,
+    system: [
+      "You are the connected Real Product Harness AI agent inside an interactive terminal runtime.",
+      "Normal user text is conversation. Slash commands are control commands.",
+      "Answer conversationally, but stay grounded in the project state and available slash commands.",
+      "If the user asks to mutate workflow state, explain the exact slash command to run instead of pretending it was executed.",
+      "Use Korean by default."
+    ].join(" "),
+    maxOutputTokens: 1800
+  });
+  const userMessage: AiChatMessage = {
+    role: "user",
+    content: userInput,
+    at: result.generatedAt
+  };
+  const assistantMessage: AiChatMessage = {
+    role: "assistant",
+    content: result.text,
+    at: result.generatedAt
+  };
+  chatHistory.push(userMessage, assistantMessage);
+  if (chatHistory.length > 24) {
+    chatHistory.splice(0, chatHistory.length - 24);
+  }
+  if (isRuntimeProjectInitialized(projectRoot)) {
+    writeAiChatTurnRecord(projectRoot, createAiChatTurnRecord(result, sessionId, userInput, prompt));
+  }
+  console.log("");
+  console.log(result.text.trim());
+  console.log("");
+  return true;
+}
+
+function loadRuntimeChatConfig(projectRoot: string): ReturnType<typeof loadHarnessConfig> {
+  if (isRuntimeProjectInitialized(projectRoot)) {
+    return syncHarnessConfigFromEnv(projectRoot);
+  }
+  return loadHarnessConfig(projectRoot);
+}
+
+function buildRuntimeAgentContext(projectRoot: string): string {
+  if (!isRuntimeProjectInitialized(projectRoot)) {
+    return [
+      "Runtime project context:",
+      `- project_root: ${projectRoot}`,
+      "- initialized: false",
+      "- next_setup_command: /init --yes --project-name <name>"
+    ].join("\n");
+  }
+  const project = loadProject(projectRoot);
+  const state = loadState(projectRoot);
+  const config = loadHarnessConfig(projectRoot);
+  const docs = listDocumentIndexes(projectRoot)
+    .map((doc) => `${doc.docId}:${doc.status}:${doc.currentVersion}`)
+    .join(", ") || "none";
+  const designArtifacts = listDesignArtifactIndexes(projectRoot)
+    .map((artifact) => `${artifact.artifactId}:${artifact.status}:${artifact.currentVersion}`)
+    .join(", ") || "none";
+  const next = nextStage(state);
+  return [
+    "Runtime project context:",
+    `- project: ${project.name}`,
+    `- root: ${projectRoot}`,
+    `- stage: ${state.currentStage}`,
+    `- next_stage: ${next ?? "none"}`,
+    `- active_ai: ${config.activeAiProvider}`,
+    `- configured_mcp: ${configuredMcpServers(config).map((server) => server.id).join(", ") || "none"}`,
+    `- documents: ${docs}`,
+    `- design_artifacts: ${designArtifacts}`,
+    "",
+    "Available command style:",
+    "- Slash commands mutate or inspect workflow state: /status, /next, /pm start, /pm draft <docId> --ai, /pd references --ai, /fe spec --ai, /doctor --live.",
+    "- Plain text is conversation with the connected AI agent."
+  ].join("\n");
+}
+
+function isRuntimeProjectInitialized(projectRoot: string): boolean {
+  try {
+    requireInitialized(projectRoot);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function handleInit(projectRoot: string, options: Record<string, string | boolean>): Promise<void> {
@@ -1920,6 +2050,7 @@ function printHelp(): void {
     "real-product-harness",
     "",
     "Run `rph` to enter the runtime, then use slash commands.",
+    "Inside runtime, plain text chats with the connected AI agent; slash commands control workflow state.",
     "One-shot form is also supported: rph /pm start",
     "",
     "Slash commands:",
@@ -1930,6 +2061,8 @@ function printHelp(): void {
     "  /project <path>",
     "  /pwd",
     "  /exit",
+    "  /agent status | clear",
+    "  /chat status | clear",
     "  /setup auto",
     "  /setup ai [openai|anthropic|gemini|local]",
     "  /setup mcp [notion|github|figma|stitch]",

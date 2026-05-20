@@ -201,6 +201,23 @@ export interface AiRunRecord {
   generatedAt: string;
 }
 
+export interface AiChatMessage {
+  role: "user" | "assistant";
+  content: string;
+  at: string;
+}
+
+export interface AiChatTurnRecord {
+  id: string;
+  sessionId: string;
+  providerId: AiProviderId;
+  model: string;
+  user: AiChatMessage;
+  assistant: AiChatMessage;
+  promptPreview: string;
+  generatedAt: string;
+}
+
 export interface ProjectState {
   projectId: string;
   currentStage: WorkflowStageId;

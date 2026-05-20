@@ -40,7 +40,7 @@ Start the product runtime from a product project folder:
 rph
 ```
 
-Inside the runtime, use slash commands:
+Inside the runtime, type normal messages to chat with the connected AI agent. Use slash commands for control-plane actions, similar to Codex or Claude Code commands:
 
 ```text
 /init --yes --project-name "My Product"
@@ -49,6 +49,8 @@ Inside the runtime, use slash commands:
 /status
 /ai status
 /mcp status
+What should I do next for this product?
+Turn the current idea into a sharper MVP direction.
 /ai run --prompt "Summarize this product idea in three bullets."
 /pm start
 /pm interview
@@ -111,6 +113,8 @@ and writes MCP client config to `.mcp/config.json`.
 /setup mcp notion
 /settings show
 /settings set ui.theme hacker
+/agent status
+/agent clear
 /ai test openai
 /ai run --provider openai --prompt "Draft the first product hypothesis."
 /mcp test notion
@@ -124,6 +128,6 @@ and writes MCP client config to `.mcp/config.json`.
 Configured credentials are never copied into `.rph/config.json`; only env key names,
 configured/missing status, selected provider, and non-secret model/base URL metadata are stored.
 
-AI-generated artifacts write non-secret run records to `.rph/ai/runs/`. Notion remains dry-run by default;
+Plain runtime chat writes non-secret turn records to `.rph/ai/chat/`. AI-generated artifacts write non-secret run records to `.rph/ai/runs/`. Notion remains dry-run by default;
 `/notion setup --live` creates a dashboard page and tracking databases under `NOTION_PARENT_PAGE_ID`,
 and `/notion sync --live` writes a live sync summary page.

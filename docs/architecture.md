@@ -13,13 +13,14 @@ The repo is a TypeScript workspace with a top-level product runtime and focused 
 
 ## Runtime Layer
 
-`rph` is the control-plane entrypoint. Running it without arguments opens a long-lived runtime shell where the operator uses slash commands such as `/pm start`, `/pd references`, `/fe spec`, and `/qa review --pr 1`.
+`rph` is the control-plane entrypoint. Running it without arguments opens a long-lived runtime shell where normal text chats with the connected AI agent and slash commands such as `/pm start`, `/pd references`, `/fe spec`, and `/qa review --pr 1` control workflow state.
 
 The design mirrors a Hermes-style separation:
 
 - Runtime/control plane: keeps the active project, prompt, session, and command envelope.
 - Execution lanes: PM, PD, FE, BE, QA, GitHub, Notion, and Docs handlers execute bounded workflow actions.
 - Records: product state remains in `.rph/`; runtime command history is appended under `.rph/runtime/`.
+- Chat: runtime conversation turns are appended under `.rph/ai/chat/` so the agent feels like a top-level conversational layer, not a command-only CLI.
 - AI run records: provider/model metadata and prompt/output previews are stored under `.rph/ai/runs/`; secrets stay in `.env`.
 - Settings: non-secret provider state lives in `.rph/config.json`; secrets stay in `.env`.
 - Handoff contract: every command either advances state, writes an artifact, reports a blocker, or recommends the next slash command.
@@ -33,6 +34,7 @@ Project state lives under `.rph/` in the target product folder:
 - `.rph/project.json`
 - `.rph/config.json`
 - `.rph/state.json`
+- `.rph/ai/chat/<sessionId>.jsonl`
 - `.rph/ai/runs/<runId>.json`
 - `.rph/documents/<docId>/<version>.md`
 - `.rph/documents/<docId>/index.json`
@@ -84,9 +86,11 @@ The runtime setup layer mirrors a Hermes-style boot sequence:
 2. `/ai status` and `/mcp status` show configured, missing, enabled, and disabled connections without printing secrets.
 3. `/ai test [provider]` and `/mcp test [server]` run read-only live probes and write `.rph/connections/latest.json`.
 4. `/ai run --prompt <text>` sends an ad-hoc generation request through the active provider and writes an AI run record.
-5. `/pm draft <docId> --ai`, `/pd <artifact> --ai`, `/fe spec --ai`, and `/be spec --ai` bind the selected AI provider to role-specific artifact generation.
-6. `/settings set <key> <value>` stores custom runtime preferences such as `ui.theme`, `ui.color`, and deployment notes.
-7. `/doctor --live` combines runtime config checks with AI and MCP live probes.
+5. Plain runtime input builds a chat prompt from recent conversation plus project state, calls the active AI provider, and records the turn under `.rph/ai/chat/`.
+6. `/pm draft <docId> --ai`, `/pd <artifact> --ai`, `/fe spec --ai`, and `/be spec --ai` bind the selected AI provider to role-specific artifact generation.
+7. `/agent status` shows the active conversational provider; `/agent clear` resets the in-memory conversation context.
+8. `/settings set <key> <value>` stores custom runtime preferences such as `ui.theme`, `ui.color`, and deployment notes.
+9. `/doctor --live` combines runtime config checks with AI and MCP live probes.
 
 AI provider probes use read-only model-list endpoints for OpenAI, Anthropic, Gemini, and local model servers. MCP probes validate the underlying service credentials for Notion, GitHub, Figma, and Stitch where a stable probe exists.
 

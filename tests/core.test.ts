@@ -22,7 +22,9 @@ import {
   createWorkIssue,
   createGitHubRepo,
   createLandingPreviewHtml,
+  buildAiChatPrompt,
   createBranchName,
+  createAiChatTurnRecord,
   createDocumentVersion,
   createNotionSyncPayload,
   createNotionWorkspacePlan,
@@ -55,6 +57,7 @@ import {
   syncStateDesignArtifacts,
   transitionState,
   validateEnv,
+  writeAiChatTurnRecord,
   writeGitHubBranchPlan
 } from "../packages/core/src";
 
@@ -426,6 +429,37 @@ describe("command parser and env validation", () => {
     expect(fetchMock).toHaveBeenCalledWith("https://api.openai.com/v1/responses", expect.objectContaining({
       method: "POST"
     }));
+  });
+
+  it("builds and records runtime AI chat turns", () => {
+    const prompt = buildAiChatPrompt("다음에 뭐 하면 돼?", [
+      {
+        role: "user",
+        content: "안녕",
+        at: "2026-05-20T00:00:00.000Z"
+      },
+      {
+        role: "assistant",
+        content: "안녕하세요.",
+        at: "2026-05-20T00:00:01.000Z"
+      }
+    ], "Runtime project context:\n- stage: SETUP");
+    expect(prompt).toContain("Runtime project context");
+    expect(prompt).toContain("USER: 안녕");
+    expect(prompt).toContain("Current user message");
+
+    const record = createAiChatTurnRecord({
+      id: "ai_run_test",
+      providerId: "openai",
+      model: "gpt-5.2",
+      text: "다음은 /pm start 입니다.",
+      endpoint: "https://api.openai.com/v1/responses",
+      generatedAt: "2026-05-20T00:00:02.000Z"
+    }, "session-test", "다음에 뭐 하면 돼?", prompt);
+    const filePath = writeAiChatTurnRecord(root, record);
+    const saved = fs.readFileSync(filePath, "utf8");
+    expect(saved).toContain("ai_run_test");
+    expect(saved).not.toContain("openai-secret");
   });
 });
 

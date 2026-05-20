@@ -36,6 +36,14 @@ export function aiRunFile(projectRoot: string, runId: string): string {
   return path.join(aiRunsDir(projectRoot), `${runId}.json`);
 }
 
+export function aiChatDir(projectRoot: string): string {
+  return path.join(rphDir(projectRoot), "ai", "chat");
+}
+
+export function aiChatFile(projectRoot: string, sessionId: string): string {
+  return path.join(aiChatDir(projectRoot), `${sessionId}.jsonl`);
+}
+
 export function documentsDir(projectRoot: string): string {
   return path.join(rphDir(projectRoot), "documents");
 }
