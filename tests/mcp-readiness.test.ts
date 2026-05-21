@@ -62,7 +62,7 @@ describe("MCP readiness", () => {
         {
           stage: "credential-probe",
           status: "passed",
-          endpoint: "https://api.github.com/rate_limit"
+          endpoint: "https://api.github.com/repos/openai/real-product-harness"
         },
         {
           stage: "protocol-tools-list",
@@ -70,7 +70,32 @@ describe("MCP readiness", () => {
         }
       ]
     });
-    expect(fetchMock).toHaveBeenCalledWith("https://api.github.com/rate_limit", expect.objectContaining({
+    expect(fetchMock).toHaveBeenCalledWith("https://api.github.com/repos/openai/real-product-harness", expect.objectContaining({
+      method: "GET"
+    }));
+  });
+
+  it("probes Notion and Figma target resources instead of only account identity", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ id: "target" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const notionEnv = {
+      NOTION_TOKEN: "notion-secret",
+      NOTION_PARENT_PAGE_ID: "https://www.notion.so/workspace/Page-1234567890abcdef1234567890abcdef?pvs=4"
+    } as NodeJS.ProcessEnv;
+    const notion = await testMcpConnection(createHarnessConfig(notionEnv), "notion", notionEnv);
+    expect(notion.status).toBe("passed");
+    expect(fetchMock).toHaveBeenCalledWith("https://api.notion.com/v1/pages/12345678-90ab-cdef-1234-567890abcdef", expect.objectContaining({
+      method: "GET"
+    }));
+
+    const figmaEnv = {
+      FIGMA_TOKEN: "figma-secret",
+      FIGMA_FILE_ID: "https://www.figma.com/design/file_123/Product?node-id=1-2"
+    } as NodeJS.ProcessEnv;
+    const figma = await testMcpConnection(createHarnessConfig(figmaEnv), "figma", figmaEnv);
+    expect(figma.status).toBe("passed");
+    expect(fetchMock).toHaveBeenCalledWith("https://api.figma.com/v1/files/file_123?depth=1", expect.objectContaining({
       method: "GET"
     }));
   });

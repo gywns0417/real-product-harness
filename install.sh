@@ -6,6 +6,7 @@ RPH_REPO_SLUG="${RPH_REPO_SLUG:-gywns0417/real-product-harness}"
 RPH_REF="${RPH_REF:-main}"
 RPH_INSTALL_DIR="${RPH_INSTALL_DIR:-$HOME/.real-product-harness}"
 RPH_BIN_DIR="${RPH_BIN_DIR:-$HOME/.local/bin}"
+RPH_CONFIG_DIR="${RPH_CONFIG_DIR:-$HOME/.config/rph}"
 RPH_BIN_NAME="${RPH_BIN_NAME:-rph}"
 PNPM_VERSION="${PNPM_VERSION:-10.18.3}"
 
@@ -81,6 +82,7 @@ if ! command -v pnpm >/dev/null 2>&1; then
 fi
 
 mkdir -p "$RPH_BIN_DIR"
+mkdir -p "$RPH_CONFIG_DIR"
 
 if [ -d "$RPH_INSTALL_DIR/.git" ]; then
   info "updating $RPH_INSTALL_DIR"
@@ -107,9 +109,32 @@ exec node "$RPH_INSTALL_DIR/dist/apps/cli/src/index.js" "\$@"
 EOF
 chmod +x "$wrapper"
 
+init_file="$RPH_CONFIG_DIR/init.sh"
+completion_file="$RPH_CONFIG_DIR/completion.zsh"
+cat > "$init_file" <<EOF
+# Real Product Harness shell bootstrap.
+# Source this file from ~/.zshrc or ~/.bashrc for the installed rph command.
+export PATH="$RPH_BIN_DIR:\$PATH"
+EOF
+
+cat > "$completion_file" <<'EOF'
+#compdef rph
+_rph() {
+  local -a commands
+  commands=(
+    help version shell runtime init status next pause resume cancel setup settings
+    ask agent chat ai mcp doctor productize pm pd fe be qa notion docs github
+  )
+  _describe 'rph command' commands
+}
+_rph "$@"
+EOF
+
 "$wrapper" help >/dev/null
 
 success "installed: $wrapper"
+success "shell bootstrap: $init_file"
+success "zsh completion: $completion_file"
 case ":$PATH:" in
   *":$RPH_BIN_DIR:"*) ;;
   *)
@@ -117,6 +142,9 @@ case ":$PATH:" in
     info "export PATH=\"$RPH_BIN_DIR:\$PATH\""
     ;;
 esac
+info "optional shell bootstrap:"
+info "source \"$init_file\""
 
 success "try: rph"
+success "one-shot: rph pm start"
 info "inside runtime: /init --yes --project-name \"My Product\""

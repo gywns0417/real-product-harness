@@ -34,6 +34,7 @@ import {
   createNotionWorkspacePlan,
   createObsidianProject,
   diffDocumentVersions,
+  executeAgentTurn,
   exportDocumentToObsidian,
   exportDesignArtifactToObsidian,
   initProject,
@@ -60,6 +61,7 @@ import {
   renderSetupGuide,
   setupGitHubLabels,
   showDocument,
+  showDesignArtifact,
   advanceAfterEngineeringApproval,
   syncStateDocuments,
   syncStateDesignArtifacts,
@@ -67,7 +69,12 @@ import {
   testMcpConnection,
   transitionState,
   createRuntimeSessionManifest,
+  listPullRequests,
+  listWorkIssues,
+  readQaReport,
+  runProductizeGoldenPath,
   saveRuntimeSession,
+  saveState,
   upsertEnvFileValues,
   updateRuntimeSession,
   validateEnv,
@@ -146,6 +153,69 @@ describe("document versions", () => {
     createDocumentVersion(root, "product-definition", { changeSummary: "initial", body: "# A" });
     createDocumentVersion(root, "product-definition", { changeSummary: "revision", body: "# B" });
     expect(diffDocumentVersions(root, "product-definition", "v1.0.0", "v1.0.1")).toContain("+ # B");
+  });
+});
+
+describe("productize golden path", () => {
+  it("creates a review-ready execution package without placeholders", () => {
+    const idea = "AI 회의록을 액션아이템과 담당자 추적으로 바꾸는 SaaS";
+    const result = runProductizeGoldenPath(root, { idea });
+
+    expect(result.documents).toHaveLength(11);
+    expect(result.designArtifacts).toHaveLength(5);
+    expect(result.issues).toHaveLength(2);
+    expect(result.pullRequests).toHaveLength(2);
+    expect(result.qaReports).toHaveLength(2);
+    expect(result.stage).toBe("PM_PRODUCT_DEFINITION_REVIEW");
+    expect(fs.existsSync(result.reportPath)).toBe(true);
+    expect(fs.existsSync(result.reportMarkdownPath)).toBe(true);
+
+    for (const document of result.documents) {
+      expect(showDocument(root, document.docId)).not.toMatch(/\bTBD\b/);
+      expect(document.status).toBe("review");
+    }
+    for (const artifact of result.designArtifacts) {
+      expect(showDesignArtifact(root, artifact.artifactId)).not.toMatch(/\bTBD\b/);
+      expect(artifact.status).toBe("review");
+    }
+
+    const issues = listWorkIssues(root);
+    expect(issues.map((issue) => issue.assigneeAgent)).toEqual(["FE", "BE"]);
+    for (const issue of issues) {
+      expect(issue.acceptanceCriteria.join("\n")).not.toMatch(/\bTBD\b/);
+      expect(issue.relatedDocs).toContain("requirements");
+      expect(issue.relatedApis.length).toBeGreaterThan(0);
+    }
+
+    const prs = listPullRequests(root);
+    expect(prs.map((pr) => pr.userApproval)).toEqual(["required", "required"]);
+    for (const pr of prs) {
+      const body = fs.readFileSync(path.join(root, ".rph", "prs", `issue-${pr.issueNumber}.md`), "utf8");
+      expect(body).not.toMatch(/\bTBD\b/);
+      expect(body).toContain("## Changes");
+    }
+
+    const feQa = readQaReport(root, result.pullRequests[0].prNumber);
+    expect(feQa.requirementStatus).toBe("matched");
+    expect(feQa.designStatus).toBe("matched");
+    expect(feQa.apiContractStatus).toBe("matched");
+    expect(feQa.securityStatus).toBe("unknown");
+    expect(feQa.accessibilityStatus).toBe("unknown");
+    expect(feQa.findings).toContain("Security review not run; status remains unknown");
+    expect(feQa.findings).toContain("Accessibility review not run; status remains unknown");
+    const qaMarkdown = fs.readFileSync(path.join(root, ".rph", "qa", `pr-${feQa.prNumber}-report.md`), "utf8");
+    expect(qaMarkdown).toContain("- security_status: unknown");
+    expect(qaMarkdown).toContain("- accessibility_status: unknown");
+    const beQa = readQaReport(root, result.pullRequests[1].prNumber);
+    expect(result.qaReports.map((report) => report.securityStatus)).toEqual(["unknown", "unknown"]);
+    expect(result.qaReports.map((report) => report.accessibilityStatus)).toEqual(["unknown", "unknown"]);
+    expect(beQa.securityStatus).toBe("unknown");
+    expect(beQa.accessibilityStatus).toBe("unknown");
+
+    const report = fs.readFileSync(result.reportMarkdownPath, "utf8");
+    expect(report).toContain("Productize Golden Path Report");
+    expect(report).toContain("/docs approve product-definition --by user");
+    expect(report).not.toMatch(/\bTBD\b/);
   });
 });
 
@@ -467,7 +537,9 @@ describe("command parser and env validation", () => {
       GITHUB_REPO: "real-product-harness"
     } as NodeJS.ProcessEnv);
     const check = await testMcpConnection(config, "github", {
-      GITHUB_TOKEN: "github-secret"
+      GITHUB_TOKEN: "github-secret",
+      GITHUB_OWNER: "king",
+      GITHUB_REPO: "real-product-harness"
     } as NodeJS.ProcessEnv);
 
     expect(check.status).toBe("passed");
@@ -700,6 +772,394 @@ describe("command parser and env validation", () => {
     expect(saved).toContain("ai_run_test");
     expect(saved).not.toContain("openai-secret");
   });
+
+  it("executes read-only agent tool calls and records the turn in runtime state", async () => {
+    let callCount = 0;
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      callCount += 1;
+      const text = callCount === 1
+        ? JSON.stringify({
+            action: {
+              type: "tool_call",
+              tool: "workflow.get_status",
+              args: {}
+            }
+          })
+        : JSON.stringify({
+            action: {
+              type: "respond",
+              message: "현재 단계는 SETUP입니다."
+            }
+          });
+      return new Response(JSON.stringify({
+        output: [
+          {
+            type: "message",
+            content: [
+              {
+                type: "output_text",
+                text
+              }
+            ]
+          }
+        ],
+        usage: {
+          input_tokens: 10,
+          output_tokens: 5
+        }
+      }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const config = createHarnessConfig({
+      OPENAI_API_KEY: "openai-secret"
+    } as NodeJS.ProcessEnv);
+
+    const result = await executeAgentTurn({
+      projectRoot: root,
+      sessionId: "session-tool-loop",
+      userInput: "팀에게 현재 상황을 설명해줘",
+      config,
+      env: {
+        OPENAI_API_KEY: "openai-secret"
+      } as NodeJS.ProcessEnv
+    });
+
+    expect(result.text).toContain("SETUP");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const secondPayload = JSON.parse(String(fetchMock.mock.calls[1][1]?.body ?? "{}")) as { input: string };
+    expect(secondPayload.input).toContain("Tool observation");
+    const manifest = loadRuntimeSession(root);
+    expect(manifest?.version).toBe(2);
+    expect(manifest?.activeTurn?.status).toBe("complete");
+    expect(manifest?.activeTurn?.toolCalls[0].name).toBe("workflow.get_status");
+    expect(manifest?.activeTurn?.toolCalls[0].status).toBe("succeeded");
+    expect(manifest?.activeTurn?.toolCalls[0].observation).toContain("\"stage\": \"SETUP\"");
+    expect(manifest?.toolTrace?.[0].name).toBe("workflow.get_status");
+  });
+
+  it("records unsupported agent tools as failed observations before final response", async () => {
+    let callCount = 0;
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      callCount += 1;
+      const text = callCount === 1
+        ? JSON.stringify({
+            action: {
+              type: "tool_call",
+              tool: "external.mcp.write",
+              args: { target: "notion" }
+            }
+          })
+        : JSON.stringify({
+            action: {
+              type: "respond",
+              message: "외부 쓰기 도구는 아직 허용되지 않습니다."
+            }
+          });
+      return new Response(JSON.stringify({
+        output: [
+          {
+            type: "message",
+            content: [
+              {
+                type: "output_text",
+                text
+              }
+            ]
+          }
+        ]
+      }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const config = createHarnessConfig({ OPENAI_API_KEY: "openai-secret" } as NodeJS.ProcessEnv);
+
+    const result = await executeAgentTurn({
+      projectRoot: root,
+      sessionId: "session-unsupported-tool",
+      userInput: "Notion에 바로 써줘",
+      config,
+      env: { OPENAI_API_KEY: "openai-secret" } as NodeJS.ProcessEnv
+    });
+
+    expect(result.text).toContain("허용되지 않습니다");
+    const manifest = loadRuntimeSession(root);
+    expect(manifest?.activeTurn?.status).toBe("complete");
+    expect(manifest?.activeTurn?.toolCalls[0].name).toBe("external.mcp.write");
+    expect(manifest?.activeTurn?.toolCalls[0].status).toBe("failed");
+    expect(manifest?.activeTurn?.toolCalls[0].error).toContain("unsupported agent tool");
+  });
+
+  it("chains multiple read-only tools before final response", async () => {
+    createDocumentVersion(root, "product-definition", {
+      changeSummary: "seed",
+      body: "# Product Definition\n\n실행형 하네스"
+    });
+    let callCount = 0;
+    const fetchMock = vi.fn(async () => {
+      callCount += 1;
+      const text = callCount === 1
+        ? JSON.stringify({
+            action: {
+              type: "tool_call",
+              tool: "artifacts.list",
+              args: {}
+            }
+          })
+        : callCount === 2
+          ? JSON.stringify({
+              action: {
+                type: "tool_call",
+                tool: "artifacts.get",
+                args: { id: "product-definition" }
+              }
+            })
+          : JSON.stringify({
+              action: {
+                type: "respond",
+                message: "product-definition 문서를 확인했습니다."
+              }
+            });
+      return new Response(JSON.stringify({
+        output: [
+          {
+            type: "message",
+            content: [
+              {
+                type: "output_text",
+                text
+              }
+            ]
+          }
+        ]
+      }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const config = createHarnessConfig({ OPENAI_API_KEY: "openai-secret" } as NodeJS.ProcessEnv);
+
+    const result = await executeAgentTurn({
+      projectRoot: root,
+      sessionId: "session-tool-chain",
+      userInput: "제품 정의 문서 내용을 확인해줘",
+      config,
+      env: { OPENAI_API_KEY: "openai-secret" } as NodeJS.ProcessEnv
+    });
+
+    expect(result.text).toContain("확인했습니다");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const manifest = loadRuntimeSession(root);
+    expect(manifest?.activeTurn?.toolCalls.map((call) => call.name)).toEqual(["artifacts.list", "artifacts.get"]);
+    expect(manifest?.activeTurn?.toolCalls[1].observation).toContain("실행형 하네스");
+    expect(manifest?.toolTrace?.slice(-2).map((call) => call.name)).toEqual(["artifacts.list", "artifacts.get"]);
+  });
+
+  it("records command and handoff action proposals", async () => {
+    let callCount = 0;
+    const fetchMock = vi.fn(async () => {
+      callCount += 1;
+      const text = callCount === 1
+        ? [
+            "제안:",
+            JSON.stringify({
+              action: {
+                type: "command",
+                command: "/status",
+                safeToAutoRun: true,
+                reason: "현재 상태 조회",
+                message: "상태 확인 명령을 제안합니다."
+              }
+            })
+          ].join("\n")
+        : JSON.stringify({
+            action: {
+              type: "handoff",
+              message: "PD에게 넘길 수 있습니다.",
+              handoff: {
+                toAgent: "PD",
+                stage: "PD_REFERENCES",
+                summary: "제품 정의 승인 후 디자인 레퍼런스 수집",
+                artifactRefs: ["document:product-definition"],
+                acceptanceCriteria: ["approved product-definition exists"],
+                nextCommand: "/pd references --ai"
+              }
+            }
+          });
+      return new Response(JSON.stringify({
+        output: [
+          {
+            type: "message",
+            content: [
+              {
+                type: "output_text",
+                text
+              }
+            ]
+          }
+        ]
+      }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const config = createHarnessConfig({ OPENAI_API_KEY: "openai-secret" } as NodeJS.ProcessEnv);
+
+    const commandResult = await executeAgentTurn({
+      projectRoot: root,
+      sessionId: "session-command",
+      userInput: "상태 확인 명령을 제안해줘",
+      config,
+      env: { OPENAI_API_KEY: "openai-secret" } as NodeJS.ProcessEnv
+    });
+    expect(commandResult.turn.proposedCommand?.command).toBe("/status");
+    expect(commandResult.turn.proposedCommand?.safeToAutoRun).toBe(true);
+
+    const handoffResult = await executeAgentTurn({
+      projectRoot: root,
+      sessionId: "session-handoff-action",
+      userInput: "PD에게 넘겨줘",
+      config,
+      env: { OPENAI_API_KEY: "openai-secret" } as NodeJS.ProcessEnv
+    });
+    expect(handoffResult.turn.proposedHandoff?.toAgent).toBe("PD");
+    expect(handoffResult.turn.proposedHandoff?.nextCommand).toBe("/pd references --ai");
+  });
+
+  it("records wait actions in the runtime manifest", async () => {
+    const fetchMock = vi.fn(async () => {
+      const text = JSON.stringify({
+        action: {
+          type: "wait",
+          message: "승인 전에는 외부 쓰기를 실행하지 않겠습니다."
+        }
+      });
+      return new Response(JSON.stringify({
+        output: [
+          {
+            type: "message",
+            content: [
+              {
+                type: "output_text",
+                text
+              }
+            ]
+          }
+        ]
+      }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const config = createHarnessConfig({ OPENAI_API_KEY: "openai-secret" } as NodeJS.ProcessEnv);
+
+    const result = await executeAgentTurn({
+      projectRoot: root,
+      sessionId: "session-wait",
+      userInput: "승인 전에 배포해줘",
+      config,
+      env: { OPENAI_API_KEY: "openai-secret" } as NodeJS.ProcessEnv
+    });
+
+    expect(result.turn.status).toBe("waiting");
+    const manifest = loadRuntimeSession(root);
+    expect(manifest?.activeTurn?.status).toBe("waiting");
+    expect(manifest?.waitCondition?.kind).toBe("user_approval");
+    expect(manifest?.waitCondition?.message).toContain("승인 전");
+  });
+
+  it("fails closed and records the turn when malformed action JSON cannot be repaired", async () => {
+    const fetchMock = vi.fn(async () => {
+      return new Response(JSON.stringify({
+        output: [
+          {
+            type: "message",
+            content: [
+              {
+                type: "output_text",
+                text: "{\"action\":"
+              }
+            ]
+          }
+        ]
+      }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const config = createHarnessConfig({ OPENAI_API_KEY: "openai-secret" } as NodeJS.ProcessEnv);
+
+    await expect(executeAgentTurn({
+      projectRoot: root,
+      sessionId: "session-malformed",
+      userInput: "상태를 JSON으로 알려줘",
+      config,
+      env: { OPENAI_API_KEY: "openai-secret" } as NodeJS.ProcessEnv
+    })).rejects.toThrow(/invalid agent action/);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const manifest = loadRuntimeSession(root);
+    expect(manifest?.activeTurn?.status).toBe("failed");
+    expect(manifest?.activeTurn?.error).toContain("invalid agent action");
+  });
+
+  it("uses a repaired action when malformed JSON can be fixed", async () => {
+    let callCount = 0;
+    const fetchMock = vi.fn(async () => {
+      callCount += 1;
+      const text = callCount === 1
+        ? "{\"action\":"
+        : JSON.stringify({
+            action: {
+              type: "respond",
+              message: "수정된 JSON 응답입니다."
+            }
+          });
+      return new Response(JSON.stringify({
+        output: [
+          {
+            type: "message",
+            content: [
+              {
+                type: "output_text",
+                text
+              }
+            ]
+          }
+        ]
+      }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const config = createHarnessConfig({ OPENAI_API_KEY: "openai-secret" } as NodeJS.ProcessEnv);
+
+    const result = await executeAgentTurn({
+      projectRoot: root,
+      sessionId: "session-repaired",
+      userInput: "상태를 JSON으로 알려줘",
+      config,
+      env: { OPENAI_API_KEY: "openai-secret" } as NodeJS.ProcessEnv
+    });
+
+    expect(result.text).toBe("수정된 JSON 응답입니다.");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(loadRuntimeSession(root)?.activeTurn?.status).toBe("complete");
+  });
+
+  it("derives handoff packets and approval waits from runtime state", () => {
+    saveRuntimeSession(root, createRuntimeSessionManifest(root, "session-handoff"));
+    const pmState = transitionState(loadState(root), "PM_PRODUCT_DEFINITION_INTERVIEW", "pm start");
+    saveState(root, pmState);
+
+    const handoffManifest = loadRuntimeSession(root);
+    expect(handoffManifest?.handoffPacket?.fromAgent).toBe("Orchestrator");
+    expect(handoffManifest?.handoffPacket?.toAgent).toBe("PM");
+    expect(handoffManifest?.handoffPacket?.resumeCursor).toBe("stage:PM_PRODUCT_DEFINITION_INTERVIEW");
+    expect(handoffManifest?.handoffPacket?.nextCommand).toBe("/pm interview");
+    expect(handoffManifest?.stageQueue?.[0].stage).toBe("PM_PRODUCT_DEFINITION_INTERVIEW");
+    expect(handoffManifest?.stageQueue?.[0].id).toBe("stage:PM_PRODUCT_DEFINITION_INTERVIEW");
+    expect(handoffManifest?.stageQueue?.[0].nextCommand).toBe("/pm interview");
+    expect(handoffManifest?.stageQueue?.some((entry) => entry.stage === "PM_PRODUCT_DEFINITION_DRAFT")).toBe(true);
+
+    const draft = createDocumentVersion(root, "product-definition", {
+      changeSummary: "draft",
+      body: "# Product Definition"
+    });
+    const reviewState = advanceAfterPmDraft(syncStateDocuments(pmState, draft), "product-definition");
+    saveState(root, reviewState);
+    const reviewManifest = loadRuntimeSession(root);
+    expect(reviewManifest?.waitCondition?.kind).toBe("user_approval");
+    expect(reviewManifest?.waitCondition?.message).toContain("product-definition");
+  });
 });
 
 describe("runtime planner and context bundle", () => {
@@ -711,6 +1171,13 @@ describe("runtime planner and context bundle", () => {
     expect(workflowPlan.kind).toBe("start-workflow");
     expect(workflowPlan.command).toBe("/fe spec --ai");
     expect(workflowPlan.workflowTarget).toBe("fe");
+
+    const productizePlan = planAgentAction({
+      text: "이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: AI 회의록 액션아이템 SaaS",
+      initialized: true
+    });
+    expect(productizePlan.kind).toBe("start-workflow");
+    expect(productizePlan.command).toBe('/productize "AI 회의록 액션아이템 SaaS"');
 
     expect(planAgentAction({ text: "핵심 사용자 누구야?", initialized: true }).kind).toBe("chat");
     expect(planAgentAction({ text: "   ", initialized: true }).kind).toBe("unknown");

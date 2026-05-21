@@ -52,6 +52,18 @@ export function runtimeSessionFile(projectRoot: string): string {
   return path.join(runtimeDir(projectRoot), "current-session.json");
 }
 
+export function goldenPathDir(projectRoot: string): string {
+  return path.join(rphDir(projectRoot), "golden-path");
+}
+
+export function goldenPathReportFile(projectRoot: string): string {
+  return path.join(goldenPathDir(projectRoot), "latest.json");
+}
+
+export function goldenPathReportMarkdownFile(projectRoot: string): string {
+  return path.join(goldenPathDir(projectRoot), "latest.md");
+}
+
 export function documentsDir(projectRoot: string): string {
   return path.join(rphDir(projectRoot), "documents");
 }

@@ -4,10 +4,11 @@ import { qaReportFile, qaReportMarkdownFile } from "./paths";
 import { readJsonIfExists, writeJson, writeText } from "./fs";
 import { QAReportRecord } from "./types";
 import { nowIso } from "./time";
-import { readPullRequest, updatePullRequest } from "./issues";
+import { readPullRequest, readWorkIssue, updatePullRequest } from "./issues";
 
 export function createQaReview(projectRoot: string, prNumber: number): QAReportRecord {
   const pr = readPullRequest(projectRoot, prNumber);
+  const issue = readWorkIssue(projectRoot, pr.issueNumber);
   const now = nowIso();
   const report = readQaReport(projectRoot, prNumber);
   const next: QAReportRecord = {
@@ -16,7 +17,18 @@ export function createQaReview(projectRoot: string, prNumber: number): QAReportR
     status: report.status,
     conflictStatus: report.conflictStatus,
     testStatus: report.testStatus,
-    findings: mergeFindings(report.findings, [`QA review requested for PR #${prNumber}`]),
+    requirementStatus: issue.relatedDocs.includes("requirements") ? "matched" : "gap",
+    designStatus: issue.relatedDocs.includes("screen-definition") || issue.relatedScreens.length > 0 ? "matched" : "gap",
+    apiContractStatus: issue.relatedDocs.includes("api-contract") || issue.relatedApis.length > 0 ? "matched" : "gap",
+    securityStatus: report.securityStatus,
+    accessibilityStatus: report.accessibilityStatus,
+    findings: mergeFindings(report.findings, [
+      `QA review requested for PR #${prNumber}`,
+      `Requirement evidence linked from issue #${issue.issueNumber}`,
+      "Security review not run; status remains unknown",
+      "Accessibility review not run; status remains unknown",
+      `Approval remains required before merge for ${pr.sourceBranch}`
+    ]),
     reportPath: qaReportMarkdownFile(projectRoot, prNumber),
     createdAt: report.createdAt || now,
     updatedAt: now
@@ -137,10 +149,12 @@ function renderQaReport(report: QAReportRecord): string {
     `- requirement_status: ${report.requirementStatus}`,
     `- design_status: ${report.designStatus}`,
     `- api_contract_status: ${report.apiContractStatus}`,
+    `- security_status: ${report.securityStatus}`,
+    `- accessibility_status: ${report.accessibilityStatus}`,
     `- user_merge_decision_required: ${report.userMergeDecisionRequired}`,
     "",
     "## Findings",
-    ...(report.findings.length > 0 ? report.findings.map((finding) => `- ${finding}`) : ["- TBD"])
+    ...(report.findings.length > 0 ? report.findings.map((finding) => `- ${finding}`) : ["- No findings recorded yet"])
   ].join("\n");
 }
 

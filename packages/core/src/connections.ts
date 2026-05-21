@@ -1,5 +1,7 @@
 import { MCP_SERVER_CONTRACTS, STITCH_MCP_URL, type McpServerContract } from "../../integrations/src/mcp";
 import { generateAiText } from "./ai";
+import { normalizeNotionPageId } from "./notion";
+import { normalizeGitHubRepoTarget } from "./settings";
 import { nowIso } from "./time";
 import { AiProviderId, ConnectionCheck, HarnessConfig, McpServerId } from "./types";
 
@@ -75,19 +77,29 @@ export async function testMcpConnection(
   }
 
   switch (serverId) {
-    case "notion":
-      return testRestAdapter(serverId, server.envKeys, "https://api.notion.com/v1/users/me", {
+    case "notion": {
+      const pageId = safeNormalizeNotionPageId(env.NOTION_PARENT_PAGE_ID ?? "");
+      if (!pageId) {
+        return invalidRestTarget(serverId, server.envKeys, "NOTION_PARENT_PAGE_ID must be a Notion page UUID or URL containing one");
+      }
+      return testRestAdapter(serverId, server.envKeys, `https://api.notion.com/v1/pages/${encodeURIComponent(pageId)}`, {
         Authorization: `Bearer ${env.NOTION_TOKEN}`,
         "Notion-Version": "2026-03-11"
       }, contract.protocolReason);
-    case "github":
-      return testRestAdapter(serverId, server.envKeys, "https://api.github.com/rate_limit", {
+    }
+    case "github": {
+      const target = normalizeGitHubRepoTarget(env.GITHUB_OWNER, env.GITHUB_REPO);
+      if (!target.owner || !target.repo || target.warnings.length > 0) {
+        return invalidRestTarget(serverId, server.envKeys, target.warnings[0] ?? "GITHUB_OWNER/GITHUB_REPO target is missing");
+      }
+      return testRestAdapter(serverId, server.envKeys, `https://api.github.com/repos/${encodeURIComponent(target.owner)}/${encodeURIComponent(target.repo)}`, {
         Accept: "application/vnd.github+json",
         Authorization: `Bearer ${env.GITHUB_TOKEN}`,
         "X-GitHub-Api-Version": "2026-03-10"
       }, contract.protocolReason);
+    }
     case "figma":
-      return testRestAdapter(serverId, server.envKeys, "https://api.figma.com/v1/me", {
+      return testRestAdapter(serverId, server.envKeys, `https://api.figma.com/v1/files/${encodeURIComponent(normalizeFigmaFileId(env.FIGMA_FILE_ID ?? ""))}?depth=1`, {
         "X-Figma-Token": env.FIGMA_TOKEN ?? ""
       }, contract.protocolReason);
     case "stitch":
@@ -95,6 +107,36 @@ export async function testMcpConnection(
     default:
       return withReadiness(skipped("mcp", serverId, "no probe is defined for this MCP server", server.envKeys, []), []);
   }
+}
+
+function safeNormalizeNotionPageId(value: string): string | null {
+  try {
+    return normalizeNotionPageId(value);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeFigmaFileId(value: string): string {
+  const trimmed = value.trim();
+  const urlMatch = trimmed.match(/figma\.com\/(?:file|design)\/([^/?#]+)/i);
+  return urlMatch?.[1] ?? trimmed;
+}
+
+function invalidRestTarget(id: McpServerId, requiredEnv: string[], message: string): ConnectionCheck {
+  return withReadiness({
+    id,
+    kind: "mcp",
+    status: "failed",
+    message: `credential: ${message}; protocol: not applicable`,
+    requiredEnv,
+    missingEnv: [],
+    checkedAt: nowIso()
+  }, [
+    { stage: "transport", status: "skipped", message },
+    { stage: "credential-probe", status: "failed", message },
+    { stage: "protocol-tools-list", status: "not-applicable", message: "REST adapter target normalization failed before protocol probing" }
+  ]);
 }
 
 export async function testAllAiConnections(config: HarnessConfig): Promise<ConnectionCheck[]> {

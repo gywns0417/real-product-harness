@@ -14,6 +14,11 @@
     "lint": "tsc -p tsconfig.json --noEmit",
     "rph": "node dist/apps/cli/src/index.js",
     "work-clock": "node scripts/work-clock.mjs",
+    "smoke:productize": "node scripts/productize-smoke.mjs",
+    "live:matrix": "node scripts/live-matrix.mjs",
+    "live:configured": "node scripts/live-matrix.mjs --configured-only",
+    "release:check": "pnpm run lint && pnpm run build && pnpm test && pnpm run smoke:productize",
+    "release:live": "pnpm run build && pnpm run live:matrix",
     "test": "vitest run tests",
     "start": "node dist/apps/cli/src/index.js"
   },

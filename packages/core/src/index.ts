@@ -1,5 +1,6 @@
 export * from "./approvals";
 export * from "./ai";
+export * from "./agent-turn-executor";
 export * from "./agent-runtime";
 export * from "./commands";
 export * from "./connections";
@@ -15,6 +16,8 @@ export * from "./issues";
 export * from "./notion";
 export * from "./obsidian";
 export * from "./pm";
+export * from "./product-idea";
+export * from "./productize";
 export * from "./paths";
 export * from "./pd";
 export * from "./project";

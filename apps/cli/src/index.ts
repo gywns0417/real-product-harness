@@ -9,7 +9,6 @@ import {
   advanceAfterPmApproval,
   advanceAfterPmDraft,
   advanceAfterPdApproval,
-  assembleAgentContext,
   applyNotionWorkspacePlan,
   approveDesignArtifact,
   approveDocument,
@@ -29,13 +28,14 @@ import {
   createNotionWorkspacePlan,
   createObsidianProject,
   createHotfixPlan,
-  buildAiChatPrompt,
+  executeAgentTurn,
   createAiRunRecord,
   createAiChatTurnRecord,
   createPullRequestDraft,
   createQaReview,
   createReleasePlan,
   createWorkIssue,
+  runProductizeGoldenPath,
   checkQaConflicts,
   ensureRuntimeSession,
   DESIGN_ARTIFACT_IDS,
@@ -50,6 +50,7 @@ import {
   aiChatFile,
   exportDocumentToObsidian,
   exportDesignArtifactToObsidian,
+  extractProductIdea,
   FE_SPEC_DOC,
   FE_SPRINT_PLAN_DOC,
   BE_SPEC_DOC,
@@ -88,7 +89,6 @@ import {
   recordRuntimeSessionEvent,
   renderRuntimeHero,
   renderSetupGuide,
-  renderAgentContextBundle,
   renderStatusLine,
   renderInterview,
   runQaTests,
@@ -142,6 +142,8 @@ const HELP_TOPIC_LINES: Record<string, string[]> = {
     "Runtime commands",
     "",
     "Enter runtime: rph",
+    "One-shot natural language: rph ask <message>",
+    "One-shot golden path: rph /productize <product idea>",
     "One-shot: rph /pm start",
     "",
     "Core commands:",
@@ -152,6 +154,16 @@ const HELP_TOPIC_LINES: Record<string, string[]> = {
     "  /chat status | clear",
     "  /agent status | clear",
     "  /exit"
+  ],
+  productize: [
+    "Productize commands",
+    "",
+    "  rph /productize <product idea>",
+    "  rph productize --idea <product idea>",
+    "  rph ask \"이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: <idea>\"",
+    "",
+    "Creates a review-ready package: PM docs, PD artifacts, FE/BE/API specs, sprint plans, FE/BE issues, PR drafts, QA reports, and a local deployment plan.",
+    "External merge/deploy/write actions remain blocked until explicit user approval."
   ],
   setup: [
     "Setup commands",
@@ -338,7 +350,7 @@ export async function runParsedCommand(
       case "ask":
       case "agent":
       case "chat":
-        await handleAsk(projectRoot, parsed.args, parsed.options);
+        await handleAsk(projectRoot, [parsed.subcommand, ...parsed.args].filter((item): item is string => Boolean(item)), parsed.options);
         break;
       case "ai":
         await handleAi(projectRoot, parsed.subcommand, parsed.args, parsed.options);
@@ -348,6 +360,9 @@ export async function runParsedCommand(
         break;
       case "doctor":
         await handleDoctor(projectRoot, parsed.options);
+        break;
+      case "productize":
+        handleProductize(projectRoot, parsed.subcommand, parsed.args, parsed.options);
         break;
       case "pm":
         await handlePm(projectRoot, parsed.subcommand, parsed.args, parsed.options);
@@ -611,33 +626,36 @@ async function handleRuntimeChat(
   userInput: string
 ): Promise<boolean> {
   const config = loadRuntimeChatConfig(projectRoot);
-  const context = buildRuntimeAgentContext(projectRoot);
-  const prompt = buildAiChatPrompt(userInput, chatHistory, context);
   console.log(renderStatusLine("agent thinking", "skipped"));
-  const result = await generateAiText(config, {
-    prompt,
+  const turnResult = await executeAgentTurn({
+    projectRoot,
+    sessionId,
+    userInput,
+    history: chatHistory,
+    config,
     system: agentChatSystemPrompt(),
     maxOutputTokens: 1800
   });
   const userMessage: AiChatMessage = {
     role: "user",
     content: userInput,
-    at: result.generatedAt
+    at: turnResult.result.generatedAt
   };
   const assistantMessage: AiChatMessage = {
     role: "assistant",
-    content: result.text,
-    at: result.generatedAt
+    content: turnResult.text,
+    at: turnResult.result.generatedAt
   };
   chatHistory.push(userMessage, assistantMessage);
   if (chatHistory.length > 24) {
     chatHistory.splice(0, chatHistory.length - 24);
   }
   if (isRuntimeProjectInitialized(projectRoot)) {
-    writeAiChatTurnRecord(projectRoot, createAiChatTurnRecord(result, sessionId, userInput, prompt));
+    writeAiChatTurnRecord(projectRoot, createAiChatTurnRecord(turnResult.result, sessionId, userInput, turnResult.prompt));
   }
   console.log("");
-  console.log(result.text.trim());
+  console.log(turnResult.text.trim());
+  await runAgentCommandProposal(projectRoot, turnResult.turn.proposedCommand);
   console.log("");
   return true;
 }
@@ -663,17 +681,85 @@ async function handleAsk(
     return;
   }
   const config = loadRuntimeChatConfig(projectRoot);
-  const context = buildRuntimeAgentContext(projectRoot);
-  const aiPrompt = buildAiChatPrompt(prompt, [], context);
-  const result = await generateAiText(config, {
-    prompt: aiPrompt,
+  const sessionId = `ask-${Date.now()}`;
+  const turnResult = await executeAgentTurn({
+    projectRoot,
+    sessionId,
+    userInput: prompt,
+    history: [],
+    config,
     system: agentChatSystemPrompt(),
     maxOutputTokens: parseOptionalPositiveInt(optionString(options, "max-tokens")) ?? 1800
   });
   if (isRuntimeProjectInitialized(projectRoot)) {
-    writeAiChatTurnRecord(projectRoot, createAiChatTurnRecord(result, `ask-${result.id}`, prompt, aiPrompt));
+    writeAiChatTurnRecord(projectRoot, createAiChatTurnRecord(turnResult.result, sessionId, prompt, turnResult.prompt));
   }
-  console.log(result.text.trim());
+  console.log(turnResult.text.trim());
+  await runAgentCommandProposal(projectRoot, turnResult.turn.proposedCommand);
+}
+
+async function runAgentCommandProposal(
+  projectRoot: string,
+  proposal: { command: string; safeToAutoRun: boolean; reason?: string } | undefined
+): Promise<void> {
+  if (!proposal) {
+    return;
+  }
+  console.log(`agent proposed command: ${proposal.command}`);
+  if (proposal.reason) {
+    console.log(`reason: ${proposal.reason}`);
+  }
+  if (!proposal.safeToAutoRun || !isReadOnlyAgentCommand(proposal.command)) {
+    console.log("auto-run: skipped");
+    return;
+  }
+  console.log(`agent action: ${proposal.command}`);
+  const parsed = parseCli(parseCommandLine(proposal.command));
+  await runParsedCommand(projectRoot, parsed, false);
+}
+
+function isReadOnlyAgentCommand(command: string): boolean {
+  try {
+    const parsed = parseCli(parseCommandLine(command));
+    return ["status", "next", "help"].includes(parsed.command);
+  } catch {
+    return false;
+  }
+}
+
+function handleProductize(
+  projectRoot: string,
+  subcommand: string | undefined,
+  args: string[],
+  options: Record<string, string | boolean>
+): void {
+  const rawIdea = optionString(options, "idea") ?? [subcommand, ...args].filter((item): item is string => Boolean(item)).join(" ");
+  const idea = extractProductIdea(rawIdea);
+  if (!idea.trim()) {
+    throw new Error("usage: /productize <product idea>");
+  }
+  if (!isRuntimeProjectInitialized(projectRoot)) {
+    const projectName = productizeProjectName(idea);
+    initProject(projectRoot, { projectName });
+    console.log(`RPH project initialized: ${projectName}`);
+  }
+  requireInitialized(projectRoot);
+  const result = runProductizeGoldenPath(projectRoot, { idea });
+  console.log("Productize golden path complete");
+  console.log(`idea: ${result.idea}`);
+  console.log(`documents: ${result.documents.length}`);
+  console.log(`design artifacts: ${result.designArtifacts.length}`);
+  console.log(`issues: ${result.issues.map((issue) => `#${issue.issueNumber} ${issue.assigneeAgent}`).join(", ")}`);
+  console.log(`PR drafts: ${result.pullRequests.map((pr) => `#${pr.prNumber}`).join(", ")}`);
+  console.log(`QA reports: ${result.qaReports.map((report) => `PR #${report.prNumber}`).join(", ")}`);
+  console.log(`report: ${result.reportMarkdownPath}`);
+  console.log("next:");
+  result.nextCommands.slice(0, 4).forEach((command) => console.log(`- ${command}`));
+}
+
+function productizeProjectName(idea: string): string {
+  const normalized = idea.replace(/\s+/g, " ").trim();
+  return normalized.length > 48 ? `${normalized.slice(0, 45).trim()}...` : normalized;
 }
 
 function createRuntimePlan(projectRoot: string, userInput: string) {
@@ -719,18 +805,6 @@ function loadRuntimeChatConfig(projectRoot: string): ReturnType<typeof loadHarne
     return syncHarnessConfigFromEnv(projectRoot);
   }
   return loadHarnessConfig(projectRoot);
-}
-
-function buildRuntimeAgentContext(projectRoot: string): string {
-  if (!isRuntimeProjectInitialized(projectRoot)) {
-    return [
-      "Runtime project context:",
-      `- project_root: ${projectRoot}`,
-      "- initialized: false",
-      "- next_setup_command: /init --yes --project-name <name>"
-    ].join("\n");
-  }
-  return renderAgentContextBundle(assembleAgentContext(projectRoot, { includeBodies: true, maxBodyChars: 3500 }));
 }
 
 function isRuntimeProjectInitialized(projectRoot: string): boolean {
@@ -854,9 +928,11 @@ function handleStatus(projectRoot: string): void {
   console.log(`paused: ${state.paused}`);
   const next = nextStage(state);
   console.log(`다음 단계: ${next ?? "없음"}`);
-  if (stage.requiredApprovals.length > 0) {
-    const pending = stage.requiredApprovals.filter((docId) => state.documents[docId]?.status !== "approved");
-    const fulfilled = stage.requiredApprovals.filter((docId) => state.documents[docId]?.status === "approved");
+  const approvalStages = [stage, ...(next ? [WORKFLOW_STAGES[next]] : [])];
+  const requiredApprovals = Array.from(new Set(approvalStages.flatMap((item) => item.requiredApprovals)));
+  if (requiredApprovals.length > 0) {
+    const pending = requiredApprovals.filter((docId) => state.documents[docId]?.status !== "approved");
+    const fulfilled = requiredApprovals.filter((docId) => state.documents[docId]?.status === "approved");
     if (pending.length > 0) {
       console.log(`승인 필요: ${pending.join(", ")}`);
     }
@@ -864,9 +940,10 @@ function handleStatus(projectRoot: string): void {
       console.log(`승인 완료: ${fulfilled.join(", ")}`);
     }
   }
-  if (stage.requiredDesignApprovals.length > 0) {
-    const pending = stage.requiredDesignApprovals.filter((artifactId) => state.designArtifacts?.[artifactId]?.status !== "approved");
-    const fulfilled = stage.requiredDesignApprovals.filter((artifactId) => state.designArtifacts?.[artifactId]?.status === "approved");
+  const requiredDesignApprovals = Array.from(new Set(approvalStages.flatMap((item) => item.requiredDesignApprovals)));
+  if (requiredDesignApprovals.length > 0) {
+    const pending = requiredDesignApprovals.filter((artifactId) => state.designArtifacts?.[artifactId]?.status !== "approved");
+    const fulfilled = requiredDesignApprovals.filter((artifactId) => state.designArtifacts?.[artifactId]?.status === "approved");
     if (pending.length > 0) {
       console.log(`PD 승인 필요: ${pending.join(", ")}`);
     }
@@ -1628,7 +1705,13 @@ async function handlePm(
   args: string[],
   options: Record<string, string | boolean>
 ): Promise<void> {
-  requireInitialized(projectRoot);
+  if (subcommand === "start" && !isRuntimeProjectInitialized(projectRoot)) {
+    const projectName = optionString(options, "project-name") ?? (path.basename(projectRoot) || "RPH Project");
+    initProject(projectRoot, { projectName });
+    console.log(`RPH project initialized: ${projectName}`);
+  } else {
+    requireInitialized(projectRoot);
+  }
   switch (subcommand) {
     case "start":
       pmStart(projectRoot);
@@ -1655,7 +1738,7 @@ async function handlePm(
       pmFinalize(projectRoot);
       return;
     default:
-      console.log("PM 명령어: start | interview | draft <docId> | revise <docId> | approve <docId> | finalize");
+      throw new Error("usage: /pm start | interview | draft <docId> | revise <docId> | approve <docId> | finalize");
   }
 }
 
@@ -1686,6 +1769,8 @@ function pmStart(projectRoot: string): void {
     : state;
   saveState(projectRoot, next);
   console.log("PM 워크플로우 시작");
+  console.log(`현재 단계: ${next.currentStage}`);
+  console.log("설정 확인: /setup auto --live");
   console.log("다음: /pm interview");
 }
 
@@ -2934,7 +3019,7 @@ function renderHelp(topic?: string): string {
   const suggestion = suggestCommand(normalizedTopic, Object.keys(HELP_TOPIC_LINES));
   return [
     `unknown help topic: ${normalizedTopic}`,
-    suggestion ? `Try: help ${suggestion}` : "Available topics: runtime, setup, ai, mcp, pm, pd, fe, be, qa, notion, docs, github",
+    suggestion ? `Try: help ${suggestion}` : "Available topics: runtime, productize, setup, ai, mcp, pm, pd, fe, be, qa, notion, docs, github",
     "",
     renderGeneralHelp()
   ].join("\n");
@@ -2951,26 +3036,24 @@ function renderGeneralHelp(): string {
   return [
     "real-product-harness",
     "",
-    "Run `rph` to enter the runtime, then use slash commands.",
-    "Inside runtime, plain text chats with the connected AI agent; slash commands control workflow state.",
-    "One-shot form is also supported: rph /pm start",
+    "Run `rph` to enter the runtime. Plain text chats with the connected AI agent; slash commands control workflow state.",
+    "For one-shot natural language, use `rph ask \"이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘\"`.",
+    "For the fastest execution package, use `rph /productize \"<product idea>\"`.",
     "",
     "Entry UX:",
     "  rph",
+    "  rph ask <message>",
+    "  rph /productize <product idea>",
     "  rph help [topic]",
     "  rph version",
     "  rph --version",
     "",
-    "Slash commands:",
+    "One-shot slash commands:",
     "  /init [--yes] [--project-name <name>] [--obsidian-vault <path>]",
     "  /status",
     "  /next",
     "  /pause | /resume | /cancel",
-    "  /project <path>",
-    "  /pwd",
-    "  /exit",
-    "  /agent status | clear",
-    "  /chat status | clear",
+    "  /productize <product idea>",
     "  /setup auto [--live|--guide|--from-env|--non-interactive]",
     "  /setup detect | apply | check",
     "  /setup ai [openai|anthropic|gemini|local]",
@@ -3036,7 +3119,14 @@ function renderGeneralHelp(): string {
     "  /github release-plan --version <version>",
     "  /github hotfix-plan --title <title>",
     "",
-    "Topics: runtime, setup, ai, mcp, pm, pd, fe, be, qa, notion, docs, github",
+    "Runtime-only slash commands:",
+    "  /project <path>",
+    "  /pwd",
+    "  /exit",
+    "  /agent status | clear",
+    "  /chat status | clear",
+    "",
+    "Topics: runtime, productize, setup, ai, mcp, pm, pd, fe, be, qa, notion, docs, github",
     "",
     `Document IDs: ${DOCUMENT_IDS.map((docId) => `${docId}(${DOCUMENT_TITLES[docId]})`).join(", ")}`,
     `Design Artifact IDs: ${DESIGN_ARTIFACT_IDS.map((artifactId) => `${artifactId}(${DESIGN_ARTIFACT_TITLES[artifactId]})`).join(", ")}`

@@ -42,6 +42,48 @@ describe("Hermes-like runtime acceptance", () => {
     expect(prompt).toContain("/pm start");
   }, 10000);
 
+  it("runs a read-only agent tool loop for plain ask chat", async () => {
+    const captureFile = path.join(root, "fetch-sequence.jsonl");
+    writeOpenAiEnv(root, "https://example.invalid/v1");
+
+    const result = await runCli(["ask", "팀에게 제품 상황을 설명해줘"], {
+      cwd: root,
+      preloadFetchSequence: captureFile
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("현재 단계는 SETUP입니다.");
+    const payloads = fs.readFileSync(captureFile, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { input: string });
+    expect(payloads).toHaveLength(2);
+    expect(payloads[1].input).toContain("Tool observation");
+    const manifest = JSON.parse(fs.readFileSync(path.join(root, ".rph", "runtime", "current-session.json"), "utf8")) as {
+      activeTurn?: {
+        status: string;
+        toolCalls: Array<{ name: string; status: string; observation?: string }>;
+      };
+      toolTrace?: Array<{ name: string; status: string }>;
+    };
+    expect(manifest.activeTurn?.status).toBe("complete");
+    expect(manifest.activeTurn?.toolCalls[0].name).toBe("workflow.get_status");
+    expect(manifest.activeTurn?.toolCalls[0].status).toBe("succeeded");
+    expect(manifest.activeTurn?.toolCalls[0].observation).toContain("\"stage\": \"SETUP\"");
+    expect(manifest.toolTrace?.[0].name).toBe("workflow.get_status");
+  }, 10000);
+
+  it("executes safe read-only command proposals from the agent", async () => {
+    writeOpenAiEnv(root, "https://example.invalid/v1");
+
+    const result = await runCli(["ask", "안녕?"], {
+      cwd: root,
+      preloadFetchCommandProposal: true
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("agent proposed command: /status");
+    expect(result.stdout).toContain("agent action: /status");
+    expect(result.stdout).toContain("현재 단계:");
+  }, 10000);
+
   it("includes approved document body in runtime context assembly for follow-up planning", async () => {
     createDocumentVersion(root, "product-definition", {
       changeSummary: "approved source of truth",
@@ -152,6 +194,92 @@ describe("Hermes-like runtime acceptance", () => {
 });
 
 describe("Hermes-like CLI contracts", () => {
+  it("turns one product idea into a review-ready execution package", async () => {
+    const result = await runCli(["productize", "AI 회의록을 액션아이템과 담당자 추적으로 바꾸는 SaaS"], { cwd: root });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("Productize golden path complete");
+    expect(result.stdout).toContain("documents: 11");
+    expect(result.stdout).toContain("design artifacts: 5");
+    expect(result.stdout).toContain("PR drafts: #1, #2");
+    expect(fs.existsSync(path.join(root, ".rph", "golden-path", "latest.md"))).toBe(true);
+
+    const productDefinition = fs.readFileSync(path.join(root, ".rph", "documents", "product-definition", "v1.0.0.md"), "utf8");
+    const prBody = fs.readFileSync(path.join(root, ".rph", "prs", "issue-1.md"), "utf8");
+    const qaReport = JSON.parse(fs.readFileSync(path.join(root, ".rph", "qa", "pr-1-report.json"), "utf8")) as {
+      requirementStatus: string;
+      designStatus: string;
+      apiContractStatus: string;
+      securityStatus: string;
+      accessibilityStatus: string;
+    };
+    const qaMarkdown = fs.readFileSync(path.join(root, ".rph", "qa", "pr-1-report.md"), "utf8");
+
+    expect(productDefinition).not.toMatch(/\bTBD\b/);
+    expect(prBody).not.toMatch(/\bTBD\b/);
+    expect(qaReport.requirementStatus).toBe("matched");
+    expect(qaReport.designStatus).toBe("matched");
+    expect(qaReport.apiContractStatus).toBe("matched");
+    expect(qaReport.securityStatus).toBe("unknown");
+    expect(qaReport.accessibilityStatus).toBe("unknown");
+    expect(qaMarkdown).toContain("- security_status: unknown");
+    expect(qaMarkdown).toContain("- accessibility_status: unknown");
+  });
+
+  it("routes natural-language productization requests through rph ask", async () => {
+    const result = await runCli(["ask", "이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: AI 회의록 액션아이템 SaaS"], { cwd: root });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("agent action: /productize");
+    expect(result.stdout).toContain("Productize golden path complete");
+    expect(fs.existsSync(path.join(root, ".rph", "golden-path", "latest.json"))).toBe(true);
+    const latest = JSON.parse(fs.readFileSync(path.join(root, ".rph", "golden-path", "latest.json"), "utf8")) as { idea: string };
+    const productDefinition = fs.readFileSync(path.join(root, ".rph", "documents", "product-definition", "v1.0.0.md"), "utf8");
+    expect(latest.idea).toBe("AI 회의록 액션아이템 SaaS");
+    expect(productDefinition).toContain("AI 회의록 액션아이템 SaaS");
+    expect(productDefinition).not.toContain("이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘");
+  });
+
+  it("continues the productize package through status and first approval by CLI", async () => {
+    const productize = await runCli(["ask", "이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: 승인 게이트 SaaS"], {
+      cwd: root
+    });
+    expect(productize.exitCode).toBe(0);
+
+    const statusBefore = await runCli(["status"], { cwd: root });
+    expect(statusBefore.exitCode).toBe(0);
+    expect(statusBefore.stdout).toContain("현재 단계: PM_PRODUCT_DEFINITION_REVIEW");
+    expect(statusBefore.stdout).toContain("승인 필요: product-definition");
+
+    const approve = await runCli(["docs", "approve", "product-definition", "--by", "user"], { cwd: root });
+    expect(approve.exitCode).toBe(0);
+    expect(approve.stdout).toContain("[승인 완료] product-definition");
+
+    const statusAfter = await runCli(["status"], { cwd: root });
+    expect(statusAfter.exitCode).toBe(0);
+    expect(statusAfter.stdout).toContain("현재 단계: PM_PRODUCT_DEFINITION_APPROVED");
+    expect(statusAfter.stdout).toContain("승인 완료: product-definition");
+  });
+
+  it("bootstraps an uninitialized folder from one productize request", async () => {
+    const uninitializedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rph-productize-bootstrap-"));
+    try {
+      const result = await runCli(["ask", "이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: 고객 피드백 분석 SaaS"], {
+        cwd: uninitializedRoot
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain("RPH project initialized");
+      expect(result.stdout).toContain("Productize golden path complete");
+      expect(fs.existsSync(path.join(uninitializedRoot, ".rph", "project.json"))).toBe(true);
+      expect(fs.existsSync(path.join(uninitializedRoot, ".rph", "golden-path", "latest.md"))).toBe(true);
+      const latest = JSON.parse(fs.readFileSync(path.join(uninitializedRoot, ".rph", "golden-path", "latest.json"), "utf8")) as { idea: string };
+      expect(latest.idea).toBe("고객 피드백 분석 SaaS");
+    } finally {
+      fs.rmSync(uninitializedRoot, { recursive: true, force: true });
+    }
+  });
+
   it("allows setup auto to bootstrap an uninitialized directory", async () => {
     const uninitializedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rph-setup-bootstrap-"));
     try {
@@ -160,6 +288,24 @@ describe("Hermes-like CLI contracts", () => {
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toContain("RPH project initialized");
       expect(fs.existsSync(path.join(uninitializedRoot, ".rph", "project.json"))).toBe(true);
+    } finally {
+      fs.rmSync(uninitializedRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("allows pm start to bootstrap an uninitialized top-level workflow", async () => {
+    const uninitializedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rph-pm-start-bootstrap-"));
+    try {
+      const result = await runCli(["pm", "start"], { cwd: uninitializedRoot });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain("RPH project initialized");
+      expect(result.stdout).toContain("PM 워크플로우 시작");
+      expect(result.stdout).toContain("현재 단계: PM_PRODUCT_DEFINITION_INTERVIEW");
+      const state = JSON.parse(fs.readFileSync(path.join(uninitializedRoot, ".rph", "state.json"), "utf8")) as {
+        currentStage: string;
+      };
+      expect(state.currentStage).toBe("PM_PRODUCT_DEFINITION_INTERVIEW");
     } finally {
       fs.rmSync(uninitializedRoot, { recursive: true, force: true });
     }
@@ -242,6 +388,8 @@ async function runCli(
     cwd: string;
     stdinChunks?: Array<{ text: string; delayMs: number }>;
     preloadFetchCapture?: string;
+    preloadFetchSequence?: string;
+    preloadFetchCommandProposal?: boolean;
   }
 ): Promise<{
   exitCode: number | null;
@@ -250,7 +398,13 @@ async function runCli(
 }> {
   const repoRoot = path.resolve(__dirname, "..");
   const cliEntry = path.join(repoRoot, "dist", "apps", "cli", "src", "index.js");
-  const preload = options.preloadFetchCapture ? createFetchStub(options.cwd, options.preloadFetchCapture) : undefined;
+  const preload = options.preloadFetchSequence
+    ? createFetchSequenceStub(options.cwd, options.preloadFetchSequence)
+    : options.preloadFetchCapture
+      ? createFetchStub(options.cwd, options.preloadFetchCapture)
+      : options.preloadFetchCommandProposal
+        ? createFetchCommandProposalStub(options.cwd)
+        : undefined;
   const nodeArgs = [...(preload ? ["--require", preload] : []), cliEntry, ...args];
 
   return new Promise((resolve, reject) => {
@@ -277,6 +431,20 @@ async function runCli(
   });
 }
 
+function createFetchCommandProposalStub(projectRoot: string): string {
+  const preloadPath = path.join(projectRoot, "fetch-command-proposal-preload.cjs");
+  fs.writeFileSync(preloadPath, [
+    "global.fetch = async () => {",
+    "  const text = JSON.stringify({ action: { type: 'command', command: '/status', safeToAutoRun: true, reason: 'read current state', message: '상태 확인 명령을 실행합니다.' } });",
+    "  return new Response(JSON.stringify({",
+    "    output: [{ type: 'message', content: [{ type: 'output_text', text }] }],",
+    "    usage: { input_tokens: 10, output_tokens: 5 }",
+    "  }), { status: 200, headers: { 'content-type': 'application/json' } });",
+    "};"
+  ].join("\n"));
+  return preloadPath;
+}
+
 function createFetchStub(projectRoot: string, captureFile: string): string {
   const preloadPath = path.join(projectRoot, "fetch-preload.cjs");
   fs.writeFileSync(preloadPath, [
@@ -287,6 +455,28 @@ function createFetchStub(projectRoot: string, captureFile: string): string {
     "  fs.writeFileSync(captureFile, JSON.stringify(body));",
     "  return new Response(JSON.stringify({",
     "    output: [{ type: 'message', content: [{ type: 'output_text', text: '# next\\n\\n/run `/pm start`' }] }],",
+    "    usage: { input_tokens: 10, output_tokens: 5 }",
+    "  }), { status: 200, headers: { 'content-type': 'application/json' } });",
+    "};"
+  ].join("\n"));
+  return preloadPath;
+}
+
+function createFetchSequenceStub(projectRoot: string, captureFile: string): string {
+  const preloadPath = path.join(projectRoot, "fetch-sequence-preload.cjs");
+  fs.writeFileSync(preloadPath, [
+    "const fs = require('node:fs');",
+    `const captureFile = ${JSON.stringify(captureFile)};`,
+    "let callCount = 0;",
+    "global.fetch = async (_url, init = {}) => {",
+    "  callCount += 1;",
+    "  const body = typeof init.body === 'string' ? JSON.parse(init.body) : {};",
+    "  fs.appendFileSync(captureFile, JSON.stringify(body) + '\\n');",
+    "  const text = callCount === 1",
+    "    ? JSON.stringify({ action: { type: 'tool_call', tool: 'workflow.get_status', args: {} } })",
+    "    : JSON.stringify({ action: { type: 'respond', message: '현재 단계는 SETUP입니다.' } });",
+    "  return new Response(JSON.stringify({",
+    "    output: [{ type: 'message', content: [{ type: 'output_text', text }] }],",
     "    usage: { input_tokens: 10, output_tokens: 5 }",
     "  }), { status: 200, headers: { 'content-type': 'application/json' } });",
     "};"

@@ -252,8 +252,109 @@ export interface RuntimeSessionEvent {
   plan?: AgentActionPlan;
 }
 
+export type AgentToolName =
+  | "runtime.get_context"
+  | "workflow.get_status"
+  | "workflow.get_next"
+  | "workflow.can_advance"
+  | "artifacts.list"
+  | "artifacts.get"
+  | "approvals.pending"
+  | "issues.list"
+  | "prs.list"
+  | "qa.list";
+
+export interface AgentToolCall {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+  status: "requested" | "succeeded" | "failed";
+  observation?: string;
+  error?: string;
+  requestedAt: string;
+  completedAt?: string;
+}
+
+export interface AgentCommandProposal {
+  command: string;
+  safeToAutoRun: boolean;
+  reason?: string;
+}
+
+export interface AgentHandoffProposal {
+  fromAgent?: AgentRole;
+  toAgent: AgentRole;
+  stage?: WorkflowStageId;
+  summary: string;
+  artifactRefs?: string[];
+  acceptanceCriteria?: string[];
+  blockers?: string[];
+  nextCommand?: string;
+}
+
+export interface AgentTurnAction {
+  type: "respond" | "tool_call" | "wait" | "command" | "handoff";
+  tool?: string;
+  args?: Record<string, unknown>;
+  message?: string;
+  command?: string;
+  safeToAutoRun?: boolean;
+  reason?: string;
+  handoff?: AgentHandoffProposal;
+}
+
+export interface AgentTurnState {
+  id: string;
+  userInput: string;
+  status: "running" | "complete" | "waiting" | "failed";
+  startedAt: string;
+  updatedAt: string;
+  promptPreview?: string;
+  toolCalls: AgentToolCall[];
+  finalResponse?: string;
+  proposedCommand?: AgentCommandProposal;
+  proposedHandoff?: AgentHandoffProposal;
+  error?: string;
+}
+
+export interface StageQueueEntry {
+  id: string;
+  stage: WorkflowStageId;
+  name: string;
+  ownerAgent: AgentRole;
+  status: "active" | "pending";
+  reason: string;
+  prerequisites: WorkflowStageId[];
+  requiredDocuments: DocumentId[];
+  requiredApprovals: DocumentId[];
+  requiredDesignArtifacts: DesignArtifactId[];
+  requiredDesignApprovals: DesignArtifactId[];
+  nextStages: WorkflowStageId[];
+  nextCommand?: string;
+  blockers: string[];
+}
+
+export interface WaitCondition {
+  kind: "paused" | "user_approval" | "qa_fix" | "external_live_write";
+  message: string;
+  since: string;
+}
+
+export interface HandoffPacket {
+  fromAgent: AgentRole;
+  toAgent: AgentRole;
+  stage: WorkflowStageId;
+  summary: string;
+  artifactRefs?: string[];
+  acceptanceCriteria?: string[];
+  blockers?: string[];
+  nextCommand?: string;
+  resumeCursor?: string;
+  createdAt: string;
+}
+
 export interface RuntimeSessionManifest {
-  version: 1;
+  version: 1 | 2;
   sessionId: string;
   status: "active" | "paused" | "cancelled" | "complete";
   projectRoot: string;
@@ -268,6 +369,11 @@ export interface RuntimeSessionManifest {
   lastCommand?: string;
   lastCommandOk?: boolean;
   history: RuntimeSessionEvent[];
+  activeTurn?: AgentTurnState | null;
+  stageQueue?: StageQueueEntry[];
+  waitCondition?: WaitCondition | null;
+  handoffPacket?: HandoffPacket | null;
+  toolTrace?: AgentToolCall[];
 }
 
 export interface AgentContextArtifact {

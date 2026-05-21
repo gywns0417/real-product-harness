@@ -24,6 +24,7 @@ export const TOP_LEVEL_COMMANDS = [
   "ai",
   "mcp",
   "doctor",
+  "productize",
   "pm",
   "pd",
   "fe",
