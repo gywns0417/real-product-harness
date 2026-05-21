@@ -16,6 +16,8 @@ import { validateEnv } from "./env";
 import { readJsonIfExists, writeJson, writeText } from "./fs";
 
 export const NOTION_ENV_KEYS = ["NOTION_TOKEN", "NOTION_PARENT_PAGE_ID"];
+const NOTION_REQUEST_TIMEOUT_MS = 15_000;
+const NOTION_MAX_RETRIES = 2;
 
 export interface NotionWorkspacePlan {
   hostedMcpUrl: string;
@@ -217,7 +219,8 @@ export function renderNotionWorkspacePlan(plan: NotionWorkspacePlan): string {
 }
 
 async function notionPost(path: string, env: NodeJS.ProcessEnv, body: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const response = await fetch(`https://api.notion.com${path}`, {
+  const endpoint = `https://api.notion.com${path}`;
+  const requestInit = {
     method: "POST",
     headers: {
       Authorization: `Bearer ${env.NOTION_TOKEN ?? ""}`,
@@ -225,15 +228,47 @@ async function notionPost(path: string, env: NodeJS.ProcessEnv, body: Record<str
       "Notion-Version": NOTION_API_VERSION
     },
     body: JSON.stringify(body)
-  });
-  const text = await response.text();
-  const json = text.trim() ? JSON.parse(text) as unknown : {};
-  const record = isRecord(json) ? json : {};
-  if (!response.ok) {
-    const message = notionErrorMessage(record) ?? text.slice(0, 300);
-    throw new Error(`Notion API request failed (${response.status}) ${message}`);
+  } satisfies RequestInit;
+  let lastError: Error | undefined;
+  for (let attempt = 0; attempt <= NOTION_MAX_RETRIES; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), NOTION_REQUEST_TIMEOUT_MS);
+    try {
+      const response = await fetch(endpoint, {
+        ...requestInit,
+        signal: controller.signal
+      });
+      const text = await response.text();
+      const parsed = parseNotionResponse(text);
+      if (!response.ok) {
+        if (attempt < NOTION_MAX_RETRIES && shouldRetryNotionStatus(response.status)) {
+          lastError = new Error(`Notion API request failed (${response.status})`);
+          continue;
+        }
+        const message = parsed.parseError
+          ? `invalid JSON response: ${parsed.parseError}`
+          : ((notionErrorMessage(parsed.record) ?? text.slice(0, 300)) || response.statusText);
+        throw new Error(`Notion API request failed (${response.status}) ${message}`);
+      }
+      if (parsed.parseError) {
+        if (attempt < NOTION_MAX_RETRIES) {
+          lastError = new Error(`Notion API response parse failed: ${parsed.parseError}`);
+          continue;
+        }
+        throw new Error(`Notion API response parse failed: ${parsed.parseError}`);
+      }
+      return parsed.record;
+    } catch (error) {
+      if (attempt < NOTION_MAX_RETRIES && shouldRetryNotionError(error)) {
+        lastError = toError(error);
+        continue;
+      }
+      throw toError(error);
+    } finally {
+      clearTimeout(timer);
+    }
   }
-  return record;
+  throw lastError ?? new Error("Notion API request failed after retries");
 }
 
 function dashboardBlocks(plan: NotionWorkspacePlan): Record<string, unknown>[] {
@@ -331,6 +366,36 @@ function optionalStringField(record: Record<string, unknown>, key: string): stri
 function notionErrorMessage(record: Record<string, unknown>): string | undefined {
   const message = record.message;
   return typeof message === "string" ? message : undefined;
+}
+
+function parseNotionResponse(text: string): { record: Record<string, unknown>; parseError?: string } {
+  if (!text.trim()) {
+    return { record: {} };
+  }
+  try {
+    const json = JSON.parse(text) as unknown;
+    return {
+      record: isRecord(json) ? json : {}
+    };
+  } catch (error) {
+    return {
+      record: {},
+      parseError: toError(error).message
+    };
+  }
+}
+
+function shouldRetryNotionStatus(status: number): boolean {
+  return status === 408 || status === 429 || status >= 500;
+}
+
+function shouldRetryNotionError(error: unknown): boolean {
+  const normalized = toError(error);
+  return normalized.name === "AbortError" || /fetch failed|network|timed out/i.test(normalized.message);
+}
+
+function toError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

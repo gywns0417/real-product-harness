@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { createMcpConfig } from "../../integrations/src/mcp";
+import { createMcpConfig, MCP_SERVER_CONTRACTS, type McpServerContract } from "../../integrations/src/mcp";
 import { ensureDir, readJsonIfExists, writeJson } from "./fs";
 import { connectionReportFile, harnessConfigFile } from "./paths";
 import { nowIso } from "./time";
@@ -24,14 +24,15 @@ interface ProviderDefinition {
   testEndpoint: string;
 }
 
-interface McpDefinition {
-  id: McpServerId;
-  name: string;
-  transport: "stdio" | "http";
-  envKeys: string[];
-  command?: string;
-  url?: string;
-  notes: string;
+type McpDefinition = McpServerContract;
+
+export interface NormalizedGitHubRepoTarget {
+  owner?: string;
+  repo?: string;
+  slug?: string;
+  configured: boolean;
+  missingEnv: string[];
+  warnings: string[];
 }
 
 export const AI_PROVIDER_DEFINITIONS: Record<AiProviderId, ProviderDefinition> = {
@@ -40,7 +41,7 @@ export const AI_PROVIDER_DEFINITIONS: Record<AiProviderId, ProviderDefinition> =
     name: "OpenAI",
     envKeys: ["OPENAI_API_KEY"],
     modelEnv: "OPENAI_MODEL",
-    defaultModel: "gpt-5.2",
+    defaultModel: "gpt-5.4",
     baseUrlEnv: "OPENAI_BASE_URL",
     defaultBaseUrl: "https://api.openai.com/v1",
     testEndpoint: "https://api.openai.com/v1/models"
@@ -77,40 +78,7 @@ export const AI_PROVIDER_DEFINITIONS: Record<AiProviderId, ProviderDefinition> =
   }
 };
 
-export const MCP_SERVER_DEFINITIONS: Record<McpServerId, McpDefinition> = {
-  notion: {
-    id: "notion",
-    name: "Notion hosted MCP",
-    transport: "http",
-    url: "https://mcp.notion.com/mcp",
-    envKeys: ["NOTION_TOKEN", "NOTION_PARENT_PAGE_ID"],
-    notes: "Uses Notion credentials from .env and writes workspace/sync plans before live changes."
-  },
-  github: {
-    id: "github",
-    name: "GitHub CLI/API",
-    transport: "stdio",
-    command: "gh",
-    envKeys: ["GITHUB_TOKEN", "GITHUB_OWNER", "GITHUB_REPO"],
-    notes: "Uses gh and GitHub REST for repository, issue, PR, and release gates."
-  },
-  figma: {
-    id: "figma",
-    name: "Figma API",
-    transport: "http",
-    url: "https://api.figma.com",
-    envKeys: ["FIGMA_TOKEN", "FIGMA_FILE_ID"],
-    notes: "Optional design integration. HTML fallback remains active when not configured."
-  },
-  stitch: {
-    id: "stitch",
-    name: "Stitch",
-    transport: "http",
-    url: "https://stitch.googleapis.com/mcp",
-    envKeys: ["STITCH_API_KEY"],
-    notes: "Optional UI generation adapter. Live API details are provider-specific."
-  }
-};
+export const MCP_SERVER_DEFINITIONS = MCP_SERVER_CONTRACTS as Record<McpServerId, McpDefinition>;
 
 export function createHarnessConfig(
   env: NodeJS.ProcessEnv = process.env,
@@ -259,11 +227,13 @@ export function renderSetupGuide(config: HarnessConfig): string {
     "",
     "2. MCP 연결",
     ...Object.values(config.mcpServers).map((server) => {
-      const ready = server.configured ? "ready" : "needs env";
+      const ready = server.configured ? "ready" : server.warnings.length > 0 ? "warning" : "needs env";
       const enabled = server.enabled && server.configured ? " enabled" : "";
+      const contract = server.kind === "mcp-server" ? "real-mcp" : "rest-adapter";
       const envKeys = ` env: ${server.envKeys.join(", ")}`;
       const missing = server.missingEnv.length > 0 ? ` | add: ${server.missingEnv.join(", ")}` : "";
-      return `- [${ready}] ${server.name} (${server.id}) ${server.transport}${enabled} |${envKeys}${missing}`;
+      const warning = server.warnings.length > 0 ? ` | warn: ${server.warnings.join("; ")}` : "";
+      return `- [${ready}] ${server.name} (${server.id}) ${server.transport}/${contract}${enabled} |${envKeys}${missing}${warning}`;
     }),
     readyMcp.length > 0
       ? `다음: 활성 MCP는 ${configuredMcpServers(config).map((server) => server.id).join(", ") || "아직 없음"} 입니다.`
@@ -291,11 +261,16 @@ function buildAiProviderConfig(
 ): AiProviderConfig {
   const missingEnv = missingEnvKeys(env, definition.envKeys);
   const previousProvider = previous?.aiProviders[definition.id];
+  const configured = missingEnv.length === 0;
+  const wasPreviouslyConfigured = previousProvider?.configured ?? false;
+  const enabled = configured
+    ? (wasPreviouslyConfigured ? previousProvider?.enabled ?? true : true)
+    : previousProvider?.enabled ?? false;
   return {
     id: definition.id,
     name: definition.name,
-    enabled: previousProvider?.enabled ?? missingEnv.length === 0,
-    configured: missingEnv.length === 0,
+    enabled,
+    configured,
     envKeys: definition.envKeys,
     missingEnv,
     model: env[definition.modelEnv] || previousProvider?.model || definition.defaultModel,
@@ -310,19 +285,27 @@ function buildMcpServerConfig(
   setupChoices?: SetupChoices,
   previous?: HarnessConfig
 ): McpServerRuntimeConfig {
-  const missingEnv = missingEnvKeys(env, definition.envKeys);
-  const previousServer = previous?.mcpServers[definition.id];
-  const selected = setupChoices?.mcp.includes(definition.id) ?? previousServer?.enabled ?? true;
+  const serverId = definition.id as McpServerId;
+  const previousServer = previous?.mcpServers[serverId];
+  const githubTarget = serverId === "github" ? normalizeGitHubRepoTarget(env.GITHUB_OWNER, env.GITHUB_REPO) : null;
+  const missingEnv = githubTarget
+    ? [...(env.GITHUB_TOKEN ? [] : ["GITHUB_TOKEN"]), ...githubTarget.missingEnv]
+    : missingEnvKeys(env, definition.envKeys);
+  const warnings = githubTarget?.warnings ?? [];
+  const configured = missingEnv.length === 0 && warnings.length === 0;
+  const selected = resolveMcpServerEnabled(serverId, setupChoices, previousServer);
   return {
-    id: definition.id,
+    id: serverId,
     name: definition.name,
-    enabled: Boolean(selected && missingEnv.length === 0),
-    configured: missingEnv.length === 0,
+    kind: definition.kind,
+    enabled: Boolean(selected && configured),
+    configured,
     transport: definition.transport,
     command: definition.command,
     url: definition.url,
     envKeys: definition.envKeys,
     missingEnv,
+    warnings,
     notes: definition.notes
   };
 }
@@ -381,6 +364,87 @@ function resolveGuideActiveProvider(config: HarnessConfig): AiProviderId | null 
 
 function missingEnvKeys(env: NodeJS.ProcessEnv, keys: string[]): string[] {
   return keys.filter((key) => !env[key]);
+}
+
+function resolveMcpServerEnabled(
+  serverId: McpServerId,
+  setupChoices: SetupChoices | undefined,
+  previousServer: HarnessConfig["mcpServers"][McpServerId] | undefined
+): boolean {
+  if (setupChoices) {
+    return setupChoices.mcp.includes(serverId);
+  }
+  if (previousServer) {
+    return previousServer.enabled;
+  }
+  return false;
+}
+
+export function normalizeGitHubRepoTarget(
+  ownerValue?: string,
+  repoValue?: string
+): NormalizedGitHubRepoTarget {
+  const warnings: string[] = [];
+  let owner = ownerValue?.trim() ?? "";
+  let repo = repoValue?.trim() ?? "";
+  if (repo) {
+    const parsed = parseGitHubRepoValue(repo);
+    if (!parsed) {
+      repo = "";
+      warnings.push("GITHUB_REPO must be a repo name, owner/repo, or GitHub URL");
+    } else {
+      if (parsed.owner && owner && owner.toLowerCase() !== parsed.owner.toLowerCase()) {
+        warnings.push(`GITHUB_OWNER (${owner}) does not match GITHUB_REPO owner (${parsed.owner})`);
+      }
+      owner = owner || parsed.owner || "";
+      repo = parsed.repo;
+    }
+  }
+  if (owner && !isValidGitHubSlug(owner)) {
+    warnings.push("GITHUB_OWNER is not a valid GitHub owner slug");
+  }
+  if (repo && !isValidGitHubSlug(repo)) {
+    warnings.push("GITHUB_REPO is not a valid GitHub repository slug");
+  }
+  const missingEnv = [
+    ...(owner ? [] : ["GITHUB_OWNER"]),
+    ...(repo ? [] : ["GITHUB_REPO"])
+  ];
+  return {
+    owner: owner || undefined,
+    repo: repo || undefined,
+    slug: owner && repo ? `${owner}/${repo}` : undefined,
+    configured: missingEnv.length === 0 && warnings.length === 0,
+    missingEnv,
+    warnings: [...new Set(warnings)]
+  };
+}
+
+function parseGitHubRepoValue(value: string): { owner?: string; repo: string } | null {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const sshMatch = trimmed.match(/^git@github\.com:([^/\s]+)\/([^/\s]+?)(?:\.git)?$/i);
+  if (sshMatch) {
+    return { owner: sshMatch[1], repo: sshMatch[2] };
+  }
+  const urlMatch = trimmed.match(/^(?:https?:\/\/)?(?:www\.)?github\.com\/([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/i);
+  if (urlMatch) {
+    return { owner: urlMatch[1], repo: urlMatch[2] };
+  }
+  const slugMatch = trimmed.match(/^([^/\s]+)\/([^/\s]+)$/);
+  if (slugMatch) {
+    return { owner: slugMatch[1], repo: slugMatch[2].replace(/\.git$/i, "") };
+  }
+  if (trimmed.includes("/")) {
+    return null;
+  }
+  return { repo: trimmed.replace(/\.git$/i, "") };
+}
+
+function isValidGitHubSlug(value: string): boolean {
+  return /^[A-Za-z0-9._-]+$/.test(value);
 }
 
 function mapRecord<TId extends string, TDefinition, TResult>(

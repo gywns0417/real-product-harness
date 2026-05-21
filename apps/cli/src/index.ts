@@ -4,10 +4,12 @@ import path from "node:path";
 import process from "node:process";
 import readline from "node:readline/promises";
 import { spawnSync } from "node:child_process";
+import packageJson from "../../../package.json";
 import {
   advanceAfterPmApproval,
   advanceAfterPmDraft,
   advanceAfterPdApproval,
+  assembleAgentContext,
   applyNotionWorkspacePlan,
   approveDesignArtifact,
   approveDocument,
@@ -15,6 +17,7 @@ import {
   applyGitHubLabels,
   canFinalizePm,
   canFinalizePd,
+  createHarnessConfig,
   createDevDeploymentPlan,
   createDocumentVersion,
   createDesignArtifactVersion,
@@ -34,6 +37,7 @@ import {
   createReleasePlan,
   createWorkIssue,
   checkQaConflicts,
+  ensureRuntimeSession,
   DESIGN_ARTIFACT_IDS,
   DESIGN_ARTIFACT_TITLES,
   diffDocumentVersions,
@@ -42,6 +46,8 @@ import {
   DesignArtifactId,
   DocumentId,
   AiChatMessage,
+  AiChatTurnRecord,
+  aiChatFile,
   exportDocumentToObsidian,
   exportDesignArtifactToObsidian,
   FE_SPEC_DOC,
@@ -51,6 +57,7 @@ import {
   API_CONTRACT_DOC,
   GITHUB_ENV_KEYS,
   initProject,
+  isKnownTopLevelCommand,
   isDocumentId,
   AiProviderId,
   McpServerId,
@@ -61,11 +68,13 @@ import {
   loadHarnessConfig,
   loadEnvFile,
   loadProject,
+  loadRuntimeSession,
   loadState,
   markIssueInProgress,
   nextStage,
   optionBool,
   optionString,
+  planAgentAction,
   parseCli,
   parseCommandLine,
   configuredAiProviders,
@@ -76,8 +85,10 @@ import {
   ProjectState,
   readDocumentIndex,
   readDesignArtifactIndex,
+  recordRuntimeSessionEvent,
   renderRuntimeHero,
   renderSetupGuide,
+  renderAgentContextBundle,
   renderStatusLine,
   renderInterview,
   runQaTests,
@@ -102,6 +113,8 @@ import {
   testAllMcpConnections,
   testMcpConnection,
   transitionState,
+  suggestCommand,
+  updateRuntimeSession,
   AI_PROVIDER_DEFINITIONS,
   MCP_SERVER_DEFINITIONS,
   upsertEnvFileValues,
@@ -117,12 +130,152 @@ import {
 } from "../../../packages/core/src";
 
 interface SetupPrompter {
-  question(query: string): Promise<string>;
+  question(query: string, options?: { secret?: boolean }): Promise<string>;
 }
 
 interface CommandContext {
   prompter?: SetupPrompter;
 }
+
+const HELP_TOPIC_LINES: Record<string, string[]> = {
+  runtime: [
+    "Runtime commands",
+    "",
+    "Enter runtime: rph",
+    "One-shot: rph /pm start",
+    "",
+    "Core commands:",
+    "  /status",
+    "  /next",
+    "  /pause | /resume | /cancel",
+    "  /project <path> | /pwd",
+    "  /chat status | clear",
+    "  /agent status | clear",
+    "  /exit"
+  ],
+  setup: [
+    "Setup commands",
+    "",
+    "  rph setup detect",
+    "    Inspect current shell env and show what RPH can detect. No files changed.",
+    "  rph setup apply",
+    "    Persist env-derived config into .rph/config.json and MCP config. No live checks.",
+    "  rph setup check",
+    "    Run live connection checks against the currently applied config.",
+    "  rph setup auto",
+    "    Guided assistant. In TTY it can collect/apply/check end-to-end.",
+    "",
+    "Shortcuts:",
+    "  /setup ai [openai|anthropic|gemini|local]",
+    "  /setup mcp [notion|github|figma|stitch]",
+    "  /setup custom <key> <value>"
+  ],
+  ai: [
+    "AI commands",
+    "",
+    "  /ai status",
+    "  /ai test [provider]",
+    "  /ai enable <provider>",
+    "  /ai disable <provider>",
+    "  /ai run --prompt <text>"
+  ],
+  mcp: [
+    "MCP commands",
+    "",
+    "  /mcp status",
+    "  /mcp test [server]",
+    "  /mcp enable <server>",
+    "  /mcp disable <server>"
+  ],
+  pm: [
+    "PM commands",
+    "",
+    "  /pm start",
+    "  /pm interview [docId]",
+    "  /pm draft <docId> [--file <markdown>] [--ai] [--provider <provider>] [--summary <text>]",
+    "  /pm revise <docId> [--from <version>] [--file <markdown>] [--summary <text>]",
+    "  /pm approve <docId> [--by <name>]",
+    "  /pm diff <docId> <fromVersion> <toVersion>",
+    "  /pm rollback <docId> --to <version>",
+    "  /pm finalize"
+  ],
+  pd: [
+    "PD commands",
+    "",
+    "  /pd start",
+    "  /pd references [--ai]",
+    "  /pd directions [--ai]",
+    "  /pd landing-preview [--ai]",
+    "  /pd design-system [--ai]",
+    "  /pd pages [--ai]",
+    "  /pd show <artifactId> [version]",
+    "  /pd revise <artifactId> [--from <version>] [--file <markdown>] [--summary <text>]",
+    "  /pd approve <artifactId> [--by <name>]",
+    "  /pd export obsidian <artifactId|all> --path <vaultProjectPath>",
+    "  /pd finalize"
+  ],
+  fe: [
+    "FE commands",
+    "",
+    "  /fe spec [--ai]",
+    "  /fe approve <spec|sprint-plan> [--by <name>]",
+    "  /fe sprint-plan [--ai]",
+    "  /fe issue-create [--title <title>] [--label <label>]",
+    "  /fe work --issue <number>",
+    "  /fe pr --issue <number> [--target <dev|release|main>]"
+  ],
+  be: [
+    "BE commands",
+    "",
+    "  /be spec [--ai]",
+    "  /be api-contract [--ai]",
+    "  /be approve <spec|api-contract|sprint-plan> [--by <name>]",
+    "  /be sprint-plan [--ai]",
+    "  /be issue-create [--title <title>] [--label <label>]",
+    "  /be work --issue <number>",
+    "  /be deploy-dev [--provider <provider>]",
+    "  /be pr --issue <number> [--target <dev|release|main>]"
+  ],
+  qa: [
+    "QA commands",
+    "",
+    "  /qa review --pr <number>",
+    "  /qa conflicts --pr <number>",
+    "  /qa test --pr <number>",
+    "  /qa report --pr <number>"
+  ],
+  notion: [
+    "Notion commands",
+    "",
+    "  /notion plan",
+    "  /notion setup [--live] [--title <title>]",
+    "  /notion sync [--live]"
+  ],
+  docs: [
+    "Docs commands",
+    "",
+    "  /docs list",
+    "  /docs show <docId> [version]",
+    "  /docs diff <docId> <fromVersion> <toVersion>",
+    "  /docs rollback <docId> --to <version>",
+    "  /docs approve <docId> [--by <name>]",
+    "  /docs export obsidian <docId|all> --path <vaultProjectPath>",
+    "  /docs export notion"
+  ],
+  github: [
+    "GitHub commands",
+    "",
+    "  /github create-repo",
+    "  /github setup-labels",
+    "  /github setup-templates",
+    "  /github setup-branches",
+    "  /github create-issue --agent <FE|BE> --title <title>",
+    "  /github create-pr --issue <number>",
+    "  /github sync",
+    "  /github release-plan --version <version>",
+    "  /github hotfix-plan --title <title>"
+  ]
+};
 
 async function main(): Promise<void> {
   const cwd = path.resolve(process.cwd());
@@ -138,13 +291,21 @@ async function main(): Promise<void> {
   await runParsedCommand(cwd, parsed);
 }
 
-async function runParsedCommand(
+export async function runParsedCommand(
   projectRoot: string,
   parsed: ReturnType<typeof parseCli>,
   setExitCode = true,
   context: CommandContext = {}
 ): Promise<boolean> {
   try {
+    if (!isKnownTopLevelCommand(parsed.command)) {
+      printUnknownCommand(parsed.command);
+      if (setExitCode) {
+        process.exitCode = 2;
+      }
+      return false;
+    }
+
     switch (parsed.command) {
       case "shell":
       case "runtime":
@@ -173,6 +334,11 @@ async function runParsedCommand(
         break;
       case "settings":
         handleSettings(projectRoot, parsed.subcommand, parsed.args);
+        break;
+      case "ask":
+      case "agent":
+      case "chat":
+        await handleAsk(projectRoot, parsed.args, parsed.options);
         break;
       case "ai":
         await handleAi(projectRoot, parsed.subcommand, parsed.args, parsed.options);
@@ -208,8 +374,10 @@ async function runParsedCommand(
         handleGitHub(projectRoot, parsed.subcommand, parsed.args, parsed.options);
         break;
       case "help":
-      default:
-        printHelp();
+        printHelp(parsed.subcommand);
+        break;
+      case "version":
+        printVersion();
         break;
     }
     return true;
@@ -232,9 +400,18 @@ function shouldStartRuntime(argv: string[]): boolean {
 
 async function runRuntimeShell(initialRoot: string): Promise<void> {
   let projectRoot = initialRoot;
-  const sessionId = `session-${new Date().toISOString().replace(/[:.]/g, "-")}`;
-  const chatHistory: AiChatMessage[] = [];
+  const sessionId = resolveRuntimeSessionId(projectRoot);
+  const chatHistory: AiChatMessage[] = loadRuntimeChatHistory(projectRoot, sessionId);
   printRuntimeBanner(projectRoot, sessionId);
+  if (isRuntimeProjectInitialized(projectRoot)) {
+    const manifest = ensureRuntimeSession(projectRoot, sessionId);
+    if (manifest.status === "paused") {
+      console.log("이전 runtime session이 일시정지 상태입니다. 계속하려면 /resume 을 입력하세요.");
+    }
+    if (manifest.pendingAction?.command) {
+      console.log(`pending action: ${manifest.pendingAction.command}`);
+    }
+  }
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
   try {
@@ -266,7 +443,7 @@ async function runRuntimeShell(initialRoot: string): Promise<void> {
         }
 
         if (!line.startsWith("/")) {
-          ok = await handleRuntimeChat(projectRoot, sessionId, chatHistory, line);
+          ok = await handleRuntimeAgentInput(projectRoot, sessionId, chatHistory, line);
           continue;
         }
 
@@ -381,6 +558,50 @@ function appendRuntimeLog(projectRoot: string, sessionId: string, command: strin
     ok
   };
   fs.appendFileSync(path.join(runtimeDir, `${sessionId}.jsonl`), `${JSON.stringify(record)}\n`);
+  if (isRuntimeProjectInitialized(projectRoot) && !isExitCommand(command)) {
+    recordRuntimeSessionEvent(projectRoot, sessionId, {
+      kind: ok ? "checkpoint" : "error",
+      message: command,
+      ok
+    });
+  }
+}
+
+async function handleRuntimeAgentInput(
+  projectRoot: string,
+  sessionId: string,
+  chatHistory: AiChatMessage[],
+  userInput: string
+): Promise<boolean> {
+  const plan = createRuntimePlan(projectRoot, userInput);
+  if (isRuntimeProjectInitialized(projectRoot)) {
+    recordRuntimeSessionEvent(projectRoot, sessionId, {
+      kind: "plan",
+      message: plan.reason,
+      ok: plan.kind !== "blocked",
+      plan
+    });
+  }
+  if (plan.kind === "blocked") {
+    console.log(`[blocked] ${plan.reason}`);
+    return false;
+  }
+  if (plan.kind !== "chat" && plan.command && plan.safeToAutoRun) {
+    console.log(`agent action: ${plan.command}`);
+    const parsed = parseCli(parseCommandLine(plan.command));
+    const ok = await runParsedCommand(projectRoot, parsed, false);
+    if (isRuntimeProjectInitialized(projectRoot)) {
+      recordRuntimeSessionEvent(projectRoot, sessionId, {
+        kind: "command",
+        message: plan.command,
+        ok,
+        plan
+      });
+      updateRuntimeContinuation(projectRoot, sessionId, ok);
+    }
+    return ok;
+  }
+  return handleRuntimeChat(projectRoot, sessionId, chatHistory, userInput);
 }
 
 async function handleRuntimeChat(
@@ -395,13 +616,7 @@ async function handleRuntimeChat(
   console.log(renderStatusLine("agent thinking", "skipped"));
   const result = await generateAiText(config, {
     prompt,
-    system: [
-      "You are the connected Real Product Harness AI agent inside an interactive terminal runtime.",
-      "Normal user text is conversation. Slash commands are control commands.",
-      "Answer conversationally, but stay grounded in the project state and available slash commands.",
-      "If the user asks to mutate workflow state, explain the exact slash command to run instead of pretending it was executed.",
-      "Use Korean by default."
-    ].join(" "),
+    system: agentChatSystemPrompt(),
     maxOutputTokens: 1800
   });
   const userMessage: AiChatMessage = {
@@ -427,6 +642,78 @@ async function handleRuntimeChat(
   return true;
 }
 
+async function handleAsk(
+  projectRoot: string,
+  args: string[],
+  options: Record<string, string | boolean>
+): Promise<void> {
+  const prompt = (optionString(options, "prompt") ?? args.join(" ")) || readPipedStdin();
+  if (!prompt.trim()) {
+    throw new Error("usage: rph ask <message> 또는 rph ask --prompt <message>");
+  }
+  const plan = createRuntimePlan(projectRoot, prompt);
+  if (plan.kind === "blocked") {
+    console.log(`[blocked] ${plan.reason}`);
+    return;
+  }
+  if (plan.kind !== "chat" && plan.command && plan.safeToAutoRun) {
+    console.log(`agent action: ${plan.command}`);
+    const parsed = parseCli(parseCommandLine(plan.command));
+    await runParsedCommand(projectRoot, parsed, false);
+    return;
+  }
+  const config = loadRuntimeChatConfig(projectRoot);
+  const context = buildRuntimeAgentContext(projectRoot);
+  const aiPrompt = buildAiChatPrompt(prompt, [], context);
+  const result = await generateAiText(config, {
+    prompt: aiPrompt,
+    system: agentChatSystemPrompt(),
+    maxOutputTokens: parseOptionalPositiveInt(optionString(options, "max-tokens")) ?? 1800
+  });
+  if (isRuntimeProjectInitialized(projectRoot)) {
+    writeAiChatTurnRecord(projectRoot, createAiChatTurnRecord(result, `ask-${result.id}`, prompt, aiPrompt));
+  }
+  console.log(result.text.trim());
+}
+
+function createRuntimePlan(projectRoot: string, userInput: string) {
+  const initialized = isRuntimeProjectInitialized(projectRoot);
+  let state: ProjectState | undefined;
+  let hasConfiguredAi = false;
+  let recommended: string | undefined;
+  if (initialized) {
+    state = loadState(projectRoot);
+    const config = loadRuntimeChatConfig(projectRoot);
+    hasConfiguredAi = configuredAiProviders(config).length > 0;
+    recommended = recommendedAgentCommand(state);
+  }
+  return planAgentAction({
+    text: userInput,
+    initialized,
+    currentStage: state?.currentStage,
+    paused: state?.paused,
+    recommendedCommand: recommended,
+    hasConfiguredAi
+  });
+}
+
+function readPipedStdin(): string {
+  if (process.stdin.isTTY) {
+    return "";
+  }
+  return fs.readFileSync(0, "utf8");
+}
+
+function agentChatSystemPrompt(): string {
+  return [
+    "You are the connected Real Product Harness AI agent inside a terminal runtime.",
+    "Normal user text can be conversation or local workflow intent.",
+    "Stay grounded in project state, approved artifacts, and available slash commands.",
+    "If local action already ran, summarize what changed and the next command.",
+    "Use Korean by default."
+  ].join(" ");
+}
+
 function loadRuntimeChatConfig(projectRoot: string): ReturnType<typeof loadHarnessConfig> {
   if (isRuntimeProjectInitialized(projectRoot)) {
     return syncHarnessConfigFromEnv(projectRoot);
@@ -443,31 +730,7 @@ function buildRuntimeAgentContext(projectRoot: string): string {
       "- next_setup_command: /init --yes --project-name <name>"
     ].join("\n");
   }
-  const project = loadProject(projectRoot);
-  const state = loadState(projectRoot);
-  const config = loadHarnessConfig(projectRoot);
-  const docs = listDocumentIndexes(projectRoot)
-    .map((doc) => `${doc.docId}:${doc.status}:${doc.currentVersion}`)
-    .join(", ") || "none";
-  const designArtifacts = listDesignArtifactIndexes(projectRoot)
-    .map((artifact) => `${artifact.artifactId}:${artifact.status}:${artifact.currentVersion}`)
-    .join(", ") || "none";
-  const next = nextStage(state);
-  return [
-    "Runtime project context:",
-    `- project: ${project.name}`,
-    `- root: ${projectRoot}`,
-    `- stage: ${state.currentStage}`,
-    `- next_stage: ${next ?? "none"}`,
-    `- active_ai: ${config.activeAiProvider}`,
-    `- configured_mcp: ${configuredMcpServers(config).map((server) => server.id).join(", ") || "none"}`,
-    `- documents: ${docs}`,
-    `- design_artifacts: ${designArtifacts}`,
-    "",
-    "Available command style:",
-    "- Slash commands mutate or inspect workflow state: /status, /next, /pm start, /pm draft <docId> --ai, /pd references --ai, /fe spec --ai, /doctor --live.",
-    "- Plain text is conversation with the connected AI agent."
-  ].join("\n");
+  return renderAgentContextBundle(assembleAgentContext(projectRoot, { includeBodies: true, maxBodyChars: 3500 }));
 }
 
 function isRuntimeProjectInitialized(projectRoot: string): boolean {
@@ -477,6 +740,69 @@ function isRuntimeProjectInitialized(projectRoot: string): boolean {
   } catch {
     return false;
   }
+}
+
+function resolveRuntimeSessionId(projectRoot: string): string {
+  if (isRuntimeProjectInitialized(projectRoot)) {
+    const current = loadRuntimeSession(projectRoot);
+    if (current && (current.status === "active" || current.status === "paused")) {
+      return current.sessionId;
+    }
+  }
+  return `session-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+}
+
+function loadRuntimeChatHistory(projectRoot: string, sessionId: string): AiChatMessage[] {
+  const filePath = aiChatFile(projectRoot, sessionId);
+  if (!fs.existsSync(filePath)) {
+    return [];
+  }
+  const messages: AiChatMessage[] = [];
+  for (const line of fs.readFileSync(filePath, "utf8").split(/\n+/)) {
+    if (!line.trim()) {
+      continue;
+    }
+    try {
+      const record = JSON.parse(line) as AiChatTurnRecord;
+      if (record.user?.content) {
+        messages.push(record.user);
+      }
+      if (record.assistant?.content) {
+        messages.push(record.assistant);
+      }
+    } catch {
+      // Ignore a corrupt historical chat line; the session manifest remains authoritative.
+    }
+  }
+  return messages.slice(-24);
+}
+
+function updateRuntimeContinuation(projectRoot: string, sessionId: string, ok: boolean): void {
+  const state = loadState(projectRoot);
+  if (!ok) {
+    updateRuntimeSession(projectRoot, sessionId, {
+      blocker: "last agent action failed",
+      incrementRetryCount: true,
+      note: "agent action failed"
+    });
+    return;
+  }
+  const nextCommand = recommendedAgentCommand(state);
+  const pendingAction = planAgentAction({
+    text: nextCommand,
+    initialized: true,
+    currentStage: state.currentStage,
+    paused: state.paused,
+    recommendedCommand: nextCommand,
+    hasConfiguredAi: configuredAiProviders(loadRuntimeChatConfig(projectRoot)).length > 0
+  });
+  updateRuntimeSession(projectRoot, sessionId, {
+    status: state.paused ? "paused" : "active",
+    pendingAction,
+    checkpoint: `completed agent action; next ${nextCommand}`,
+    blocker: state.paused ? "workflow paused" : null,
+    note: "agent continuation planned"
+  });
 }
 
 async function handleInit(projectRoot: string, options: Record<string, string | boolean>): Promise<void> {
@@ -588,6 +914,15 @@ function handlePause(projectRoot: string, paused: boolean): void {
   requireInitialized(projectRoot);
   const state = loadState(projectRoot);
   saveState(projectRoot, { ...state, paused });
+  const session = loadRuntimeSession(projectRoot);
+  if (session && (session.status === "active" || session.status === "paused")) {
+    updateRuntimeSession(projectRoot, session.sessionId, {
+      status: paused ? "paused" : "active",
+      checkpoint: paused ? "workflow paused" : "workflow resumed",
+      blocker: paused ? "workflow paused by user" : null,
+      note: paused ? "pause requested" : "resume requested"
+    });
+  }
   console.log(paused ? "워크플로우 일시정지" : "워크플로우 재개");
 }
 
@@ -595,6 +930,16 @@ function handleCancel(projectRoot: string): void {
   requireInitialized(projectRoot);
   const state = loadState(projectRoot);
   saveState(projectRoot, { ...state, paused: true });
+  const session = loadRuntimeSession(projectRoot);
+  if (session && (session.status === "active" || session.status === "paused")) {
+    updateRuntimeSession(projectRoot, session.sessionId, {
+      status: "cancelled",
+      pendingAction: null,
+      checkpoint: "workflow cancelled",
+      blocker: "workflow cancelled by user",
+      note: "cancel requested"
+    });
+  }
   console.log("현재 워크플로우 정지. 상태 파일은 보존됨.");
 }
 
@@ -605,7 +950,14 @@ async function handleSetup(
   options: Record<string, string | boolean>,
   context: CommandContext = {}
 ): Promise<void> {
-  requireInitialized(projectRoot);
+  const initialized = isRuntimeProjectInitialized(projectRoot);
+  if (!initialized && (subcommand === undefined || subcommand === "auto")) {
+    const projectName = optionString(options, "project-name") ?? (path.basename(projectRoot) || "RPH Project");
+    initProject(projectRoot, { projectName });
+    console.log(`RPH project initialized: ${projectName}`);
+  } else {
+    requireInitialized(projectRoot);
+  }
   switch (subcommand) {
     case undefined:
     case "auto": {
@@ -613,7 +965,24 @@ async function handleSetup(
         await runAutoSetupWizard(projectRoot, options, context);
         return;
       }
-      await printSetupGuideAndOptionalChecks(projectRoot, options);
+      await printSetupAutoSummary(projectRoot, options);
+      return;
+    }
+    case "detect": {
+      const config = createHarnessConfig(process.env, undefined, loadHarnessConfig(projectRoot));
+      console.log(renderSetupGuide(config));
+      console.log("");
+      console.log("detected: 현재 shell env 기준 연결 가능 상태만 표시했습니다. 파일 변경 없음.");
+      return;
+    }
+    case "apply": {
+      const config = syncHarnessConfigFromEnv(projectRoot);
+      console.log("setup applied");
+      printConfigSummary(config);
+      return;
+    }
+    case "check": {
+      await runSetupChecks(projectRoot, loadHarnessConfig(projectRoot));
       return;
     }
     case "ai": {
@@ -650,28 +1019,43 @@ async function handleSetup(
       return;
     }
     default:
-      console.log("Setup 명령어: auto | ai [openai|anthropic|gemini|local] | mcp [notion|github|figma|stitch] | custom <key> <value>");
+      console.log("Setup 명령어: auto | detect | apply | check | ai [openai|anthropic|gemini|local] | mcp [notion|github|figma|stitch] | custom <key> <value>");
   }
 }
 
-async function printSetupGuideAndOptionalChecks(
+async function printSetupAutoSummary(
   projectRoot: string,
   options: Record<string, string | boolean>
 ): Promise<void> {
-  const config = syncHarnessConfigFromEnv(projectRoot);
+  const config = createHarnessConfig(process.env, undefined, loadHarnessConfig(projectRoot));
   console.log(renderSetupGuide(config));
+  console.log("");
+  console.log("권장 순서: /setup detect -> /setup apply -> /setup check");
   if (optionBool(options, "live")) {
-    console.log("");
-    console.log("Live connection check");
-    const checks = [...await testAllAiConnections(config), ...await testAllMcpConnections(config)];
-    const filePath = writeConnectionReport(projectRoot, checks);
-    printConnectionChecks(checks);
-    console.log(`report: ${filePath}`);
-  } else {
-    console.log("");
-    console.log("대화형 연결 마법사로 값 입력까지 진행하려면 TTY에서 `/setup auto`를 실행하세요.");
-    console.log("Live 검증만 바로 진행하려면: /setup auto --live");
+    console.log("auto --live: env 감지 결과를 적용한 뒤 live check까지 실행합니다.");
+    const appliedConfig = syncHarnessConfigFromEnv(projectRoot);
+    await runSetupChecks(projectRoot, appliedConfig);
+    return;
   }
+  console.log("대화형 연결 마법사로 값 입력까지 진행하려면 TTY에서 `/setup auto`를 실행하세요.");
+  console.log("Live 검증까지 한 번에 하려면: /setup auto --live");
+}
+
+async function runSetupChecks(
+  projectRoot: string,
+  config: ReturnType<typeof loadHarnessConfig>
+): Promise<void> {
+  printConfigSummary(config);
+  console.log("");
+  console.log("Live connection check");
+  const checks = [...await testAllAiConnections(config), ...await testAllMcpConnections(config)];
+  if (checks.length === 0) {
+    console.log("- 검사할 configured 연결이 없습니다. 먼저 /setup apply 또는 /setup auto를 실행하세요.");
+    return;
+  }
+  const filePath = writeConnectionReport(projectRoot, checks);
+  printConnectionChecks(checks);
+  console.log(`report: ${filePath}`);
 }
 
 function shouldRunInteractiveSetup(options: Record<string, string | boolean>, context: CommandContext): boolean {
@@ -692,7 +1076,7 @@ async function runAutoSetupWizard(
     console.log(fromEnv
       ? "AI agent와 MCP를 현재 shell env에서 읽어 fresh .env로 연결합니다."
       : "AI agent와 MCP를 실제로 연결합니다. Enter는 기본값/건너뛰기입니다.");
-    console.log("터미널이 입력 문자를 echo할 수는 있지만, RPH는 secret 값을 로그/설정 JSON에 다시 출력하지 않습니다.");
+    console.log("secret 입력은 가능한 경우 화면에 표시하지 않고, RPH는 secret 값을 로그/설정 JSON에 다시 출력하지 않습니다.");
     console.log("");
 
     let config = syncHarnessConfigFromEnv(projectRoot);
@@ -761,7 +1145,9 @@ async function withSetupPrompter<T>(
   }
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   try {
-    return await callback(rl);
+    return await callback({
+      question: (query, options) => options?.secret ? askHiddenText(query) : rl.question(query)
+    });
   } finally {
     rl.close();
   }
@@ -932,15 +1318,65 @@ async function askText(prompter: SetupPrompter, label: string, defaultValue: str
 }
 
 async function askEnvValue(prompter: SetupPrompter, key: string, defaultValue: string): Promise<string> {
+  const secret = isSecretEnvKey(key);
   const suffix = defaultValue
-    ? ` (${isSecretEnvKey(key) ? "감지됨, Enter로 사용" : defaultValue})`
+    ? ` (${secret ? "감지됨, Enter로 사용" : defaultValue})`
     : " (Enter로 건너뛰기)";
-  const answer = (await prompter.question(`${key}${suffix}: `)).trim();
+  const answer = (await prompter.question(`${key}${suffix}: `, { secret })).trim();
   return answer || defaultValue;
 }
 
 function isSecretEnvKey(key: string): boolean {
   return /(?:TOKEN|KEY|SECRET|PASSWORD|CREDENTIAL)/i.test(key);
+}
+
+async function askHiddenText(query: string): Promise<string> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY || typeof process.stdin.setRawMode !== "function") {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    try {
+      return await rl.question(query);
+    } finally {
+      rl.close();
+    }
+  }
+  return new Promise((resolve, reject) => {
+    let value = "";
+    const stdin = process.stdin;
+    const stdout = process.stdout;
+    const cleanup = () => {
+      stdin.off("data", onData);
+      stdin.setRawMode(false);
+      stdin.pause();
+    };
+    const finish = () => {
+      cleanup();
+      stdout.write("\n");
+      resolve(value);
+    };
+    const onData = (chunk: Buffer) => {
+      const text = chunk.toString("utf8");
+      for (const char of text) {
+        if (char === "\u0003") {
+          cleanup();
+          reject(new Error("setup cancelled"));
+          return;
+        }
+        if (char === "\r" || char === "\n") {
+          finish();
+          return;
+        }
+        if (char === "\u007f" || char === "\b") {
+          value = value.slice(0, -1);
+          continue;
+        }
+        value += char;
+      }
+    };
+    stdout.write(query);
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.on("data", onData);
+  });
 }
 
 function defaultAiProvider(config: ReturnType<typeof loadHarnessConfig>): string {
@@ -2244,6 +2680,67 @@ function recommendedCommand(state: ProjectState, stage: string): string {
   return "/status";
 }
 
+function recommendedAgentCommand(state: ProjectState): string {
+  switch (state.currentStage) {
+    case "SETUP":
+      return "/pm start";
+    case "PM_PRODUCT_DEFINITION_INTERVIEW":
+      return "/pm draft product-definition";
+    case "PM_REQUIREMENTS_INTERVIEW":
+      return "/pm draft requirements";
+    case "PM_SCREEN_DEFINITION_INTERVIEW":
+      return "/pm draft screen-definition";
+    case "PM_FEATURE_DEFINITION_INTERVIEW":
+      return "/pm draft feature-definition";
+    case "PM_COMPETITOR_ANALYSIS":
+      return "/pm draft competitor-analysis";
+    case "PM_DIFFERENTIATION":
+      return "/pm draft differentiation";
+    case "PM_PRODUCT_DEFINITION_REVIEW":
+      return "/pm approve product-definition";
+    case "PM_REQUIREMENTS_REVIEW":
+      return "/pm approve requirements";
+    case "PM_SCREEN_DEFINITION_REVIEW":
+      return "/pm approve screen-definition";
+    case "PM_FEATURE_DEFINITION_REVIEW":
+      return "/pm approve feature-definition";
+    case "PM_FEATURE_DEFINITION_APPROVED":
+      return "/pm finalize";
+    case "PM_APPROVED":
+      return "/pd start";
+    case "PD_REFERENCES":
+      return "/pd references";
+    case "PD_DIRECTIONS":
+      return "/pd directions";
+    case "PD_LANDING_PREVIEWS":
+      return "/pd landing-preview";
+    case "PD_DESIGN_SYSTEM":
+      return "/pd design-system";
+    case "PD_PAGE_DESIGNS":
+      return "/pd pages";
+    case "PD_REVIEW":
+      return "/pd finalize";
+    case "PD_APPROVED":
+      return "/fe spec";
+    case "FE_SPEC":
+      return recommendedDocumentAction(state, FE_SPEC_DOC, "/fe spec", "/fe approve spec");
+    case "BE_SPEC":
+      if (state.documents[BE_SPEC_DOC]?.status !== "approved") {
+        return recommendedDocumentAction(state, BE_SPEC_DOC, "/be spec", "/be approve spec");
+      }
+      return recommendedDocumentAction(state, API_CONTRACT_DOC, "/be api-contract", "/be approve api-contract");
+    case "SPRINT_PLANNING":
+      if (state.documents[FE_SPRINT_PLAN_DOC]?.status !== "approved") {
+        return recommendedDocumentAction(state, FE_SPRINT_PLAN_DOC, "/fe sprint-plan", "/fe approve sprint-plan");
+      }
+      return recommendedDocumentAction(state, BE_SPRINT_PLAN_DOC, "/be sprint-plan", "/be approve sprint-plan");
+    case "IMPLEMENTATION":
+      return "/fe issue-create --title \"First FE task\"";
+    default:
+      return "/next";
+  }
+}
+
 function recommendedEngineeringCommand(state: ProjectState): string | null {
   switch (state.currentStage) {
     case "PD_APPROVED":
@@ -2405,13 +2902,64 @@ function parseStackChoice(value: string): SetupChoices["stack"] {
   }[value] as SetupChoices["stack"] ?? "recommended";
 }
 
-function printHelp(): void {
-  console.log([
+function printVersion(): void {
+  console.log(`real-product-harness ${packageJson.version}`);
+}
+
+function printUnknownCommand(command: string): void {
+  const suggestion = suggestCommand(command);
+  console.error(`unknown command: ${command}`);
+  if (suggestion) {
+    console.error(`Did you mean: /${suggestion}`);
+  }
+  console.error("Try: /help");
+  console.error("");
+  console.error(renderGeneralHelp());
+}
+
+function printHelp(topic?: string): void {
+  console.log(renderHelp(topic));
+}
+
+function renderHelp(topic?: string): string {
+  const normalizedTopic = normalizeHelpTopic(topic);
+  if (!normalizedTopic) {
+    return renderGeneralHelp();
+  }
+  const topicLines = HELP_TOPIC_LINES[normalizedTopic];
+  if (topicLines) {
+    return topicLines.join("\n");
+  }
+
+  const suggestion = suggestCommand(normalizedTopic, Object.keys(HELP_TOPIC_LINES));
+  return [
+    `unknown help topic: ${normalizedTopic}`,
+    suggestion ? `Try: help ${suggestion}` : "Available topics: runtime, setup, ai, mcp, pm, pd, fe, be, qa, notion, docs, github",
+    "",
+    renderGeneralHelp()
+  ].join("\n");
+}
+
+function normalizeHelpTopic(topic?: string): string | undefined {
+  if (!topic) {
+    return undefined;
+  }
+  return topic.replace(/^\//, "").trim().toLowerCase() || undefined;
+}
+
+function renderGeneralHelp(): string {
+  return [
     "real-product-harness",
     "",
     "Run `rph` to enter the runtime, then use slash commands.",
     "Inside runtime, plain text chats with the connected AI agent; slash commands control workflow state.",
     "One-shot form is also supported: rph /pm start",
+    "",
+    "Entry UX:",
+    "  rph",
+    "  rph help [topic]",
+    "  rph version",
+    "  rph --version",
     "",
     "Slash commands:",
     "  /init [--yes] [--project-name <name>] [--obsidian-vault <path>]",
@@ -2424,6 +2972,7 @@ function printHelp(): void {
     "  /agent status | clear",
     "  /chat status | clear",
     "  /setup auto [--live|--guide|--from-env|--non-interactive]",
+    "  /setup detect | apply | check",
     "  /setup ai [openai|anthropic|gemini|local]",
     "  /setup mcp [notion|github|figma|stitch]",
     "  /settings show | sync | set <key> <value>",
@@ -2487,9 +3036,13 @@ function printHelp(): void {
     "  /github release-plan --version <version>",
     "  /github hotfix-plan --title <title>",
     "",
+    "Topics: runtime, setup, ai, mcp, pm, pd, fe, be, qa, notion, docs, github",
+    "",
     `Document IDs: ${DOCUMENT_IDS.map((docId) => `${docId}(${DOCUMENT_TITLES[docId]})`).join(", ")}`,
     `Design Artifact IDs: ${DESIGN_ARTIFACT_IDS.map((artifactId) => `${artifactId}(${DESIGN_ARTIFACT_TITLES[artifactId]})`).join(", ")}`
-  ].join("\n"));
+  ].join("\n");
 }
 
-void main();
+if (typeof require !== "undefined" && require.main === module) {
+  void main();
+}

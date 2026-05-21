@@ -2,6 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import packageJson from "../package.json";
+import { runParsedCommand } from "../apps/cli/src/index";
 import {
   approveDesignArtifact,
   approveDocument,
@@ -16,6 +18,7 @@ import {
   createEngineeringDocumentVersion,
   createHotfixPlan,
   createHarnessConfig,
+  initializeHarnessConfig,
   createPullRequestDraft,
   createQaReview,
   createReleasePlan,
@@ -23,6 +26,7 @@ import {
   createGitHubRepo,
   createLandingPreviewHtml,
   buildAiChatPrompt,
+  assembleAgentContext,
   createBranchName,
   createAiChatTurnRecord,
   createDocumentVersion,
@@ -34,12 +38,15 @@ import {
   exportDesignArtifactToObsidian,
   initProject,
   loadEnvFile,
+  loadRuntimeSession,
   loadState,
   markIssueInProgress,
   normalizeNotionPageId,
   normalizeLabel,
+  normalizeGitHubRepoTarget,
   parseCli,
   parseCommandLine,
+  planAgentAction,
   readPullRequest,
   runQaTests,
   finalizeQaReport,
@@ -56,22 +63,32 @@ import {
   advanceAfterEngineeringApproval,
   syncStateDocuments,
   syncStateDesignArtifacts,
+  syncNotionPayloadLive,
+  testMcpConnection,
   transitionState,
+  createRuntimeSessionManifest,
+  saveRuntimeSession,
   upsertEnvFileValues,
+  updateRuntimeSession,
   validateEnv,
   writeAiChatTurnRecord,
   writeGitHubBranchPlan
 } from "../packages/core/src";
 
 let root: string;
+let originalExitCode: typeof process.exitCode;
 
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "rph-test-"));
   initProject(root, { projectName: "Test Product" });
+  originalExitCode = process.exitCode;
+  process.exitCode = 0;
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  process.exitCode = originalExitCode;
   fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -341,6 +358,43 @@ describe("command parser and env validation", () => {
     expect(parsed.options.summary).toBe("first draft");
   });
 
+  it("maps help and version flags to first-class commands", () => {
+    expect(parseCli(["--version"]).command).toBe("version");
+    const helpParsed = parseCli(["--help", "setup"]);
+    expect(helpParsed.command).toBe("help");
+    expect(helpParsed.subcommand).toBe("setup");
+  });
+
+  it("suggests unknown commands and exits with code 2", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const ok = await runParsedCommand(root, parseCli(["statsu"]));
+
+    expect(ok).toBe(false);
+    expect(process.exitCode).toBe(2);
+    expect(errorSpy.mock.calls.flat().join("\n")).toContain("Did you mean: /status");
+  });
+
+  it("prints topic help for setup", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const ok = await runParsedCommand(root, parseCli(["help", "setup"]));
+
+    expect(ok).toBe(true);
+    expect(logSpy.mock.calls.flat().join("\n")).toContain("rph setup detect");
+    expect(logSpy.mock.calls.flat().join("\n")).toContain("rph setup apply");
+    expect(logSpy.mock.calls.flat().join("\n")).toContain("rph setup check");
+  });
+
+  it("prints package version from version command", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const ok = await runParsedCommand(root, parseCli(["version"]));
+
+    expect(ok).toBe(true);
+    expect(logSpy).toHaveBeenCalledWith(`real-product-harness ${packageJson.version}`);
+  });
+
   it("tokenizes quoted slash-command lines for the runtime shell", () => {
     expect(parseCommandLine('/fe issue-create --title "Build dashboard shell"')).toEqual([
       "/fe",
@@ -385,6 +439,7 @@ describe("command parser and env validation", () => {
     expect(content).toContain("GITHUB_OWNER=king");
     expect(content).toContain("GITHUB_REPO=real-product-harness");
     expect(content).toContain('NOTION_PARENT_PAGE_ID="page id with spaces"');
+    expect(fs.statSync(envFile).mode & 0o777).toBe(0o600);
   });
 
   it("initializes setup choices for the project wizard", () => {
@@ -394,6 +449,52 @@ describe("command parser and env validation", () => {
     expect(choices.stack).toBe("recommended");
     expect(choices.mcp).toContain("notion");
     expect(fs.existsSync(path.join(root, ".rph", "config.json"))).toBe(true);
+    const mcpConfig = JSON.parse(fs.readFileSync(path.join(root, ".mcp", "config.json"), "utf8")) as {
+      mcpServers: Record<string, { kind: string; url?: string }>;
+    };
+    expect(mcpConfig.mcpServers.notion.kind).toBe("mcp-server");
+    expect(mcpConfig.mcpServers.github.kind).toBe("rest-adapter");
+    expect(mcpConfig.mcpServers.stitch.url).toBe("https://stitch.googleapis.com/mcp");
+  });
+
+  it("marks REST adapter checks as credential probes, not full MCP protocol readiness", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const config = createHarnessConfig({
+      GITHUB_TOKEN: "github-secret",
+      GITHUB_OWNER: "king",
+      GITHUB_REPO: "real-product-harness"
+    } as NodeJS.ProcessEnv);
+    const check = await testMcpConnection(config, "github", {
+      GITHUB_TOKEN: "github-secret"
+    } as NodeJS.ProcessEnv);
+
+    expect(check.status).toBe("passed");
+    expect(check.readiness?.provenStage).toBe("credential-probe");
+    expect(check.readiness?.stages.find((stage) => stage.stage === "protocol-tools-list")?.status).toBe("not-applicable");
+  });
+
+  it("proves Stitch MCP-compatible tools/list readiness when the protocol check succeeds", async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response(JSON.stringify({
+      result: {
+        tools: []
+      }
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const config = createHarnessConfig({
+      STITCH_API_KEY: "stitch-secret"
+    } as NodeJS.ProcessEnv);
+    const check = await testMcpConnection(config, "stitch", {
+      STITCH_API_KEY: "stitch-secret"
+    } as NodeJS.ProcessEnv);
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const body = JSON.parse(init.body as string) as { method: string };
+
+    expect(check.status).toBe("passed");
+    expect(check.readiness?.provenStage).toBe("protocol-tools-list");
+    expect(body.method).toBe("tools/list");
   });
 
   it("detects configured AI providers and MCP servers from env without storing secrets", () => {
@@ -411,10 +512,29 @@ describe("command parser and env validation", () => {
     expect(config.aiProviders.openai.configured).toBe(true);
     expect(config.aiProviders.gemini.configured).toBe(true);
     expect(config.aiProviders.anthropic.configured).toBe(false);
-    expect(config.mcpServers.notion.enabled).toBe(true);
-    expect(config.mcpServers.github.enabled).toBe(true);
+    expect(config.mcpServers.notion.enabled).toBe(false);
+    expect(config.mcpServers.github.enabled).toBe(false);
+    expect(config.mcpServers.notion.configured).toBe(true);
+    expect(config.mcpServers.github.configured).toBe(true);
     expect(config.mcpServers.figma.enabled).toBe(false);
     expect(JSON.stringify(config)).not.toContain("openai-secret");
+  });
+
+  it("prefers explicit setup choices over env presence for MCP enablement", () => {
+    const config = createHarnessConfig({
+      GITHUB_TOKEN: "github-secret",
+      GITHUB_REPO: "owner/repo",
+      NOTION_TOKEN: "notion-secret",
+      NOTION_PARENT_PAGE_ID: "1234567890abcdef1234567890abcdef"
+    } as NodeJS.ProcessEnv, {
+      aiProvider: "later",
+      deployment: "later",
+      stack: "recommended",
+      mcp: ["notion"]
+    });
+
+    expect(config.mcpServers.notion.enabled).toBe(true);
+    expect(config.mcpServers.github.enabled).toBe(false);
   });
 
   it("renders a friendly setup assistant without secrets", () => {
@@ -432,8 +552,86 @@ describe("command parser and env validation", () => {
     expect(guide).toContain("2. MCP 연결");
     expect(guide).toContain("/setup auto --live");
     expect(guide).toContain("OPENAI_API_KEY");
+    expect(guide).toContain("real-mcp");
+    expect(guide).toContain("rest-adapter");
     expect(guide).not.toContain("openai-secret");
     expect(guide).not.toContain("github-secret");
+  });
+
+  it("normalizes GitHub repo targets and flags invalid values", () => {
+    expect(normalizeGitHubRepoTarget(undefined, "https://github.com/openai/real-product-harness.git")).toMatchObject({
+      owner: "openai",
+      repo: "real-product-harness",
+      slug: "openai/real-product-harness",
+      configured: true,
+      missingEnv: []
+    });
+
+    const invalid = createHarnessConfig({
+      GITHUB_TOKEN: "github-secret",
+      GITHUB_OWNER: "openai",
+      GITHUB_REPO: "https://github.com/openai/real-product-harness/issues"
+    } as NodeJS.ProcessEnv);
+
+    expect(invalid.mcpServers.github.configured).toBe(false);
+    expect(invalid.mcpServers.github.warnings[0]).toContain("GITHUB_REPO must be a repo name");
+  });
+
+  it("separates setup detect from apply side effects", async () => {
+    process.env.OPENAI_API_KEY = "test-openai-key";
+    const configPath = path.join(root, ".rph", "config.json");
+    const beforeDetect = fs.readFileSync(configPath, "utf8");
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await runParsedCommand(root, parseCli(["setup", "detect"]));
+    const afterDetect = fs.readFileSync(configPath, "utf8");
+    await runParsedCommand(root, parseCli(["setup", "apply"]));
+    const afterApply = fs.readFileSync(configPath, "utf8");
+
+    expect(afterDetect).toBe(beforeDetect);
+    expect(afterApply).not.toBe(beforeDetect);
+    expect(afterApply).toContain("\"activeAiProvider\": \"openai\"");
+    expect(logSpy.mock.calls.flat().join("\n")).toContain("setup applied");
+    delete process.env.OPENAI_API_KEY;
+  });
+
+  it("reports setup check when nothing is configured yet", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const envKeys = [
+      "OPENAI_API_KEY",
+      "ANTHROPIC_API_KEY",
+      "GEMINI_API_KEY",
+      "LOCAL_AI_BASE_URL",
+      "NOTION_TOKEN",
+      "NOTION_PARENT_PAGE_ID",
+      "GITHUB_TOKEN",
+      "GITHUB_OWNER",
+      "GITHUB_REPO",
+      "FIGMA_TOKEN",
+      "FIGMA_FILE_ID",
+      "STITCH_API_KEY"
+    ] as const;
+    const previousEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
+    for (const key of envKeys) {
+      delete process.env[key];
+    }
+
+    try {
+      await runParsedCommand(root, parseCli(["setup", "check"]));
+    } finally {
+      for (const key of envKeys) {
+        const value = previousEnv[key];
+        if (value === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = value;
+        }
+      }
+    }
+
+    const output = logSpy.mock.calls.flat().join("\n");
+    expect(output).toContain("configured_mcp: none");
+    expect(output).toContain("Live connection check");
   });
 
   it("generates text through the active AI provider without exposing secrets", async () => {
@@ -492,7 +690,7 @@ describe("command parser and env validation", () => {
     const record = createAiChatTurnRecord({
       id: "ai_run_test",
       providerId: "openai",
-      model: "gpt-5.2",
+      model: "gpt-5.4",
       text: "다음은 /pm start 입니다.",
       endpoint: "https://api.openai.com/v1/responses",
       generatedAt: "2026-05-20T00:00:02.000Z"
@@ -501,6 +699,88 @@ describe("command parser and env validation", () => {
     const saved = fs.readFileSync(filePath, "utf8");
     expect(saved).toContain("ai_run_test");
     expect(saved).not.toContain("openai-secret");
+  });
+});
+
+describe("runtime planner and context bundle", () => {
+  it("classifies runtime input deterministically", () => {
+    expect(planAgentAction({ text: "/pm draft requirements --ai", initialized: true }).kind).toBe("slash-command");
+    expect(planAgentAction({ text: "현재 상태 알려줘", initialized: true }).kind).toBe("status");
+
+    const workflowPlan = planAgentAction({ text: "FE 시작", initialized: true, hasConfiguredAi: true });
+    expect(workflowPlan.kind).toBe("start-workflow");
+    expect(workflowPlan.command).toBe("/fe spec --ai");
+    expect(workflowPlan.workflowTarget).toBe("fe");
+
+    expect(planAgentAction({ text: "핵심 사용자 누구야?", initialized: true }).kind).toBe("chat");
+    expect(planAgentAction({ text: "   ", initialized: true }).kind).toBe("unknown");
+  });
+
+  it("assembles current and approved artifact bodies into the prompt bundle", () => {
+    createDocumentVersion(root, "product-definition", {
+      changeSummary: "approved seed",
+      body: "# Approved Product Definition\n\napproved body"
+    });
+    approveDocument(root, "product-definition", "tester");
+    createDocumentVersion(root, "product-definition", {
+      changeSummary: "current draft",
+      body: "# Current Product Definition\n\ncurrent body"
+    });
+
+    createDesignArtifactVersion(root, "references", {
+      changeSummary: "approved references",
+      body: "# Approved References\n\napproved references"
+    });
+    approveDesignArtifact(root, "references", "tester");
+    createDesignArtifactVersion(root, "references", {
+      changeSummary: "current references",
+      body: "# Current References\n\ncurrent references"
+    });
+
+    const issue = createWorkIssue(root, { workstream: "FE", title: "Build shell" });
+    const pr = createPullRequestDraft(root, issue.issueNumber);
+    createQaReview(root, pr.prNumber);
+
+    const bundle = assembleAgentContext(root);
+    const productDefinition = bundle.documents.find((artifact) => artifact.id === "product-definition");
+    const references = bundle.designArtifacts.find((artifact) => artifact.id === "references");
+
+    expect(productDefinition?.currentVersion).toBe("v1.0.1");
+    expect(productDefinition?.approvedVersion).toBe("v1.0.0");
+    expect(productDefinition?.selectedBody).toContain("approved body");
+    expect(productDefinition?.approvedBody).toContain("approved body");
+    expect(references?.approvedVersion).toBe("v1.0.0");
+    expect(bundle.qaReports).toHaveLength(1);
+    expect(bundle.prompt).toContain("current body");
+    expect(bundle.prompt).toContain("approved body");
+    expect(bundle.prompt).toContain("current references");
+    expect(bundle.prompt).toContain("PR #1");
+    expect(bundle.prompt).toContain("Config summary:");
+  });
+});
+
+describe("runtime session manifest", () => {
+  it("creates, saves, loads, and updates the runtime session manifest", () => {
+    const manifest = createRuntimeSessionManifest(root, "session-test", "2026-05-21T00:00:00.000Z", "FE 시작");
+    expect(manifest.stage).toBe("SETUP");
+    expect(manifest.ownerAgent).toBe("Orchestrator");
+    expect(manifest.pendingAction?.kind).toBe("start-workflow");
+
+    saveRuntimeSession(root, manifest);
+    const updated = updateRuntimeSession(root, "session-test", {
+      pendingInput: "/status",
+      checkpoint: "status checked",
+      incrementRetryCount: true,
+      note: "status refresh"
+    });
+
+    const loaded = loadRuntimeSession(root);
+    expect(updated.pendingAction?.kind).toBe("slash-command");
+    expect(updated.pendingAction?.command).toBe("/status");
+    expect(updated.checkpoint).toBe("status checked");
+    expect(updated.retryCount).toBe(1);
+    expect(updated.history).toHaveLength(2);
+    expect(loaded?.pendingAction?.command).toBe("/status");
   });
 });
 
@@ -589,5 +869,75 @@ describe("notion integration plan", () => {
     expect(fs.existsSync(result.filePath)).toBe(true);
     expect(fs.readFileSync(result.filePath, "utf8")).not.toContain("notion-secret");
     expect(fetchMock).toHaveBeenCalledTimes(15);
+  });
+
+  it("retries transient Notion live setup failures", async () => {
+    let databaseCounter = 0;
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const endpoint = String(url);
+      if (fetchMock.mock.calls.length === 1) {
+        throw new DOMException("The operation was aborted.", "AbortError");
+      }
+      if (endpoint.endsWith("/v1/pages")) {
+        return new Response(JSON.stringify({
+          id: "dashboard-page-id",
+          url: "https://notion.so/dashboard"
+        }), { status: 200 });
+      }
+      databaseCounter += 1;
+      return new Response(JSON.stringify({
+        id: `database-${databaseCounter}`,
+        url: `https://notion.so/database-${databaseCounter}`
+      }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await applyNotionWorkspacePlan(root, {
+      env: {
+        NOTION_TOKEN: "notion-secret",
+        NOTION_PARENT_PAGE_ID: "1234567890abcdef1234567890abcdef"
+      } as NodeJS.ProcessEnv
+    });
+
+    expect(result.workspace.dashboardPageId).toBe("dashboard-page-id");
+    expect(fetchMock).toHaveBeenCalledTimes(16);
+  });
+
+  it("retries malformed Notion JSON during live sync", async () => {
+    const config = initializeHarnessConfig(root, {
+      aiProvider: "later",
+      deployment: "later",
+      stack: "recommended",
+      mcp: ["notion"]
+    });
+    expect(config.mcpServers.notion.enabled).toBe(false);
+    fs.mkdirSync(path.join(root, ".rph", "notion"), { recursive: true });
+    fs.writeFileSync(path.join(root, ".rph", "notion", "live-workspace.json"), JSON.stringify({
+      dashboardPageId: "dashboard-page-id",
+      databaseIds: {},
+      databaseUrls: {},
+      appliedAt: new Date().toISOString()
+    }, null, 2));
+    const fetchMock = vi.fn(async () => {
+      if (fetchMock.mock.calls.length === 1) {
+        return new Response("{", { status: 200 });
+      }
+      return new Response(JSON.stringify({
+        id: "sync-page-id",
+        url: "https://notion.so/sync-page"
+      }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await syncNotionPayloadLive(root, {
+      env: {
+        NOTION_TOKEN: "notion-secret",
+        NOTION_PARENT_PAGE_ID: "1234567890abcdef1234567890abcdef"
+      } as NodeJS.ProcessEnv
+    });
+
+    expect(result.synced).toBeGreaterThanOrEqual(0);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fs.readFileSync(result.filePath, "utf8")).not.toContain("notion-secret");
   });
 });

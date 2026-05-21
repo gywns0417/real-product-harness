@@ -44,6 +44,14 @@ export function aiChatFile(projectRoot: string, sessionId: string): string {
   return path.join(aiChatDir(projectRoot), `${sessionId}.jsonl`);
 }
 
+export function runtimeDir(projectRoot: string): string {
+  return path.join(rphDir(projectRoot), "runtime");
+}
+
+export function runtimeSessionFile(projectRoot: string): string {
+  return path.join(runtimeDir(projectRoot), "current-session.json");
+}
+
 export function documentsDir(projectRoot: string): string {
   return path.join(rphDir(projectRoot), "documents");
 }

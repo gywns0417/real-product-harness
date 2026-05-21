@@ -129,6 +129,7 @@ export interface AiProviderConfig {
 export interface McpServerRuntimeConfig {
   id: McpServerId;
   name: string;
+  kind: "mcp-server" | "rest-adapter";
   enabled: boolean;
   configured: boolean;
   transport: "stdio" | "http";
@@ -136,6 +137,7 @@ export interface McpServerRuntimeConfig {
   url?: string;
   envKeys: string[];
   missingEnv: string[];
+  warnings: string[];
   notes: string;
 }
 
@@ -165,6 +167,15 @@ export interface ConnectionCheck {
   requiredEnv: string[];
   missingEnv: string[];
   endpoint?: string;
+  readiness?: {
+    provenStage: "none" | "transport" | "credential-probe" | "protocol-tools-list" | "protocol-tool-call";
+    stages: Array<{
+      stage: "transport" | "credential-probe" | "protocol-tools-list" | "protocol-tool-call";
+      status: "passed" | "failed" | "skipped" | "not-applicable";
+      message: string;
+      endpoint?: string;
+    }>;
+  };
   checkedAt: string;
 }
 
@@ -216,6 +227,105 @@ export interface AiChatTurnRecord {
   assistant: AiChatMessage;
   promptPreview: string;
   generatedAt: string;
+}
+
+export type AgentPlanKind = "slash-command" | "chat" | "start-workflow" | "status" | "unknown" | "command" | "blocked";
+
+export type RuntimeSessionStage = WorkflowStageId | "UNINITIALIZED";
+
+export interface AgentActionPlan {
+  kind: AgentPlanKind;
+  confidence: number;
+  reason: string;
+  command?: string;
+  workflowTarget?: string;
+  safeToAutoRun: boolean;
+  steps: string[];
+  createdAt: string;
+}
+
+export interface RuntimeSessionEvent {
+  at: string;
+  kind: "start" | "input" | "plan" | "command" | "chat" | "checkpoint" | "blocker" | "error" | "resume";
+  message: string;
+  ok?: boolean;
+  plan?: AgentActionPlan;
+}
+
+export interface RuntimeSessionManifest {
+  version: 1;
+  sessionId: string;
+  status: "active" | "paused" | "cancelled" | "complete";
+  projectRoot: string;
+  startedAt: string;
+  updatedAt: string;
+  stage: RuntimeSessionStage;
+  ownerAgent: AgentRole;
+  pendingAction: AgentActionPlan | null;
+  checkpoint: string | null;
+  blocker: string | null;
+  retryCount: number;
+  lastCommand?: string;
+  lastCommandOk?: boolean;
+  history: RuntimeSessionEvent[];
+}
+
+export interface AgentContextArtifact {
+  kind: "document" | "design-artifact";
+  id: string;
+  title: string;
+  status: DocumentStatus;
+  currentVersion: string | null;
+  approvedVersion: string | null;
+  currentBody?: string;
+  approvedBody?: string;
+  selectedBody?: string;
+  selectedBodySource: "current" | "approved" | "none";
+}
+
+export interface AgentConfigSummary {
+  activeProvider: AiProviderId | "auto" | "none";
+  configuredProviders: AiProviderId[];
+  configuredServers: McpServerId[];
+  deployment: HarnessConfig["deployment"];
+  stack: HarnessConfig["stack"];
+  uiTheme: RuntimeUiConfig["theme"];
+  uiColor: boolean;
+  bootAnimation: boolean;
+  customKeys: string[];
+}
+
+export interface AgentContextBundle {
+  project: {
+    id: string;
+    name: string;
+    rootPath: string;
+  };
+  workflow: {
+    currentStage: WorkflowStageId;
+    currentStageName: string;
+    ownerAgent: AgentRole;
+    paused: boolean;
+    nextStage: WorkflowStageId | null;
+  };
+  ai: {
+    activeProvider: AiProviderId | "auto" | "none";
+    configuredProviders: AiProviderId[];
+  };
+  mcp: {
+    configuredServers: McpServerId[];
+  };
+  documents: AgentContextArtifact[];
+  designArtifacts: AgentContextArtifact[];
+  approvals: Approval[];
+  designApprovals: DesignApproval[];
+  issues: WorkIssue[];
+  pullRequests: PullRequestRecord[];
+  qaReports: QAReportRecord[];
+  configSummary: AgentConfigSummary;
+  prompt: string;
+  files: string[];
+  assembledAt: string;
 }
 
 export interface ProjectState {

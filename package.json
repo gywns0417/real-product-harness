@@ -13,6 +13,7 @@
     "dev": "tsx apps/cli/src/index.ts",
     "lint": "tsc -p tsconfig.json --noEmit",
     "rph": "node dist/apps/cli/src/index.js",
+    "work-clock": "node scripts/work-clock.mjs",
     "test": "vitest run tests",
     "start": "node dist/apps/cli/src/index.js"
   },

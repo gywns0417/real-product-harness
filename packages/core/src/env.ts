@@ -85,7 +85,8 @@ export function upsertEnvFileValues(filePath: string, values: Record<string, str
 
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const output = trimTrailingBlankLines(nextLines).join("\n");
-  fs.writeFileSync(filePath, output ? `${output}\n` : "");
+  fs.writeFileSync(filePath, output ? `${output}\n` : "", { mode: 0o600 });
+  fs.chmodSync(filePath, 0o600);
   return { filePath, updatedKeys, appendedKeys };
 }
 

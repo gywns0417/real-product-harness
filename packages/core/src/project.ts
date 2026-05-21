@@ -111,7 +111,7 @@ export function updateDocumentState(projectRoot: string, state: ProjectState): v
 function envExample(): string {
   return [
     "OPENAI_API_KEY=",
-    "OPENAI_MODEL=gpt-5.2",
+    "OPENAI_MODEL=gpt-5.4",
     "ANTHROPIC_API_KEY=",
     "ANTHROPIC_MODEL=claude-sonnet-4-5",
     "GEMINI_API_KEY=",

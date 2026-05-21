@@ -5,6 +5,7 @@ dist/
 !.env.example
 .DS_Store
 .rph/tmp/
+.rph/runtime/
 coverage/
 playwright-report/
 test-results/
