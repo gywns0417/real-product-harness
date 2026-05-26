@@ -385,7 +385,7 @@ describe("Hermes-like runtime acceptance", () => {
     expect(updated[0].dismissReason).toBe("not now");
   }, 10000);
 
-  it("keeps current autonomous local command proposals as explicit controls inside runtime chat", async () => {
+  it("turns natural PM kickoff text into an explicit saved runtime intent", async () => {
     writeOpenAiEnv(root, "https://example.invalid/v1");
 
     const result = await runCli(["shell"], {
@@ -398,8 +398,13 @@ describe("Hermes-like runtime acceptance", () => {
     });
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("suggested control: /next --execute");
+    expect(result.stdout).toContain("Execution plan");
+    expect(result.stdout).toContain("workflow: pm");
+    expect(result.stdout).toContain("suggested control: /pm start");
     expect(result.stdout).toContain("run explicitly: type the suggested control when you want to execute it.");
+    expect(result.stdout).toContain("intent saved:");
+    expect(result.stdout).toContain("confirm: /agent confirm-intent");
+    expect(result.stdout).not.toContain("suggested control: /next --execute");
     expect(result.stdout).not.toContain("agent action: /next --execute");
     expect(result.stdout).not.toContain("execution-policy: runtime chat allowed current autonomous local command");
     expect(result.stdout).not.toContain("stage queue 실행 완료: SETUP -> PM_PRODUCT_DEFINITION_INTERVIEW");
@@ -407,6 +412,17 @@ describe("Hermes-like runtime acceptance", () => {
       currentStage: string;
     };
     expect(state.currentStage).toBe("SETUP");
+    const intents = JSON.parse(fs.readFileSync(path.join(root, ".rph", "runtime", "intents.json"), "utf8")) as Array<{
+      command: string;
+      status: string;
+      risk: string;
+    }>;
+    expect(intents).toHaveLength(1);
+    expect(intents[0]).toMatchObject({
+      command: "/pm start",
+      status: "pending",
+      risk: "local_mutation"
+    });
   }, 10000);
 
   it("keeps non-current local command proposals conversational inside runtime chat", async () => {
@@ -4314,12 +4330,28 @@ describe("Hermes-like runtime acceptance", () => {
     expect(result.stdout).not.toContain("agent proposed command");
   }, 10000);
 
-  it("does not treat product-definition text as PM start without a slash command", async () => {
+  it("executes exact product-definition start text as PM start when ask --execute is explicit", async () => {
     const result = await runCli(["ask", "--execute", "제품 정의 시작해줘"], { cwd: root, env: withoutProviderEnv() });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("agent action: /pm start");
+    expect(result.stdout).toContain("execution-policy: ask --execute allowed local workflow command");
+    expect(result.stdout).toContain("PM 워크플로우 시작");
+    expect(result.stdout).toContain("다음: /pm interview");
+    expect(result.stdout).not.toContain("execution-policy: natural runtime control");
+    const state = JSON.parse(fs.readFileSync(path.join(root, ".rph", "state.json"), "utf8")) as {
+      currentStage: string;
+    };
+    expect(state.currentStage).toBe("PM_PRODUCT_DEFINITION_INTERVIEW");
+  }, 10000);
+
+  it("does not treat product-definition lookup text as PM start without a slash command", async () => {
+    const result = await runCli(["ask", "--execute", "제품 정의 문서 확인해줘"], { cwd: root, env: withoutProviderEnv() });
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("AI agent is not connected yet.");
     expect(result.stdout).not.toContain("agent action: /pm start");
+    expect(result.stdout).not.toContain("execution-policy: ask --execute allowed local workflow command");
     expect(result.stdout).not.toContain("execution-policy: natural runtime control");
     const state = JSON.parse(fs.readFileSync(path.join(root, ".rph", "state.json"), "utf8")) as {
       currentStage: string;

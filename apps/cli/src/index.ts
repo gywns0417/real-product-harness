@@ -5007,7 +5007,7 @@ function shouldBlockUnsafeNaturalPlanExecution(input: string, command: string): 
   if (/^\/(?:agent (?:run|continue)|resume|pm start)\b/.test(command.trim())) {
     const intent = naturalRuntimeIntent(trimmed);
     if (command.trim().startsWith("/pm start")) {
-      return intent !== "start";
+      return intent !== "start" && intent !== "productDefinition";
     }
     return intent !== "continue";
   }

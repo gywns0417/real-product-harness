@@ -5986,6 +5986,20 @@ describe("runtime planner and context bundle", () => {
     expect(workflowPlan.command).toBeUndefined();
     expect(workflowPlan.workflowTarget).toBeUndefined();
 
+    const pmPlan = planAgentAction({ text: "PM 작업을 시작해줘", initialized: true, hasConfiguredAi: true });
+    expect(pmPlan.kind).toBe("start-workflow");
+    expect(pmPlan.command).toBe("/pm start");
+    expect(pmPlan.workflowTarget).toBe("pm");
+
+    const productDefinitionPlan = planAgentAction({ text: "제품 정의 초안 만들어줘", initialized: false });
+    expect(productDefinitionPlan.kind).toBe("start-workflow");
+    expect(productDefinitionPlan.command).toBe("/pm start");
+    expect(productDefinitionPlan.workflowTarget).toBe("pm");
+
+    const productDefinitionQuestion = planAgentAction({ text: "제품 정의 문서 확인해줘", initialized: true });
+    expect(productDefinitionQuestion.kind).toBe("chat");
+    expect(productDefinitionQuestion.command).toBeUndefined();
+
     const productizePlan = planAgentAction({
       text: "이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: AI 회의록 액션아이템 SaaS",
       initialized: true

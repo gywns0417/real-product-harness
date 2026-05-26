@@ -1409,6 +1409,13 @@ export function planAgentAction(input: AgentPlanInput): AgentActionPlan {
         "Return review and approval commands."
       ], "productize");
     }
+    if (isPmStartIntent(text)) {
+      return pmStartPlan("bootstrap PM workflow", 0.9, [
+        "Initialize the current folder as an RPH project if needed.",
+        "Start the PM product-definition workflow.",
+        "Return the next product-definition interview step."
+      ]);
+    }
     if (matches(text, ["setup", "설정", "연결", "credential", "api key", "mcp"])) {
       return plan("start-workflow", 0.92, "bootstrap setup", "/setup auto", true, [
         "Initialize project metadata if needed.",
@@ -1431,7 +1438,18 @@ export function planAgentAction(input: AgentPlanInput): AgentActionPlan {
       "Return review and approval commands."
     ], "productize");
   }
+  if (isPmStartIntent(text)) {
+    return pmStartPlan("PM workflow intent", 0.84, [
+      "Start the PM product-definition workflow.",
+      "Persist the workflow checkpoint.",
+      "Return the next product-definition interview step."
+    ]);
+  }
   return plan("chat", 0.35, "conversation");
+}
+
+function pmStartPlan(reason: string, confidence: number, steps: string[]): AgentActionPlan {
+  return plan("start-workflow", confidence, reason, "/pm start", true, steps, "pm");
 }
 
 function plan(
@@ -1486,6 +1504,14 @@ function isProductizeIntent(text: string): boolean {
     "실행"
   ]);
   return hasIdea && hasExecutionPackage;
+}
+
+function isPmStartIntent(text: string): boolean {
+  const normalized = text.toLowerCase().replace(/\s+/g, " ").trim();
+  const hasStart = matches(normalized, ["시작", "진행", "start", "begin", "kickoff", "kick off"]);
+  const hasPm = /\bpm\b/.test(normalized) || matches(normalized, ["product manager", "product management", "제품 정의", "프로덕트 정의"]);
+  const wantsDraft = matches(normalized, ["초안", "draft", "만들어", "작성"]);
+  return hasPm && (hasStart || wantsDraft);
 }
 
 function matches(text: string, needles: string[]): boolean {
