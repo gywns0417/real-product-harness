@@ -260,7 +260,8 @@ describe("MCP readiness", () => {
           result: {
             tools: [
               {
-                name: "echo"
+                name: "echo",
+                annotations: { readOnlyHint: true }
               }
             ]
           }
@@ -349,6 +350,72 @@ describe("MCP readiness", () => {
       "MCP-Protocol-Version": "2025-06-18",
       "Mcp-Session-Id": "session-123",
       "X-Goog-Api-Key": "stitch-secret"
+    });
+  });
+
+  it.each([
+    ["omits readOnlyHint", undefined, "stitch MCP tool is not explicitly verified read-only by current tools/list metadata: echo"],
+    ["marks destructiveHint", { readOnlyHint: true, destructiveHint: true }, "stitch MCP tool is marked destructive by current tools/list metadata: echo"]
+  ])("fails Stitch read-only canary when probe metadata %s", async (_label, annotations, expectedMessage) => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        method?: string;
+        id?: string;
+      };
+      if (body.method === "initialize") {
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: body.id,
+          result: {
+            protocolVersion: "2025-06-18",
+            capabilities: { tools: { listChanged: true } },
+            serverInfo: { name: "stitch", version: "test" }
+          }
+        }), {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            "Mcp-Session-Id": "session-unsafe"
+          }
+        });
+      }
+      if (body.method === "notifications/initialized") {
+        return new Response(null, { status: 202 });
+      }
+      if (body.method === "tools/list") {
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: body.id,
+          result: {
+            tools: [{
+              name: "echo",
+              ...(annotations ? { annotations } : {})
+            }]
+          }
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      throw new Error(`tools/call must not run when readiness metadata is unsafe; got ${body.method ?? "unknown"}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const env = {
+      STITCH_API_KEY: "stitch-secret"
+    } as NodeJS.ProcessEnv;
+    const config = createHarnessConfig(env);
+
+    const result = await testMcpConnection(config, "stitch", env);
+
+    expect(result.status).toBe("failed");
+    expect(result.message).toContain(expectedMessage);
+    expect(result.firstActionProof).toBeUndefined();
+    expect(result.readiness).toMatchObject({
+      mode: "protocol-partial",
+      provenStage: "protocol-tools-list",
+      stages: [
+        { stage: "transport", status: "passed" },
+        { stage: "credential-probe", status: "passed" },
+        { stage: "protocol-tools-list", status: "passed" },
+        { stage: "protocol-tool-call", status: "failed", message: expectedMessage }
+      ]
     });
   });
 
@@ -457,7 +524,7 @@ describe("MCP readiness", () => {
           jsonrpc: "2.0",
           id: body.id,
           result: {
-            tools: [{ name: "custom.echo" }]
+            tools: [{ name: "custom.echo", annotations: { readOnlyHint: true } }]
           }
         }), { status: 200, headers: { "content-type": "application/json" } });
       }

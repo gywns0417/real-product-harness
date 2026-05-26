@@ -527,12 +527,14 @@ const HELP_TOPIC_LINES: Record<string, string[]> = {
     "  /mcp tools <server> --bind",
     "  /mcp tools <server> --agent",
     "  /mcp call <server> <tool> --read-only --args-json '{}' 또는 /mcp call <server>.<tool> --args-json '{}'",
+    "  /mcp canary <server> <tool> --args-json '{}' --execute",
     "  /mcp test [server]",
     "  /mcp enable <server>",
     "  /mcp disable <server>",
     "  /setup mcp add <id> --url <https://host/mcp> [--allow-tool read.only.tool] [--probe-tool read.only.tool] [--live]",
     "",
-    "--bind captures the current tools/list schema and annotations for the configured read-only allowlist. Bound tools are blocked if later tools/list metadata drifts."
+    "--bind captures the current tools/list schema and annotations for the configured read-only allowlist. Bound tools are blocked if later tools/list metadata drifts.",
+    "`mcp canary` captures a mutable tool snapshot, executes through the approval binding when --execute is present, and writes a sidecar readback proof."
   ],
   live: [
     "Live proof commands",
@@ -8837,6 +8839,9 @@ async function handleMcp(
       console.log(output);
       return;
     }
+    case "canary":
+      await handleMcpCanary(projectRoot, config, args, options);
+      return;
     case "enable": {
       const serverId = parseMcpServerId(args[0]);
       const next = setMcpServerEnabled(projectRoot, serverId, true);
@@ -8862,8 +8867,171 @@ async function handleMcp(
       return;
     }
     default:
-      throw new Error(`unsupported MCP command: ${subcommand ?? "(empty)"}. available: status | tools [server] | tools <server> --discover | call <server> <tool> --read-only --args-json '{}' | enable <server> | disable <server> | test [server]`);
+      throw new Error(`unsupported MCP command: ${subcommand ?? "(empty)"}. available: status | tools [server] | tools <server> --discover | call <server> <tool> --read-only --args-json '{}' | canary <server> <tool> --args-json '{}' --execute | enable <server> | disable <server> | test [server]`);
   }
+}
+
+async function handleMcpCanary(
+  projectRoot: string,
+  config: ReturnType<typeof loadHarnessConfig>,
+  args: string[],
+  options: Record<string, string | boolean>
+): Promise<void> {
+  const dottedTarget = args[0] && !args[1] ? parseMcpApprovalAction(args[0]) : null;
+  const server = optionString(options, "server") ?? dottedTarget?.server ?? args[0] ?? "stitch";
+  const toolName = optionString(options, "tool") ?? optionString(options, "name") ?? dottedTarget?.tool ?? args[1] ?? defaultMcpCanaryTool(server);
+  if (!server || !toolName) {
+    console.log("usage: /mcp canary <server> <tool> --args-json '{}' --execute");
+    process.exitCode = 2;
+    return;
+  }
+  const serverId = parseMcpServerId(server);
+  const toolArgs = parseJsonObjectOption(optionString(options, "args-json") ?? optionString(options, "arguments-json") ?? optionString(options, "args"))
+    ?? defaultMcpCanaryArguments(serverId, toolName);
+  const command = formatMcpMutableCallCommand(serverId, toolName, toolArgs);
+  const mutableAction = classifyMutableAgentCommand(command);
+  if (!mutableAction) {
+    throw new Error(`mcp canary currently supports known approval-gated mutable MCP actions; ${serverId}.${toolName} is not registered.`);
+  }
+  const env = { ...process.env };
+  loadEnvFile(path.join(projectRoot, ".env"), env);
+  const snapshot = await captureOperatorMcpToolCallSnapshot({
+    projectRoot,
+    config: readHarnessConfigSnapshot(projectRoot, env),
+    env,
+    serverId,
+    toolName,
+    arguments: toolArgs
+  });
+  const execute = optionBool(options, "execute") || optionBool(options, "yes");
+  const baseReport = {
+    schema: "rph-mcp-mutable-canary-v1",
+    generatedAt: new Date().toISOString(),
+    server: serverId,
+    toolName,
+    command,
+    mode: execute ? "execute" : "plan",
+    safety: {
+      action: `${serverId}.${toolName}`,
+      risk: mutableAction.risk,
+      approvalBinding: "runtime-action-approval",
+      autoApprovedBy: execute ? "mcp-canary-explicit-command" : null
+    },
+    arguments: toolArgs,
+    snapshot: {
+      fingerprint: snapshot.fingerprint,
+      capturedAt: snapshot.capturedAt,
+      snapshotPath: snapshot.snapshotPath
+    }
+  };
+  if (!execute) {
+    const artifacts = writeMcpCanaryArtifacts(projectRoot, {
+      ...baseReport,
+      status: "planned",
+      actionApprovalId: null,
+      readback: null
+    });
+    console.log("MCP mutable canary");
+    console.log("- status: planned");
+    console.log(`- target: ${serverId}.${toolName}`);
+    console.log(`- snapshot: ${snapshot.fingerprint}`);
+    console.log(`- execute: /mcp canary ${serverId} ${toolName} --args-json ${quoteShellArg(JSON.stringify(toolArgs))} --execute`);
+    console.log(`- canary: ${artifacts.jsonPath}`);
+    return;
+  }
+
+  const sessionId = resolveRuntimeSessionId(projectRoot);
+  ensureRuntimeSession(projectRoot, sessionId);
+  const record = recordRuntimeActionApproval(projectRoot, {
+    sessionId,
+    command,
+    reason: "mutable MCP canary proof",
+    message: `MCP mutable canary for ${serverId}.${toolName}`,
+    approvedTargetId: `mcp:${serverId}.${toolName}`,
+    approvedParameters: {
+      command: "call",
+      server: serverId,
+      tool: toolName,
+      argumentsJson: JSON.stringify(toolArgs),
+      snapshotFingerprint: snapshot.fingerprint
+    },
+    approvedSnapshot: snapshot
+  });
+  updateRuntimeSession(projectRoot, sessionId, {
+    status: "blocked",
+    blocker: `mcp mutable canary pending: ${record.id}`,
+    pendingExternalActionId: record.id,
+    note: `mcp mutable canary pending: ${record.command}`
+  });
+  const ok = await approveAndExecuteRuntimeAction(projectRoot, record.id, "mcp-canary");
+  const completed = loadRuntimeActionApprovals(projectRoot).find((item) => item.id === record.id);
+  const passed = ok && completed?.status === "completed" && completed.readbackStatus === "passed";
+  const artifacts = writeMcpCanaryArtifacts(projectRoot, {
+    ...baseReport,
+    generatedAt: new Date().toISOString(),
+    status: passed ? "passed" : "failed",
+    actionApprovalId: record.id,
+    readback: completed
+      ? {
+          status: completed.readbackStatus ?? null,
+          verifiedTargetId: completed.verifiedTargetId ?? null,
+          artifactPath: completed.readbackArtifactPath ?? null,
+          actionApprovalId: completed.readbackActionApprovalId ?? null,
+          approvedFingerprint: completed.readbackApprovedFingerprint ?? null,
+          verifiedAt: completed.readbackVerifiedAt ?? null
+        }
+      : null
+  });
+  console.log("MCP mutable canary");
+  console.log(`- status: ${passed ? "passed" : "failed"}`);
+  console.log(`- target: ${serverId}.${toolName}`);
+  console.log(`- action: ${record.id}`);
+  console.log(`- snapshot: ${snapshot.fingerprint}`);
+  if (completed?.verifiedTargetId) {
+    console.log(`- readback: ${completed.verifiedTargetId}`);
+  }
+  if (completed?.readbackArtifactPath) {
+    console.log(`- readback file: ${completed.readbackArtifactPath}`);
+  }
+  console.log(`- canary: ${artifacts.jsonPath}`);
+  if (!passed) {
+    process.exitCode = 1;
+  }
+}
+
+function defaultMcpCanaryTool(server: string): string | undefined {
+  return server === "stitch" ? "create_project" : undefined;
+}
+
+function defaultMcpCanaryArguments(server: string, toolName: string): Record<string, unknown> {
+  if (server === "stitch" && toolName === "create_project") {
+    return {
+      title: `RPH Mutable Canary ${new Date().toISOString()}`
+    };
+  }
+  return {};
+}
+
+function formatMcpMutableCallCommand(serverId: string, toolName: string, args: Record<string, unknown>): string {
+  return `/mcp call ${serverId} ${toolName} --args-json ${quoteShellArg(JSON.stringify(args))}`;
+}
+
+function writeMcpCanaryArtifacts(projectRoot: string, report: Record<string, unknown>): { jsonPath: string; latestPath: string } {
+  const actionId = typeof report.actionApprovalId === "string" && report.actionApprovalId.length > 0
+    ? report.actionApprovalId
+    : typeof report.snapshot === "object" && report.snapshot && "fingerprint" in report.snapshot
+      ? String((report.snapshot as { fingerprint?: unknown }).fingerprint ?? "snapshot")
+      : "planned";
+  const dir = path.join(projectRoot, ".rph", "mcp");
+  const jsonPath = path.join(dir, `canary-${safeFileSegment(actionId)}.json`);
+  const latestPath = path.join(dir, "canary-latest.json");
+  writeJson(jsonPath, report);
+  writeJson(latestPath, report);
+  return { jsonPath, latestPath };
+}
+
+function safeFileSegment(value: string): string {
+  return value.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "item";
 }
 
 async function handleLive(

@@ -2,7 +2,7 @@ import { MCP_SERVER_CONTRACTS, type McpServerAuthMode, type McpServerContract } 
 import { generateAiText } from "./ai";
 import { checkGitHubCliWriteReadiness, githubRestToken } from "./github";
 import { callMcpTool, listMcpTools } from "./mcp-client";
-import { attachMcpPolicyEvaluation } from "./mcp-policy";
+import { assertMcpToolMetadataAllowsReadOnly, attachMcpPolicyEvaluation } from "./mcp-policy";
 import { normalizeNotionPageId } from "./notion";
 import { normalizeGitHubRepoTarget } from "./settings";
 import { nowIso } from "./time";
@@ -357,7 +357,10 @@ async function testProtocolMcpReadiness(
       { stage: "protocol-tools-list", status: "passed", message: `tools/list passed (${toolCount} tools)`, endpoint: result.session.endpoint }
     ];
     if (contract.protocolReadiness === "tools/call") {
-      return testProtocolMcpToolCall(serverId, serverName, requiredEnv, endpoint, contract, env, toolCount, commonStages);
+      const probeTool = contract.protocolToolCallProbe?.toolName
+        ? result.tools.find((tool) => tool.name === contract.protocolToolCallProbe?.toolName)
+        : undefined;
+      return testProtocolMcpToolCall(serverId, serverName, requiredEnv, endpoint, contract, env, toolCount, commonStages, probeTool);
     }
     return withReadiness({
       id: serverId,
@@ -410,7 +413,8 @@ async function testProtocolMcpToolCall(
   contract: McpServerContract,
   env: NodeJS.ProcessEnv,
   toolCount: number,
-  commonStages: ReadinessStage[]
+  commonStages: ReadinessStage[],
+  probeTool: { annotations?: unknown } | undefined
 ): Promise<ConnectionCheck> {
   const probe = contract.protocolToolCallProbe;
   if (!probe?.toolName) {
@@ -432,6 +436,40 @@ async function testProtocolMcpToolCall(
   const allowedReadOnlyTools = new Set(contract.agentReadOnlyTools ?? []);
   if (!allowedReadOnlyTools.has(probe.toolName)) {
     const message = `protocol tools/call probe ${probe.toolName} is not in the agent read-only allowlist`;
+    return withReadiness({
+      id: serverId,
+      kind: "mcp",
+      status: "failed",
+      message: `credential: MCP initialize accepted; protocol: ${message}`,
+      requiredEnv,
+      missingEnv: [],
+      endpoint: commonStages[2].endpoint,
+      checkedAt: nowIso()
+    }, [
+      ...commonStages,
+      { stage: "protocol-tool-call", status: "failed", message, endpoint: commonStages[2].endpoint }
+    ]);
+  }
+  if (!probeTool) {
+    const message = `protocol tools/call probe ${probe.toolName} is missing from tools/list`;
+    return withReadiness({
+      id: serverId,
+      kind: "mcp",
+      status: "failed",
+      message: `credential: MCP initialize accepted; protocol: ${message}`,
+      requiredEnv,
+      missingEnv: [],
+      endpoint: commonStages[2].endpoint,
+      checkedAt: nowIso()
+    }, [
+      ...commonStages,
+      { stage: "protocol-tool-call", status: "failed", message, endpoint: commonStages[2].endpoint }
+    ]);
+  }
+  try {
+    assertMcpToolMetadataAllowsReadOnly(serverId, probe.toolName, probeTool.annotations);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
     return withReadiness({
       id: serverId,
       kind: "mcp",
@@ -664,9 +702,13 @@ function withReadiness(check: ConnectionCheck, stages: ReadinessStage[]): Connec
 
 function readinessMode(stages: ReadinessStage[]): Readiness["mode"] {
   const passed = stages.filter((stage) => stage.status === "passed").map((stage) => stage.stage);
-  const protocolStage = stages.find((stage) => stage.stage === "protocol-tool-call" || stage.stage === "protocol-tools-list");
+  const toolCallStage = stages.find((stage) => stage.stage === "protocol-tool-call");
+  const toolsListStage = stages.find((stage) => stage.stage === "protocol-tools-list");
   const externalWriteStage = stages.find((stage) => stage.stage === "external-write");
-  if (protocolStage?.status === "passed") {
+  if (toolCallStage?.status === "passed") {
+    return "protocol-ready";
+  }
+  if (!toolCallStage && toolsListStage?.status === "passed") {
     return "protocol-ready";
   }
   if (passed.includes("credential-probe")) {
@@ -676,7 +718,10 @@ function readinessMode(stages: ReadinessStage[]): Readiness["mode"] {
     if (externalWriteStage && externalWriteStage.status !== "skipped" && externalWriteStage.status !== "not-applicable") {
       return "adapter-partial";
     }
-    if (protocolStage && protocolStage.status !== "not-applicable") {
+    if (
+      (toolCallStage && toolCallStage.status !== "not-applicable" && toolCallStage.status !== "skipped")
+      || (toolsListStage && toolsListStage.status !== "not-applicable" && toolsListStage.status !== "skipped")
+    ) {
       return "protocol-partial";
     }
     return "adapter-ready";

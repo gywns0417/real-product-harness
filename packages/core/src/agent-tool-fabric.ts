@@ -9,6 +9,7 @@ import { githubRestToken } from "./github";
 import { callMcpTool, listMcpTools } from "./mcp-client";
 import {
   agentReadOnlyToolsForServer,
+  assertMcpToolMetadataAllowsReadOnly,
   createMcpToolCallApprovalSnapshot,
   ensureReadOnlyMcpToolAllowed,
   summarizeMcpPolicyForServer,
@@ -720,16 +721,6 @@ function agentReadOnlyTools(config: HarnessConfig, serverId: McpServerId): strin
 
 function ensureAgentReadOnlyMcpTool(config: HarnessConfig, serverId: McpServerId, toolName: string): void {
   ensureReadOnlyMcpToolAllowed(config, serverId, toolName);
-}
-
-function assertMcpToolMetadataAllowsReadOnly(serverId: McpServerId, toolName: string, annotations: unknown): void {
-  const metadata = objectArg(annotations);
-  if (metadata.readOnlyHint !== true) {
-    throw new Error(`${serverId} MCP tool is not explicitly verified read-only by current tools/list metadata: ${toolName}`);
-  }
-  if (metadata.destructiveHint === true) {
-    throw new Error(`${serverId} MCP tool is marked destructive by current tools/list metadata: ${toolName}`);
-  }
 }
 
 function parseMcpServerId(value: string): McpServerId {

@@ -1679,7 +1679,7 @@ describe("command parser and env validation", () => {
             jsonrpc: "2.0",
             id: body.id,
             result: {
-              tools: [{ name: "echo" }]
+              tools: [{ name: "echo", annotations: { readOnlyHint: true } }]
             }
           }), { status: 200, headers: { "content-type": "application/json" } });
         }
@@ -2219,7 +2219,7 @@ describe("command parser and env validation", () => {
           jsonrpc: "2.0",
           id: body.id,
           result: {
-            tools: [{ name: "echo" }]
+            tools: [{ name: "echo", annotations: { readOnlyHint: true } }]
           }
         }), { status: 200, headers: { "content-type": "application/json" } });
       }
@@ -4523,6 +4523,133 @@ describe("command parser and env validation", () => {
       "notifications/initialized",
       "tools/call"
     ]);
+  });
+
+  it("runs a mutable MCP canary through approval binding and writes a sidecar proof", async () => {
+    const methods: string[] = [];
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { id?: string; method?: string; params?: { name?: string; arguments?: Record<string, unknown> } };
+      if (body.method) {
+        methods.push(body.method);
+      }
+      if (body.method === "initialize") {
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: body.id,
+          result: {
+            protocolVersion: "2025-06-18",
+            capabilities: { tools: {} },
+            serverInfo: { name: "stitch", version: "test" }
+          }
+        }), {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            "Mcp-Session-Id": "session-canary"
+          }
+        });
+      }
+      if (body.method === "notifications/initialized") {
+        return new Response(null, { status: 202 });
+      }
+      if (body.method === "tools/list") {
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: body.id,
+          result: {
+            tools: [{
+              name: "create_project",
+              description: "Create a project.",
+              annotations: { destructiveHint: true },
+              inputSchema: {
+                type: "object",
+                properties: { title: { type: "string" } }
+              }
+            }]
+          }
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (body.method === "tools/call") {
+        expect(body.params).toEqual({
+          name: "create_project",
+          arguments: { title: "Mutable Canary" }
+        });
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: body.id,
+          result: {
+            content: [{ type: "text", text: "created canary-project" }],
+            structuredContent: { projectId: "canary-project", title: "Mutable Canary" },
+            isError: false
+          }
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({ error: { message: "unexpected request" } }), { status: 500 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await withProcessEnv({ STITCH_API_KEY: "stitch-secret" }, async () => {
+      expect(await runParsedCommand(root, parseCli([
+        "mcp",
+        "canary",
+        "stitch",
+        "create_project",
+        "--args-json",
+        "{\"title\":\"Mutable Canary\"}",
+        "--execute"
+      ]))).toBe(true);
+    });
+
+    const output = logSpy.mock.calls.flat().join("\n");
+    expect(output).toContain("MCP mutable canary");
+    expect(output).toContain("- status: passed");
+    expect(output).toContain("- target: stitch.create_project");
+    expect(output).toContain("- readback: stitch.create_project");
+    expect(output).not.toContain("stitch-secret");
+    const approvals = loadRuntimeActionApprovals(root);
+    const completed = approvals.find((record) => record.target === "mcp" && record.action === "stitch.create_project");
+    expect(completed).toMatchObject({
+      status: "completed",
+      readbackStatus: "passed",
+      verifiedTargetId: "stitch.create_project"
+    });
+    expect(completed?.readbackArtifactPath).toBe(mcpToolCallReadbackFile(root, completed!.id));
+    const readbackText = fs.readFileSync(completed!.readbackArtifactPath!, "utf8");
+    expect(readbackText).toContain("canary-project");
+    expect(readbackText).not.toContain("stitch-secret");
+    const canaryPath = path.join(root, ".rph", "mcp", "canary-latest.json");
+    const canaryText = fs.readFileSync(canaryPath, "utf8");
+    const canary = JSON.parse(canaryText) as {
+      schema: string;
+      status: string;
+      server: string;
+      toolName: string;
+      actionApprovalId: string;
+      readback?: { status?: string; verifiedTargetId?: string; artifactPath?: string };
+      snapshot?: { fingerprint?: string };
+    };
+    expect(canary).toMatchObject({
+      schema: "rph-mcp-mutable-canary-v1",
+      status: "passed",
+      server: "stitch",
+      toolName: "create_project",
+      actionApprovalId: completed!.id,
+      readback: {
+        status: "passed",
+        verifiedTargetId: "stitch.create_project",
+        artifactPath: completed!.readbackArtifactPath
+      }
+    });
+    expect(canary.snapshot?.fingerprint).toEqual(expect.any(String));
+    expect(canaryText).not.toContain("stitch-secret");
+    expect(readProofLedgerLatest(root)?.latestBySubject[`external-action:mcp:stitch.create_project:${completed!.id}`]).toMatchObject({
+      status: "passed",
+      trust: "passed"
+    });
+    expect(methods.filter((method) => method === "tools/list")).toHaveLength(4);
+    expect(methods.filter((method) => method === "tools/call")).toEqual(["tools/call"]);
+    expect(methods.slice(-3)).toEqual(["initialize", "notifications/initialized", "tools/call"]);
   });
 
   it("blocks mutable operator MCP calls when approval snapshot metadata drifts", async () => {

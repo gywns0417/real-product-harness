@@ -196,6 +196,16 @@ export function verifyMcpReadOnlyToolContract(
   return contract;
 }
 
+export function assertMcpToolMetadataAllowsReadOnly(serverId: McpServerId, toolName: string, annotations: unknown): void {
+  const metadata = annotations && typeof annotations === "object" ? annotations as Record<string, unknown> : {};
+  if (metadata.readOnlyHint !== true) {
+    throw new Error(`${serverId} MCP tool is not explicitly verified read-only by current tools/list metadata: ${toolName}`);
+  }
+  if (metadata.destructiveHint === true) {
+    throw new Error(`${serverId} MCP tool is marked destructive by current tools/list metadata: ${toolName}`);
+  }
+}
+
 export function evaluateMcpPolicy(config: HarnessConfig, check: ConnectionCheck): McpPolicyEvaluation | undefined {
   if (check.kind !== "mcp") {
     return undefined;
