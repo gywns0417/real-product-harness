@@ -3768,6 +3768,75 @@ describe("Hermes-like runtime acceptance", () => {
     expect(replay.stdout).toContain("Replay snapshots:");
   }, 10000);
 
+  it("includes runtime intent events in session and replay output", async () => {
+    writeOpenAiEnv(root, "https://example.invalid/v1");
+    const shell = await runCli(["shell"], {
+      cwd: root,
+      stdinChunks: [
+        { text: "상태를 확인해줘\n", delayMs: 0 },
+        { text: "/exit\n", delayMs: 50 }
+      ],
+      preloadFetchCommandProposal: true
+    });
+    expect(shell.exitCode).toBe(0);
+    const manifest = JSON.parse(fs.readFileSync(path.join(root, ".rph", "runtime", "current-session.json"), "utf8")) as {
+      sessionId: string;
+    };
+    const intents = JSON.parse(fs.readFileSync(path.join(root, ".rph", "runtime", "intents.json"), "utf8")) as Array<{
+      id: string;
+    }>;
+
+    const confirmed = await runCli(["agent", "confirm-intent", intents[0].id, "--by", "tester"], {
+      cwd: root,
+      env: withoutProviderEnv()
+    });
+    expect(confirmed.exitCode).toBe(0);
+
+    const session = await runCli(["agent", "session", manifest.sessionId, "--limit", "4"], { cwd: root, env: withoutProviderEnv() });
+    const replay = await runCli(["agent", "replay", manifest.sessionId, "--limit", "4"], { cwd: root, env: withoutProviderEnv() });
+
+    expect(session.exitCode).toBe(0);
+    expect(session.stdout).toContain("- intent journal: .rph/runtime/intents.jsonl");
+    expect(session.stdout).toContain("- intent entries: 3");
+    expect(session.stdout).toContain(`created ${intents[0].id} [pending] read_only command=/status`);
+    expect(session.stdout).toContain(`confirmed ${intents[0].id} [confirmed] read_only command=/status`);
+    expect(session.stdout).toContain(`applied ${intents[0].id} [confirmed] read_only command=/status outcome=local-command`);
+    expect(replay.exitCode).toBe(0);
+    expect(replay.stdout).toContain("- intent entries: 3");
+    expect(replay.stdout).toContain("Runtime intent timeline:");
+    expect(replay.stdout).toContain(`created: ${intents[0].id} [pending] read_only /status`);
+    expect(replay.stdout).toContain(`confirmed: ${intents[0].id} [confirmed] read_only /status`);
+    expect(replay.stdout).toContain(`applied: ${intents[0].id} [confirmed] read_only /status outcome=local-command`);
+  }, 10000);
+
+  it("shows pending runtime intents as actionable follow-ups in replay output", async () => {
+    writeOpenAiEnv(root, "https://example.invalid/v1");
+    const shell = await runCli(["shell"], {
+      cwd: root,
+      stdinChunks: [
+        { text: "상태를 확인해줘\n", delayMs: 0 },
+        { text: "/exit\n", delayMs: 50 }
+      ],
+      preloadFetchCommandProposal: true
+    });
+    expect(shell.exitCode).toBe(0);
+    const manifest = JSON.parse(fs.readFileSync(path.join(root, ".rph", "runtime", "current-session.json"), "utf8")) as {
+      sessionId: string;
+    };
+    const intents = JSON.parse(fs.readFileSync(path.join(root, ".rph", "runtime", "intents.json"), "utf8")) as Array<{
+      id: string;
+    }>;
+
+    const replay = await runCli(["agent", "replay", manifest.sessionId, "--limit", "3"], { cwd: root, env: withoutProviderEnv() });
+
+    expect(replay.exitCode).toBe(0);
+    expect(replay.stdout).toContain("- pending intents: 1");
+    expect(replay.stdout).toContain(`- next intent: rph agent confirm-intent ${intents[0].id}`);
+    expect(replay.stdout).toContain("Runtime intent timeline:");
+    expect(replay.stdout).toContain(`created: ${intents[0].id} [pending] read_only /status`);
+    expect(replay.stdout).not.toContain(`confirmed: ${intents[0].id}`);
+  }, 10000);
+
   it("shows a deterministic session recovery brief on agent status and runtime startup", async () => {
     writeRecoveryBriefFixture(root);
 
@@ -3873,6 +3942,35 @@ describe("Hermes-like runtime acceptance", () => {
 
     const approvals = JSON.parse(fs.readFileSync(path.join(root, ".rph", "runtime", "action-approvals.json"), "utf8")) as Array<{ id: string; status: string }>;
     expect(approvals.find((record) => record.id === "action-recovery")?.status).toBe("pending");
+  }, 10000);
+
+  it("shows pending runtime intents in recovery without auto-confirming them", async () => {
+    writeOpenAiEnv(root, "https://example.invalid/v1");
+    const shell = await runCli(["shell"], {
+      cwd: root,
+      stdinChunks: [
+        { text: "상태를 확인해줘\n", delayMs: 0 },
+        { text: "/exit\n", delayMs: 50 }
+      ],
+      preloadFetchCommandProposal: true
+    });
+    expect(shell.exitCode).toBe(0);
+    const intentPath = path.join(root, ".rph", "runtime", "intents.json");
+    const intents = JSON.parse(fs.readFileSync(intentPath, "utf8")) as Array<{
+      id: string;
+      status: string;
+    }>;
+
+    const result = await runCli(["agent", "recover", "--steps", "1"], { cwd: root, env: withoutProviderEnv() });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("Session recovery brief");
+    expect(result.stdout).toContain(`pending intents: 1; next=${intents[0].id} [read_only] /status`);
+    expect(result.stdout).toContain(`next safe command: /agent confirm-intent ${intents[0].id}`);
+    expect(result.stdout).toContain(`recovery blocked: explicit action required before /agent confirm-intent ${intents[0].id}`);
+    expect(result.stdout).not.toContain("intent confirmed:");
+    const updated = JSON.parse(fs.readFileSync(intentPath, "utf8")) as Array<{ status: string }>;
+    expect(updated[0].status).toBe("pending");
   }, 10000);
 
   it("executes one safe local session recovery step", async () => {

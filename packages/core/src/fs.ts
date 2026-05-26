@@ -64,7 +64,18 @@ export function listFiles(dirPath: string): string[] {
 
 function writeFile(filePath: string, value: string): void {
   const secure = isSecureWorkspacePath(filePath);
-  fs.writeFileSync(filePath, value, secure ? { mode: 0o600 } : undefined);
+  const tempPath = path.join(
+    path.dirname(filePath),
+    `.${path.basename(filePath)}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`
+  );
+  try {
+    fs.writeFileSync(tempPath, value, secure ? { mode: 0o600 } : undefined);
+    fs.renameSync(tempPath, filePath);
+  } finally {
+    if (fs.existsSync(tempPath)) {
+      fs.rmSync(tempPath, { force: true });
+    }
+  }
   if (secure) {
     secureExistingWorkspaceFile(filePath);
   }

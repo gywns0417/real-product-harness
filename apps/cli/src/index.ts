@@ -132,6 +132,7 @@ import {
   loadRuntimeExecutionGraph,
   loadRuntimeHandoffs,
   loadRuntimeActionApprovals,
+  loadRuntimeIntentJournal,
   loadRuntimeIntents,
   loadRuntimeSession,
   loadRuntimeSessionJournal,
@@ -188,6 +189,8 @@ import {
   readTrustedConnectionChecks,
   recordRuntimeHandoff,
   recordRuntimeActionApproval,
+  recordRuntimeIntentApplied,
+  recordRuntimeIntentBlocked,
   recordRuntimeIntent,
   recordLiveVerificationEvidence,
   recordRuntimeSessionEvent,
@@ -254,6 +257,7 @@ import {
   writeAiRunRecord,
   writeAiChatTurnRecord,
   writeJson,
+  runtimeIntentsJournalFile,
   runtimeSessionJournalFile,
   runtimeSessionSnapshotFile,
   WORKFLOW_STAGES,
@@ -364,7 +368,7 @@ const HELP_TOPIC_LINES: Record<string, string[]> = {
     "  /pause | /resume | /cancel",
     "  /project <path> | /pwd",
     "  /chat status | clear",
-    "  /agent status | roles | pack | import <toml> | use <name> | session | replay [session-id] | graph | handoffs | actions | lanes | workers | pool | run | recover [--steps N] | reduce <stage> | clear",
+    "  /agent status | roles | pack | import <toml> | use <name> | session | replay [session-id] | graph | handoffs | actions | intents | confirm-intent <id> | dismiss-intent <id> | lanes | workers | pool | run | recover [--steps N] | reduce <stage> | clear",
     "  /agent pool service install | status | uninstall | plist",
     "  /agent claim <handoff-id> | heartbeat <handoff-id> | dead-letter <handoff-id>",
     "  /agent approve-action <action-id> | reject-action <action-id>",
@@ -389,7 +393,10 @@ const HELP_TOPIC_LINES: Record<string, string[]> = {
     "  /agent session [session-id] [--limit N]",
     "  /agent replay [session-id]",
     "  /agent graph [status|refresh|json] [--verbose]",
-    "  /agent handoffs | actions | lanes | workers | pool status | pool start | pool service install | pool service status | pool run | pool stop | run | recover [--steps N] | reduce <stage>",
+    "  /agent intents",
+    "  /agent confirm-intent <id>",
+    "  /agent dismiss-intent <id>",
+    "  /agent handoffs | actions | intents | confirm-intent <id> | dismiss-intent <id> | lanes | workers | pool status | pool start | pool service install | pool service status | pool run | pool stop | run | recover [--steps N] | reduce <stage>",
     "",
     "Discovers Awesome Codex Subagents from ~/Desktop/awesome-codex-subagents/categories and imports selected TOML agents into the project-local .rph/agents catalog. `agent pack` installs a recommended Hermes-operator set in one command. The active custom agent guides chat and role behavior, but RPH approval gates and external-write policy still win."
   ],
@@ -1279,12 +1286,15 @@ function printRuntimeSessionJournal(
   const records = loadRuntimeSessionJournal(projectRoot, sessionId);
   const latest = records[records.length - 1] ?? latestRuntimeSessionJournalRecord(projectRoot, sessionId);
   const limit = parseOptionalPositiveInt(optionString(options, "limit")) ?? 5;
+  const intentRecords = runtimeIntentJournalForSession(projectRoot, sessionId);
 
   console.log("Runtime session journal");
   console.log(`- session: ${sessionId}`);
   console.log(`- journal: ${path.relative(projectRoot, runtimeSessionJournalFile(projectRoot, sessionId))}`);
   console.log(`- snapshot: ${path.relative(projectRoot, runtimeSessionSnapshotFile(projectRoot, sessionId))}`);
   console.log(`- entries: ${records.length}`);
+  console.log(`- intent journal: ${path.relative(projectRoot, runtimeIntentsJournalFile(projectRoot))}`);
+  console.log(`- intent entries: ${intentRecords.length}`);
   if (!latest) {
     console.log("- latest: none");
     return;
@@ -1306,6 +1316,14 @@ function printRuntimeSessionJournal(
       console.log(`  #${record.sequence} ${record.at} ${record.status} stage=${record.stage} history=${record.historyLength}`);
     }
   }
+  const intentTail = intentRecords.slice(-limit);
+  if (intentTail.length > 0) {
+    console.log(`- intent tail (${intentTail.length}/${intentRecords.length}):`);
+    for (const record of intentTail) {
+      const detail = runtimeIntentJournalDetail(record);
+      console.log(`  #${record.sequence} ${record.at} ${record.event} ${record.intentId} [${record.status}] ${record.risk} command=${record.command}${detail}`);
+    }
+  }
 }
 
 function printRuntimeSessionReplay(
@@ -1324,10 +1342,18 @@ function printRuntimeSessionReplay(
   }
   const replayed = replayRuntimeSession(projectRoot, sessionId);
   const records = loadRuntimeSessionJournal(projectRoot, sessionId);
+  const intentRecords = runtimeIntentJournalForSession(projectRoot, sessionId);
+  const pendingIntents = loadRuntimeIntents(projectRoot).filter((record) => record.status === "pending" && record.sessionId === sessionId);
   const limit = parseOptionalPositiveInt(optionString(options, "limit")) ?? 8;
   console.log("Runtime session replay");
   console.log(`- session: ${sessionId}`);
   console.log(`- entries: ${records.length}`);
+  console.log(`- intent entries: ${intentRecords.length}`);
+  if (pendingIntents.length > 0) {
+    const next = pendingIntents[pendingIntents.length - 1];
+    console.log(`- pending intents: ${pendingIntents.length}`);
+    console.log(`- next intent: rph agent confirm-intent ${next.id}`);
+  }
   if (!replayed) {
     console.log("- replay: unavailable");
     process.exitCode = 1;
@@ -1352,6 +1378,13 @@ function printRuntimeSessionReplay(
       console.log(`- ${item.at} ${item.kind}: ${item.message}${status}`);
     }
   }
+  const intentTimeline = runtimeIntentTimeline(intentRecords, limit);
+  if (intentTimeline.length > 0) {
+    console.log("Runtime intent timeline:");
+    for (const item of intentTimeline) {
+      console.log(`- ${item.at} ${item.event}: ${item.intentId} [${item.status}] ${item.risk} ${item.command}${item.detail}`);
+    }
+  }
   if (tail.length > 0) {
     console.log("Replay snapshots:");
     for (const record of tail) {
@@ -1371,6 +1404,32 @@ function runtimeSessionTimeline(
     message: compactTimelineMessage(event.message),
     ok: event.ok
   }));
+}
+
+function runtimeIntentJournalForSession(projectRoot: string, sessionId: string) {
+  return loadRuntimeIntentJournal(projectRoot).filter((record) => record.sessionId === sessionId);
+}
+
+function runtimeIntentTimeline(records: ReturnType<typeof loadRuntimeIntentJournal>, limit: number) {
+  return records.slice(-limit).map((record) => ({
+    at: record.at,
+    event: record.event,
+    intentId: record.intentId,
+    status: record.status,
+    risk: record.risk,
+    command: compactTimelineMessage(record.command),
+    detail: runtimeIntentJournalDetail(record)
+  }));
+}
+
+function runtimeIntentJournalDetail(record: ReturnType<typeof loadRuntimeIntentJournal>[number]): string {
+  if (record.blocker) {
+    return ` blocker=${compactTimelineMessage(record.blocker, 80)}`;
+  }
+  if (record.outcomeKind) {
+    return ` outcome=${record.outcomeKind}`;
+  }
+  return "";
 }
 
 function timelineEventLabel(kind: RuntimeSessionManifest["history"][number]["kind"]): string {
@@ -1684,7 +1743,7 @@ function isSafeRecoveryCommand(command: string): boolean {
     if (parsed.command !== "agent") {
       return false;
     }
-    return ["run", "continue", "status", "handoffs", "actions", "lanes"].includes(parsed.subcommand ?? "status");
+    return ["run", "continue", "status", "handoffs", "actions", "intents", "lanes"].includes(parsed.subcommand ?? "status");
   } catch {
     return false;
   }
@@ -1974,6 +2033,14 @@ function printRuntimeRecoveryBrief(
   if (recovery.pendingExternal) {
     console.log(`- pending external action: ${recovery.pendingExternal.id} [${recovery.pendingExternal.status}] ${recovery.pendingExternal.command}`);
   }
+  if (recovery.pendingIntents.length > 0) {
+    const next = recovery.pendingIntents[recovery.pendingIntents.length - 1];
+    console.log(`- pending intents: ${recovery.pendingIntents.length}; next=${next.id} [${next.risk}] ${next.command}`);
+    const blocker = runtimeIntentConfirmBlocker(projectRoot, next);
+    if (blocker) {
+      console.log(`- pending intent blocked: ${blocker}`);
+    }
+  }
   if (recovery.claimableHandoffs.length > 0) {
     const next = recovery.claimableHandoffs[0];
     console.log(`- claimable handoffs: ${recovery.claimableHandoffs.length}; next=${next.id} ${next.packet.toAgent} stage=${next.packet.stage} command=${next.packet.nextCommand ?? "none"}`);
@@ -1994,6 +2061,7 @@ function runtimeRecoveryState(
   session: RuntimeSessionManifest
 ): {
   pendingExternal: RuntimeActionApprovalRecord | undefined;
+  pendingIntents: RuntimeIntentRecord[];
   claimableHandoffs: RuntimeHandoffRecord[];
   mergeableLaneRuns: AgentLaneRunRecord[];
   actionable: boolean;
@@ -2003,6 +2071,8 @@ function runtimeRecoveryState(
   const pendingExternal = session.pendingExternalActionId
     ? pendingActions.find((record) => record.id === session.pendingExternalActionId)
     : pendingActions[0];
+  const pendingIntents = loadRuntimeIntents(projectRoot)
+    .filter((record) => record.status === "pending" && record.sessionId === session.sessionId);
   const claimableHandoffs = loadRuntimeHandoffs(projectRoot).filter((record) => isRuntimeHandoffClaimable(record));
   const mergeableLaneRuns = pendingCompletedLaneRuns(projectRoot);
   const actionable = session.status !== "active"
@@ -2010,21 +2080,25 @@ function runtimeRecoveryState(
     || Boolean(session.blocker)
     || Boolean(session.pendingAction?.command)
     || Boolean(pendingExternal)
+    || pendingIntents.length > 0
     || claimableHandoffs.length > 0
     || mergeableLaneRuns.length > 0
     || Boolean(session.handoffPacket);
   return {
     pendingExternal,
+    pendingIntents,
     claimableHandoffs,
     mergeableLaneRuns,
     actionable,
-    nextCommand: runtimeRecoveryNextCommand(session, pendingExternal, claimableHandoffs, mergeableLaneRuns)
+    nextCommand: runtimeRecoveryNextCommand(projectRoot, session, pendingExternal, pendingIntents, claimableHandoffs, mergeableLaneRuns)
   };
 }
 
 function runtimeRecoveryNextCommand(
+  projectRoot: string,
   session: RuntimeSessionManifest,
   pendingExternal: RuntimeActionApprovalRecord | undefined,
+  pendingIntents: RuntimeIntentRecord[],
   claimableHandoffs: RuntimeHandoffRecord[],
   mergeableLaneRuns: AgentLaneRunRecord[]
 ): string {
@@ -2036,6 +2110,10 @@ function runtimeRecoveryNextCommand(
   }
   if (session.pendingAction?.command) {
     return session.pendingAction.command;
+  }
+  if (pendingIntents.length > 0) {
+    const confirmable = [...pendingIntents].reverse().find((record) => !runtimeIntentConfirmBlocker(projectRoot, record));
+    return confirmable ? `/agent confirm-intent ${confirmable.id}` : "/agent intents";
   }
   if (mergeableLaneRuns.length > 0) {
     return "/agent run --steps 1";
@@ -2050,6 +2128,13 @@ function runtimeRecoveryNextCommand(
     return "/agent actions";
   }
   return "/agent run --steps 1";
+}
+
+function runtimeIntentConfirmBlocker(projectRoot: string, record: RuntimeIntentRecord): string | undefined {
+  if (record.risk === "user_approval" || isUserApprovalAgentCommand(record.command)) {
+    return `user approval command requires direct user input: ${record.command}`;
+  }
+  return runtimeIntentDriftBlocker(projectRoot, record);
 }
 
 function printRuntimeHandoffSummary(projectRoot: string): void {
@@ -2218,8 +2303,15 @@ function runtimeDigestLines(projectRoot: string, session: RuntimeSessionManifest
       "- inspect: rph agent graph status --verbose"
     ];
     if (pendingIntents.length > 0) {
+      const next = pendingIntents[pendingIntents.length - 1];
+      const blocker = runtimeIntentDriftBlocker(projectRoot, next);
       lines.push(`- pending intents: ${pendingIntents.length}`);
-      lines.push(`- next intent: rph agent confirm-intent ${pendingIntents[pendingIntents.length - 1].id}`);
+      if (blocker) {
+        lines.push(`- next intent blocked: ${blocker}`);
+        lines.push("- inspect intents: rph agent intents");
+      } else {
+        lines.push(`- next intent: rph agent confirm-intent ${next.id}`);
+      }
     }
     return lines;
   } catch {
@@ -2403,13 +2495,16 @@ async function confirmAndRunRuntimeIntent(
     return false;
   }
   if (existing.risk === "user_approval" || isUserApprovalAgentCommand(existing.command)) {
-    console.log(`intent blocked: user approval command requires direct user input: ${existing.command}`);
+    const blocker = `user approval command requires direct user input: ${existing.command}`;
+    recordRuntimeIntentBlocked(projectRoot, existing.id, blocker);
+    console.log(`intent blocked: ${blocker}`);
     console.log(`run explicitly: ${existing.command}`);
     process.exitCode = 1;
     return false;
   }
   const driftBlocker = runtimeIntentDriftBlocker(projectRoot, existing);
   if (driftBlocker && !options.force) {
+    recordRuntimeIntentBlocked(projectRoot, existing.id, driftBlocker);
     console.log(`intent blocked: ${driftBlocker}`);
     console.log(`inspect: /agent intents`);
     console.log(`override: /agent confirm-intent ${existing.id} --force`);
@@ -2419,7 +2514,7 @@ async function confirmAndRunRuntimeIntent(
   const record = confirmRuntimeIntent(projectRoot, id, options.confirmedBy);
   console.log(`intent confirmed: ${record.id}`);
   console.log(`command: ${record.command}`);
-  return runAgentCommandProposal(projectRoot, {
+  const ok = await runAgentCommandProposal(projectRoot, {
     command: record.command,
     safeToAutoRun: record.safeToAutoRun,
     reason: record.reason
@@ -2428,6 +2523,15 @@ async function confirmAndRunRuntimeIntent(
     executeLocalMutations: true,
     surface: "execution"
   });
+  recordRuntimeIntentApplied(projectRoot, record.id, runtimeIntentAppliedOutcome(record, ok));
+  return ok;
+}
+
+function runtimeIntentAppliedOutcome(record: RuntimeIntentRecord, ok: boolean): "local-command" | "action-approval-requested" | "blocked-or-skipped" {
+  if (record.risk === "external_live_write") {
+    return "action-approval-requested";
+  }
+  return ok ? "local-command" : "blocked-or-skipped";
 }
 
 function runtimeIntentDriftBlocker(projectRoot: string, record: RuntimeIntentRecord): string | undefined {

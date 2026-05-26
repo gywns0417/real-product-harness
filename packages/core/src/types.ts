@@ -515,6 +515,23 @@ export interface RuntimeIntentRecord {
   dismissReason?: string;
 }
 
+export type RuntimeIntentJournalEvent = "created" | "confirmed" | "dismissed" | "blocked" | "applied";
+
+export interface RuntimeIntentJournalRecord {
+  version: 1;
+  sequence: number;
+  at: string;
+  event: RuntimeIntentJournalEvent;
+  intentId: string;
+  sessionId: string;
+  command: string;
+  risk: RuntimeIntentRisk;
+  status: RuntimeIntentStatus;
+  blocker?: string;
+  outcomeKind?: "local-command" | "action-approval-requested" | "blocked-or-skipped";
+  intent: RuntimeIntentRecord;
+}
+
 export type RuntimeActionApprovalStatus = "pending" | "approved" | "running" | "completed" | "rejected" | "failed";
 
 export interface RuntimeActionApprovedSnapshot {

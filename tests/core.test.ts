@@ -109,14 +109,19 @@ import {
   completeAgentLaneRun,
   completeRuntimeAction,
   loadRuntimeActionApprovals,
+  loadRuntimeIntentJournal,
+  loadRuntimeIntents,
   mergeAgentLaneRun,
   recordAgentTurnState,
   recordLiveVerificationEvidence,
   recordRuntimeHandoff,
   recordRuntimeActionApproval,
+  recordRuntimeIntent,
   recordRuntimeSessionEvent,
   reconcileRuntimeStageQueue,
   rejectRuntimeAction,
+  confirmRuntimeIntent,
+  dismissRuntimeIntent,
   runtimeActionReadbackBindingError,
   captureOperatorMcpToolCallSnapshot,
   callOperatorMcpTool,
@@ -137,6 +142,8 @@ import {
   runtimeSessionFile,
   runtimeActionApprovalsFile,
   runtimeHandoffsFile,
+  runtimeIntentsFile,
+  runtimeIntentsJournalFile,
   runtimeExecutionGraphFile,
   runtimeSessionJournalFile,
   runtimeSessionSnapshotFile,
@@ -1533,6 +1540,33 @@ describe("command parser and env validation", () => {
     expect(logSpy.mock.calls.flat().join("\n")).toContain("rph setup detect");
     expect(logSpy.mock.calls.flat().join("\n")).toContain("rph setup apply");
     expect(logSpy.mock.calls.flat().join("\n")).toContain("rph setup check");
+  });
+
+  it("prints topic help for agent runtime intents", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const ok = await runParsedCommand(root, parseCli(["help", "agent"]));
+
+    expect(ok).toBe(true);
+    const output = logSpy.mock.calls.flat().join("\n");
+    expect(output).toContain("/agent intents");
+    expect(output).toContain("/agent confirm-intent <id>");
+    expect(output).toContain("/agent dismiss-intent <id>");
+    expect(output).toContain("/agent replay [session-id]");
+  });
+
+  it("prints runtime help with conversational intent controls", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const ok = await runParsedCommand(root, parseCli(["help", "runtime"]));
+
+    expect(ok).toBe(true);
+    const output = logSpy.mock.calls.flat().join("\n");
+    expect(output).toContain("Runtime slash controls");
+    expect(output).toContain("intents | confirm-intent <id> | dismiss-intent <id>");
+    expect(output).toContain("/status");
+    expect(output).toContain("/next");
+    expect(output).toContain("/exit");
   });
 
   it("prints topic help for live target verification", async () => {
@@ -5550,6 +5584,65 @@ describe("runtime session manifest", () => {
     expect(replayed?.sessionId).toBe("session-recoverable");
     expect(replayed?.checkpoint).toBe("status checked");
     expect(replayRuntimeSession(root, "session-recoverable")?.pendingAction?.command).toBe("/status");
+  });
+
+  it("keeps runtime intents in an append-only journal and recovers from an unreadable intent head", () => {
+    const intent = recordRuntimeIntent(root, {
+      sessionId: "session-intent-journal",
+      command: "/status",
+      risk: "read_only",
+      safeToAutoRun: true,
+      createdStage: "SETUP",
+      graphDigest: "graph-one",
+      reason: "status requested"
+    });
+    const confirmed = confirmRuntimeIntent(root, intent.id, "tester");
+    const dismissed = recordRuntimeIntent(root, {
+      sessionId: "session-intent-journal",
+      command: "/pm start",
+      risk: "local_mutation",
+      safeToAutoRun: false,
+      createdStage: "SETUP"
+    });
+    dismissRuntimeIntent(root, dismissed.id, "tester", "not now");
+
+    const journal = loadRuntimeIntentJournal(root);
+    expect(fs.existsSync(runtimeIntentsJournalFile(root))).toBe(true);
+    expect(journal.map((record) => record.sequence)).toEqual([1, 2, 3, 4]);
+    expect(journal[0]).toMatchObject({
+      event: "created",
+      intentId: intent.id,
+      status: "pending",
+      risk: "read_only",
+      command: "/status"
+    });
+    expect(journal[1]).toMatchObject({
+      event: "confirmed",
+      intentId: intent.id,
+      status: "confirmed"
+    });
+    expect(journal[3]).toMatchObject({
+      event: "dismissed",
+      intentId: dismissed.id,
+      status: "dismissed"
+    });
+    expect(confirmed.confirmedBy).toBe("tester");
+
+    fs.appendFileSync(runtimeIntentsJournalFile(root), "{partial");
+    expect(loadRuntimeIntentJournal(root)).toHaveLength(4);
+
+    fs.writeFileSync(runtimeIntentsFile(root), "{not-json");
+    const recovered = loadRuntimeIntents(root);
+    expect(recovered).toHaveLength(2);
+    expect(recovered.find((record) => record.id === intent.id)).toMatchObject({
+      status: "confirmed",
+      command: "/status"
+    });
+    expect(recovered.find((record) => record.id === dismissed.id)).toMatchObject({
+      status: "dismissed",
+      command: "/pm start",
+      dismissReason: "not now"
+    });
   });
 });
 

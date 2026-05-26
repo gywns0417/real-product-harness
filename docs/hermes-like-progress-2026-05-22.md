@@ -86,8 +86,12 @@
 - `/agent dismiss-intent <id>`가 제안을 폐기한다.
 - read-only/local mutation/external live write/user approval command를 risk로 분리해 기록한다.
 - intent 생성 당시 stage, graph digest, active TOML profile slug를 함께 저장하고, confirm 시 drift가 있으면 차단한다.
+- `.rph/runtime/intents.jsonl` append-only journal에 intent 생성/확인/폐기/차단/적용 이벤트를 남기고, `intents.json` head가 깨지면 journal에서 복구한다.
+- `/agent session`과 `/agent replay`가 runtime intent event tail/timeline을 함께 보여준다.
+- `/agent replay`와 recovery brief가 pending intent를 다음 안전 액션으로 보여주며, drift/user-approval 차단 사유를 같이 출력한다.
 - external live write는 confirm 후에도 바로 실행하지 않고 기존 action approval gate로 넘어간다.
 - user approval command는 intent confirm으로 대리 승인하지 못하게 막고, 사용자가 원래 approval slash command를 직접 입력하도록 분리한다.
+- installer completion과 CLI help가 `/agent intents`, `/agent confirm-intent`, `/agent dismiss-intent`를 노출한다.
 - `/status` digest가 현재 세션의 pending intent count와 다음 confirm command를 보여준다.
 - `/setup auto --live` 성공 후 `Connected` handoff block을 출력해 AI/MCP 연결, secret 저장 위치, chat 시작 방식, `/pm start` 시작 명령을 한 번에 보여준다.
 
@@ -98,8 +102,11 @@
 - workflow stage가 바뀐 stale intent는 confirm되지 않고 pending으로 남는 acceptance를 추가했다.
 - user approval intent는 confirm으로 대리 실행되지 않는 acceptance를 추가했다.
 - 반복 제안은 pending intent가 중복되지 않고 dismiss 가능한 acceptance를 추가했다.
+- core test가 intent journal append/replay와 corrupted head recovery를 검증한다.
+- acceptance test가 `/agent session`/`/agent replay`의 intent timeline, pending follow-up, recovery brief 출력을 검증한다.
 - external live write 제안이 plain chat에서 action approval을 만들지 않고, confirm 후에만 external action approval로 넘어가는 acceptance를 추가했다.
 - interactive `/setup auto --live` 성공 출력이 `Connected`, AI/MCP 요약, chat handoff, `/pm start` 시작 명령을 포함하는 acceptance를 추가했다.
+- runtime JSON/text write를 temp-file + rename 방식으로 원자화해, worker가 `.rph/runtime/handoffs.json`을 갱신하는 중 reader가 partial JSON을 읽고 죽는 race를 막았다.
 
 현재 판정:
 
@@ -109,10 +116,10 @@
 아직 부족한 점:
 
 - provider별 "신규 실계정 credential 입력부터 성공 연결까지" live green은 아직 전체 통과 상태가 아니다. 2026-05-26 최신 `live:configured` 기준 Gemini, Notion, GitHub, Stitch는 통과했고 OpenAI credential 401이 남은 live blocker다. Anthropic/local/Figma는 configured target이 아니라 skipped다.
-- runtime intent가 단일 JSON 배열 파일이라 장기 운영에서는 append-only journal/compaction 구조가 더 낫다.
+- runtime intent는 append-only journal까지 올라왔지만, 장기 운영에서는 compaction/rotation 정책이 더 필요하다.
 - custom TOML agent가 "profile/sandbox/model hint"를 넘어 실제 독립 process worker와 장기 memory lane으로 동작하는 수준은 더 보강해야 한다.
 - MCP setup은 connected proof와 tool contract는 갖췄지만, provider별 repair wizard와 first successful tool-call UX를 더 촘촘히 만들어야 한다.
-- intent lifecycle은 `/agent replay` timeline의 1급 event로 더 올릴 여지가 남아 있다.
+- intent lifecycle은 `/agent replay` timeline과 recovery brief에는 들어왔지만, 장기적으로는 session/handoff/action approval까지 unified event log로 합치는 작업이 남아 있다.
 
 ## Continuation update
 

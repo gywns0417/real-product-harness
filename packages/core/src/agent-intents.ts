@@ -1,10 +1,16 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { readJsonIfExists, writeJson } from "./fs";
-import { runtimeIntentsFile } from "./paths";
+import { appendText, readJsonIfExists, writeJson } from "./fs";
+import { runtimeIntentsFile, runtimeIntentsJournalFile } from "./paths";
 import { newId, nowIso } from "./time";
-import { RuntimeIntentRecord, RuntimeIntentRisk, RuntimeIntentStatus } from "./types";
+import {
+  RuntimeIntentJournalEvent,
+  RuntimeIntentJournalRecord,
+  RuntimeIntentRecord,
+  RuntimeIntentRisk,
+  RuntimeIntentStatus
+} from "./types";
 
 const RUNTIME_INTENT_LOCK_STALE_MS = 30_000;
 
@@ -22,8 +28,36 @@ export interface RuntimeIntentRequest {
 }
 
 export function loadRuntimeIntents(projectRoot: string): RuntimeIntentRecord[] {
-  return readJsonIfExists<RuntimeIntentRecord[]>(runtimeIntentsFile(projectRoot), [])
-    .map(normalizeRuntimeIntent);
+  let head: RuntimeIntentRecord[] = [];
+  try {
+    head = readJsonIfExists<RuntimeIntentRecord[]>(runtimeIntentsFile(projectRoot), [])
+      .map(normalizeRuntimeIntent);
+  } catch {
+    head = [];
+  }
+  const journal = loadRuntimeIntentJournal(projectRoot);
+  if (journal.length === 0) {
+    return head;
+  }
+  return replayRuntimeIntentsFromJournal(projectRoot, head);
+}
+
+export function loadRuntimeIntentJournal(projectRoot: string): RuntimeIntentJournalRecord[] {
+  const filePath = runtimeIntentsJournalFile(projectRoot);
+  if (!fs.existsSync(filePath)) {
+    return [];
+  }
+  return fs.readFileSync(filePath, "utf8")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .flatMap((line) => {
+      try {
+        return [normalizeRuntimeIntentJournalRecord(JSON.parse(line) as RuntimeIntentJournalRecord)];
+      } catch {
+        return [];
+      }
+    });
 }
 
 export function recordRuntimeIntent(projectRoot: string, request: RuntimeIntentRequest): RuntimeIntentRecord {
@@ -61,7 +95,8 @@ export function recordRuntimeIntent(projectRoot: string, request: RuntimeIntentR
       createdAt: now,
       updatedAt: now
     };
-    writeJson(runtimeIntentsFile(projectRoot), [...current, record]);
+    appendRuntimeIntentJournal(projectRoot, "created", record);
+    writeJson(runtimeIntentsFile(projectRoot), replayRuntimeIntentsFromJournal(projectRoot, current));
     return record;
   });
 }
@@ -102,6 +137,30 @@ export function dismissRuntimeIntent(
   });
 }
 
+export function recordRuntimeIntentBlocked(
+  projectRoot: string,
+  id: string,
+  blocker: string
+): RuntimeIntentRecord {
+  return withRuntimeIntentsLock(projectRoot, () => {
+    const record = requireRuntimeIntent(projectRoot, id);
+    appendRuntimeIntentJournal(projectRoot, "blocked", record, { blocker });
+    return record;
+  });
+}
+
+export function recordRuntimeIntentApplied(
+  projectRoot: string,
+  id: string,
+  outcomeKind: RuntimeIntentJournalRecord["outcomeKind"]
+): RuntimeIntentRecord {
+  return withRuntimeIntentsLock(projectRoot, () => {
+    const record = requireRuntimeIntent(projectRoot, id);
+    appendRuntimeIntentJournal(projectRoot, "applied", record, { outcomeKind });
+    return record;
+  });
+}
+
 function updateRuntimeIntent(
   projectRoot: string,
   id: string,
@@ -116,9 +175,61 @@ function updateRuntimeIntent(
     const next = [...current];
     const updated = updater(current[index], nowIso());
     next[index] = updated;
-    writeJson(runtimeIntentsFile(projectRoot), next);
+    appendRuntimeIntentJournal(projectRoot, journalEventForStatus(updated.status), updated);
+    writeJson(runtimeIntentsFile(projectRoot), replayRuntimeIntentsFromJournal(projectRoot, next));
     return updated;
   });
+}
+
+function appendRuntimeIntentJournal(
+  projectRoot: string,
+  event: RuntimeIntentJournalEvent,
+  record: RuntimeIntentRecord,
+  options: { blocker?: string; outcomeKind?: RuntimeIntentJournalRecord["outcomeKind"] } = {}
+): void {
+  const current = loadRuntimeIntentJournal(projectRoot);
+  const entry: RuntimeIntentJournalRecord = {
+    version: 1,
+    sequence: (current[current.length - 1]?.sequence ?? 0) + 1,
+    at: nowIso(),
+    event,
+    intentId: record.id,
+    sessionId: record.sessionId,
+    command: record.command,
+    risk: record.risk,
+    status: record.status,
+    blocker: options.blocker,
+    outcomeKind: options.outcomeKind,
+    intent: record
+  };
+  appendText(runtimeIntentsJournalFile(projectRoot), `${JSON.stringify(entry)}\n`);
+}
+
+function replayRuntimeIntentsFromJournal(projectRoot: string, seed: RuntimeIntentRecord[] = []): RuntimeIntentRecord[] {
+  const records = new Map<string, RuntimeIntentRecord>(seed.map((record) => [record.id, record]));
+  for (const entry of loadRuntimeIntentJournal(projectRoot)) {
+    records.set(entry.intentId, entry.intent);
+  }
+  return [...records.values()];
+}
+
+function journalEventForStatus(status: RuntimeIntentStatus): RuntimeIntentJournalEvent {
+  switch (status) {
+    case "confirmed":
+      return "confirmed";
+    case "dismissed":
+      return "dismissed";
+    case "pending":
+      return "created";
+  }
+}
+
+function requireRuntimeIntent(projectRoot: string, id: string): RuntimeIntentRecord {
+  const record = loadRuntimeIntents(projectRoot).find((intent) => intent.id === id);
+  if (!record) {
+    throw new Error(`runtime intent not found: ${id}`);
+  }
+  return record;
 }
 
 function withRuntimeIntentsLock<T>(projectRoot: string, fn: () => T): T {
@@ -185,6 +296,25 @@ function normalizeRuntimeIntent(record: RuntimeIntentRecord): RuntimeIntentRecor
     safeToAutoRun: record.safeToAutoRun ?? false,
     status: record.status ?? "pending",
     updatedAt: record.updatedAt ?? record.createdAt ?? nowIso()
+  };
+}
+
+function normalizeRuntimeIntentJournalRecord(record: RuntimeIntentJournalRecord): RuntimeIntentJournalRecord {
+  const intent = normalizeRuntimeIntent(record.intent);
+  return {
+    ...record,
+    version: 1,
+    sequence: record.sequence,
+    at: record.at,
+    event: record.event,
+    intentId: record.intentId ?? intent.id,
+    sessionId: record.sessionId ?? intent.sessionId,
+    command: record.command ?? intent.command,
+    risk: record.risk ?? intent.risk,
+    status: record.status ?? intent.status,
+    blocker: record.blocker,
+    outcomeKind: record.outcomeKind,
+    intent
   };
 }
 

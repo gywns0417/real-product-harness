@@ -176,10 +176,12 @@ chat.
 Runtime shell sessions are durably mirrored under `.rph/runtime/sessions/`. The current head remains
 `.rph/runtime/current-session.json`, while each session also gets an append-only snapshot journal
 `<session-id>.jsonl` plus a `<session-id>.latest.json` recovery snapshot. `/agent session [id]` shows
-the journal tail and `/agent replay [id]` reconstructs the latest known runtime session from that
-journal with a user-facing timeline of starts, plans, checkpoints, executed commands, blockers, and
-errors. If the current head becomes unreadable, the runtime falls back through the per-session
-snapshot and then the latest valid journal record before giving up.
+the journal tail plus intent events, and `/agent replay [id]` reconstructs the latest known runtime
+session from that journal with user-facing timelines for starts, plans, checkpoints, executed
+commands, blockers, errors, and AI-suggested slash/control intents. If the current head becomes
+unreadable, the runtime falls back through the per-session snapshot and then the latest valid journal
+record before giving up. Runtime intents keep `.rph/runtime/intents.json` as the fast head and
+`.rph/runtime/intents.jsonl` as the append-only audit/recovery journal.
 
 The active runtime graph is written to `.rph/runtime/execution-graph.json`. `/agent graph status`
 shows the current runtime DAG with active, ready, blocked, fan-out, and fan-in nodes; `/agent graph

@@ -180,7 +180,7 @@ assertIncludes(completion, "#compdef rph", "completion.zsh");
 assertIncludes(completion, "help version update shell runtime init status workspace next pause resume cancel setup settings", "completion.zsh");
 assertIncludes(completion, "setup_cmds=(auto repair detect apply check ai mcp custom)", "completion.zsh");
 assertIncludes(completion, "doctor_cmds=(status install shell)", "completion.zsh");
-assertIncludes(completion, "agent_cmds=(status roles catalog discover search import install use activate session journal replay handoffs actions action-approvals lanes run continue recover pool worker claim heartbeat ack complete dead-letter approve-action reject-action clear reset)", "completion.zsh");
+assertIncludes(completion, "agent_cmds=(status roles catalog discover search import install use activate session journal replay handoffs actions action-approvals intents confirm-intent dismiss-intent lanes run continue recover pool worker claim heartbeat ack complete dead-letter approve-action reject-action clear reset)", "completion.zsh");
 assertIncludes(completion, "github_cmds=(create-repo setup-labels setup-templates setup-branches create-issue create-pr sync release-plan release-approve hotfix-plan)", "completion.zsh");
 assertIncludes(profile, "# existing shell config", "shell profile");
 assertIncludes(profile, "# >>> rph init >>>", "shell profile");

@@ -80,6 +80,10 @@ export function runtimeIntentsFile(projectRoot: string): string {
   return path.join(runtimeDir(projectRoot), "intents.json");
 }
 
+export function runtimeIntentsJournalFile(projectRoot: string): string {
+  return path.join(runtimeDir(projectRoot), "intents.jsonl");
+}
+
 export function runtimeLaneRunsDir(projectRoot: string): string {
   return path.join(runtimeDir(projectRoot), "lanes");
 }
