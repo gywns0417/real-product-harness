@@ -192,9 +192,11 @@ if (initBlockCount !== 1) {
 }
 
 assertIncludes(gitLog, `clone --depth 1 --branch main https://example.invalid/real-product-harness.git ${installDir}`, "git log");
+assertIncludes(gitLog, `-C ${installDir} status --porcelain --untracked-files=all`, "git log");
 assertIncludes(gitLog, `-C ${installDir} remote set-url origin https://example.invalid/real-product-harness.git`, "git log");
 assertIncludes(gitLog, `-C ${installDir} fetch --depth 1 origin main`, "git log");
-assertIncludes(gitLog, `-C ${installDir} checkout --force FETCH_HEAD`, "git log");
+assertIncludes(gitLog, `-C ${installDir} checkout FETCH_HEAD`, "git log");
+assertNotIncludes(gitLog, `checkout --force FETCH_HEAD`, "git log");
 assertIncludes(pnpmLog, `--dir ${installDir} install --frozen-lockfile`, "pnpm log");
 assertIncludes(pnpmLog, `--dir ${installDir} build`, "pnpm log");
 
@@ -229,6 +231,12 @@ function assertFile(filePath, label) {
 function assertIncludes(text, expected, label) {
   if (!text.includes(expected)) {
     fail(`${label} missing expected content: ${expected}`);
+  }
+}
+
+function assertNotIncludes(text, unexpected, label) {
+  if (text.includes(unexpected)) {
+    fail(`${label} included unexpected content: ${unexpected}`);
   }
 }
 

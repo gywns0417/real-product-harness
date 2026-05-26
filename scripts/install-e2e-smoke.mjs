@@ -144,6 +144,38 @@ const updateDryRun = runChecked(wrapperPath, ["update", "--dry-run"], {
 });
 assertIncludes(updateDryRun.stdout, "RPH update plan", "installed update dry-run");
 assertIncludes(updateDryRun.stdout, "- command: bash", "installed update dry-run");
+assertIncludes(updateDryRun.stdout, "- install_dirty=no", "installed update dry-run");
+assertIncludes(updateDryRun.stdout, "- safe_to_run=yes", "installed update dry-run");
+
+appendAndCommit(sourceRepo, "README.md", "\nremote update for dirty-check smoke\n", "Advance source for update smoke");
+const localDirtyMarker = "local install edit must survive dirty update refusal";
+fs.appendFileSync(path.join(installDir, "README.md"), `\n${localDirtyMarker}\n`, "utf8");
+const dirtyUpdate = spawnSync(wrapperPath, ["update"], {
+  cwd: projectDir,
+  env,
+  encoding: "utf8",
+  maxBuffer: 1024 * 1024 * 20
+});
+if (dirtyUpdate.status === 0) {
+  fail(`dirty installed checkout update unexpectedly succeeded\nstdout:\n${dirtyUpdate.stdout}\nstderr:\n${dirtyUpdate.stderr}`);
+}
+assertIncludes(
+  `${dirtyUpdate.stdout}\n${dirtyUpdate.stderr}`,
+  "has local changes; commit, stash, or remove them before running rph update",
+  "dirty update refusal"
+);
+assertIncludes(fs.readFileSync(path.join(installDir, "README.md"), "utf8"), localDirtyMarker, "dirty update preserved local edit");
+runChecked("git", ["checkout", "--", "README.md"], {
+  cwd: installDir,
+  env,
+  label: "clean dirty install checkout"
+});
+const cleanUpdate = runChecked(wrapperPath, ["update"], {
+  cwd: projectDir,
+  env,
+  label: "installed clean update after dirty refusal"
+});
+assertIncludes(cleanUpdate.stdout, "updating", "installed clean update after dirty refusal");
 
 const shellHelpers = runChecked("zsh", ["-lc", `source "${initPath}"; cd "${slashProjectDir}"; /pm start --project-name "Shell Slash Product"; /workspace --json; /status`], {
   cwd: tmpRoot,
@@ -208,6 +240,18 @@ function createSourceGitRepo(cwd) {
   runChecked("git", ["commit", "-m", "Install e2e source"], {
     cwd,
     label: "git commit source repo"
+  });
+}
+
+function appendAndCommit(cwd, relativePath, content, message) {
+  fs.appendFileSync(path.join(cwd, relativePath), content, "utf8");
+  runChecked("git", ["add", relativePath], {
+    cwd,
+    label: `git add ${relativePath}`
+  });
+  runChecked("git", ["commit", "-m", message], {
+    cwd,
+    label: `git commit ${message}`
   });
 }
 

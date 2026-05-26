@@ -20,6 +20,9 @@ export PATH="$HOME/.local/bin:$PATH"
 
 The installer also writes `~/.config/rph/init.sh`. Set `RPH_AUTO_SHELL_INTEGRATION=0` before
 running the installer if you want to skip shell-profile edits and source the file yourself.
+`rph update` refuses to overwrite a dirty installed source checkout; commit, stash, or remove local
+changes under `~/.real-product-harness` before updating, or reinstall from an intentional working tree
+with `RPH_LOCAL_SOURCE_DIR=/path/to/real-product-harness bash install.sh`.
 
 Private GitHub fallback, if the repository is made private again:
 

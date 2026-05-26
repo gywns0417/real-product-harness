@@ -439,7 +439,7 @@ const HELP_TOPIC_LINES: Record<string, string[]> = {
     "  rph doctor shell",
     "  rph update",
     "",
-    "`doctor install` checks whether the installed wrapper, source checkout, built CLI, init file, completion, and JSON operator commands are current. `doctor shell` checks slash-helper shell integration. `rph update` reruns the installer from the current source checkout."
+    "`doctor install` checks whether the installed wrapper, source checkout, built CLI, init file, completion, and JSON operator commands are current. `doctor shell` checks slash-helper shell integration. `rph update` reruns the installer from the current source checkout and refuses to overwrite a dirty installed checkout."
   ],
   productize: [
     "Productize commands",
@@ -8561,12 +8561,21 @@ function handleUpdate(options: Record<string, string | boolean>): void {
   if (!sourceRoot) {
     throw new Error("cannot locate RPH source checkout with install.sh. Run the public installer again or set RPH_SOURCE_ROOT.");
   }
+  const layout = installLayout();
+  const installDirty = gitDirtyStatus(layout.installDir);
   const installScript = path.join(sourceRoot, "install.sh");
   const command = `bash ${quoteShellArg(installScript)}`;
   if (optionBool(options, "dry-run")) {
     console.log("RPH update plan");
     console.log(`- source: ${sourceRoot}`);
     console.log(`- command: ${command}`);
+    if (installDirty) {
+      console.log(`- install_dirty=${yesNo(installDirty.dirty)}${installDirty.dirty ? ` files=${installDirty.count}` : ""}`);
+      console.log(`- safe_to_run=${installDirty.dirty ? "no" : "yes"}`);
+      if (installDirty.dirty) {
+        console.log("- next=commit, stash, or remove local install checkout changes before rph update");
+      }
+    }
     return;
   }
   console.log("RPH update");
@@ -8595,6 +8604,7 @@ function printInstallDoctor(projectRoot: string): void {
   const workspaceJson = runInstalledJsonProbe(layout.wrapperPath, ["workspace", "--json"], projectRoot);
   const statusJson = runInstalledJsonProbe(layout.wrapperPath, ["status", "--json"], projectRoot);
   const installHead = gitHead(layout.installDir);
+  const installDirty = gitDirtyStatus(layout.installDir);
   const issues = [
     fs.existsSync(layout.wrapperPath) ? null : "installed wrapper is missing",
     wrapperTargetExists ? null : "installed wrapper target is missing",
@@ -8603,11 +8613,15 @@ function printInstallDoctor(projectRoot: string): void {
     initText?.includes("function /workspace()") ? null : "shell init is missing /workspace helper",
     completionExists ? null : "zsh completion file is missing",
     workspaceJson.ok ? null : "installed rph workspace --json is not current",
-    statusJson.ok ? null : "installed rph status --json is not current"
+    statusJson.ok ? null : "installed rph status --json is not current",
+    installDirty?.dirty ? "installed source checkout has local changes" : null
   ].filter((item): item is string => Boolean(item));
 
   console.log("RPH install doctor");
   console.log(`- install_dir: ${layout.installDir} git=${fs.existsSync(path.join(layout.installDir, ".git")) ? "yes" : "no"} head=${installHead ?? "unknown"}`);
+  if (installDirty) {
+    console.log(`- install_dirty=${yesNo(installDirty.dirty)}${installDirty.dirty ? ` files=${installDirty.count}` : ""}`);
+  }
   console.log(`- wrapper: ${layout.wrapperPath} present=${yesNo(fs.existsSync(layout.wrapperPath))}`);
   console.log(`- wrapper_target: ${wrapperTarget ?? "unknown"} present=${yesNo(wrapperTargetExists)} current_install=${yesNo(wrapperTargetInInstallDir)}`);
   console.log(`- shell_init: ${layout.initPath} present=${yesNo(fs.existsSync(layout.initPath))} workspace_helper=${yesNo(Boolean(initText?.includes("function /workspace()")))}`);
@@ -8620,7 +8634,9 @@ function printInstallDoctor(projectRoot: string): void {
     for (const issue of issues) {
       console.log(`- ${issue}`);
     }
-    console.log("next=rph update");
+    console.log(installDirty?.dirty
+      ? "next=commit, stash, or remove local install checkout changes before rph update"
+      : "next=rph update");
   } else {
     console.log("next=none");
   }
@@ -8806,6 +8822,25 @@ function gitHead(cwd: string): string | null {
     stdio: ["ignore", "pipe", "ignore"]
   });
   return result.status === 0 ? result.stdout.trim() : null;
+}
+
+function gitDirtyStatus(cwd: string): { dirty: boolean; count: number } | null {
+  if (!fs.existsSync(path.join(cwd, ".git"))) {
+    return null;
+  }
+  const result = spawnSync("git", ["status", "--porcelain", "--untracked-files=all"], {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"]
+  });
+  if (result.status !== 0) {
+    return null;
+  }
+  const entries = result.stdout.split(/\r?\n/).filter(Boolean);
+  return {
+    dirty: entries.length > 0,
+    count: entries.length
+  };
 }
 
 function findCliSourceRoot(): string | null {

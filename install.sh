@@ -71,6 +71,14 @@ clone_repository() {
   fi
 }
 
+require_clean_install_checkout() {
+  local status
+  status="$(git -C "$RPH_INSTALL_DIR" status --porcelain --untracked-files=all)"
+  if [ -n "$status" ]; then
+    fail "$RPH_INSTALL_DIR has local changes; commit, stash, or remove them before running rph update. To reinstall from a working tree, use RPH_LOCAL_SOURCE_DIR=/path/to/real-product-harness bash install.sh"
+  fi
+}
+
 sync_local_source() {
   local source_dir
   source_dir="$(cd "$RPH_LOCAL_SOURCE_DIR" && pwd)"
@@ -121,9 +129,10 @@ if [ -n "$RPH_LOCAL_SOURCE_DIR" ]; then
   sync_local_source
 elif [ -d "$RPH_INSTALL_DIR/.git" ]; then
   info "updating $RPH_INSTALL_DIR"
+  require_clean_install_checkout
   git -C "$RPH_INSTALL_DIR" remote set-url origin "$RPH_REPO_URL"
   git -C "$RPH_INSTALL_DIR" fetch --depth 1 origin "$RPH_REF"
-  git -C "$RPH_INSTALL_DIR" checkout --force FETCH_HEAD
+  git -C "$RPH_INSTALL_DIR" checkout FETCH_HEAD
 elif [ -e "$RPH_INSTALL_DIR" ]; then
   fail "$RPH_INSTALL_DIR already exists and is not a git checkout"
 else
