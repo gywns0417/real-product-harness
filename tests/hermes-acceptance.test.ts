@@ -206,13 +206,13 @@ describe("Hermes-like runtime acceptance", () => {
     });
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("agent proposed command: /status");
-    expect(result.stdout).toContain("auto-run: skipped");
+    expect(result.stdout).toContain("suggested control: /status");
+    expect(result.stdout).toContain("run explicitly: type the suggested control when you want to execute it.");
     expect(result.stdout).not.toContain("agent action: /status");
     expect(result.stdout).not.toContain("현재 단계:");
   }, 10000);
 
-  it("auto-runs read-only command proposals inside runtime chat", async () => {
+  it("keeps read-only command proposals as explicit controls inside runtime chat", async () => {
     writeOpenAiEnv(root, "https://example.invalid/v1");
 
     const result = await runCli(["shell"], {
@@ -225,14 +225,20 @@ describe("Hermes-like runtime acceptance", () => {
     });
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("agent proposed command: /status");
-    expect(result.stdout).toContain("agent action: /status");
-    expect(result.stdout).toContain("execution-policy: runtime chat allowed read-only command");
-    expect(result.stdout).toContain("- current: SETUP");
-    expect(result.stdout).not.toContain("auto-run: skipped");
+    expect(result.stdout).toContain("suggested control: /status");
+    expect(result.stdout).toContain("run explicitly: type the suggested control when you want to execute it.");
+    expect(result.stdout).not.toContain("agent action: /status");
+    expect(result.stdout).not.toContain("execution-policy: runtime chat allowed read-only command");
+    expect(result.stdout).not.toContain("- current: SETUP");
+    const manifest = JSON.parse(fs.readFileSync(path.join(root, ".rph", "runtime", "current-session.json"), "utf8")) as {
+      status: string;
+      blocker?: string;
+    };
+    expect(manifest.status).toBe("active");
+    expect(manifest.blocker).toBeFalsy();
   }, 10000);
 
-  it("auto-runs current autonomous local command proposals inside runtime chat", async () => {
+  it("keeps current autonomous local command proposals as explicit controls inside runtime chat", async () => {
     writeOpenAiEnv(root, "https://example.invalid/v1");
 
     const result = await runCli(["shell"], {
@@ -245,17 +251,18 @@ describe("Hermes-like runtime acceptance", () => {
     });
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("agent proposed command: /next --execute");
-    expect(result.stdout).toContain("agent action: /next --execute");
-    expect(result.stdout).toContain("execution-policy: runtime chat allowed current autonomous local command");
-    expect(result.stdout).toContain("stage queue 실행 완료: SETUP -> PM_PRODUCT_DEFINITION_INTERVIEW");
+    expect(result.stdout).toContain("suggested control: /next --execute");
+    expect(result.stdout).toContain("run explicitly: type the suggested control when you want to execute it.");
+    expect(result.stdout).not.toContain("agent action: /next --execute");
+    expect(result.stdout).not.toContain("execution-policy: runtime chat allowed current autonomous local command");
+    expect(result.stdout).not.toContain("stage queue 실행 완료: SETUP -> PM_PRODUCT_DEFINITION_INTERVIEW");
     const state = JSON.parse(fs.readFileSync(path.join(root, ".rph", "state.json"), "utf8")) as {
       currentStage: string;
     };
-    expect(state.currentStage).toBe("PM_PRODUCT_DEFINITION_INTERVIEW");
+    expect(state.currentStage).toBe("SETUP");
   }, 10000);
 
-  it("blocks local command proposals that are not the current autonomous runtime step", async () => {
+  it("keeps non-current local command proposals conversational inside runtime chat", async () => {
     writeOpenAiEnv(root, "https://example.invalid/v1");
 
     const result = await runCli(["shell"], {
@@ -268,8 +275,9 @@ describe("Hermes-like runtime acceptance", () => {
     });
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("agent proposed command: /fe spec");
-    expect(result.stdout).toContain("auto-run: blocked because the proposed local command is not the current autonomous step");
+    expect(result.stdout).toContain("suggested control: /fe spec");
+    expect(result.stdout).toContain("run explicitly: type the suggested control when you want to execute it.");
+    expect(result.stdout).not.toContain("auto-run: blocked because the proposed local command is not the current autonomous step");
     expect(result.stdout).not.toContain("FE spec");
     const state = JSON.parse(fs.readFileSync(path.join(root, ".rph", "state.json"), "utf8")) as {
       currentStage: string;
@@ -294,15 +302,45 @@ describe("Hermes-like runtime acceptance", () => {
     });
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("agent proposed command: /docs approve product-definition");
-    expect(result.stdout).toContain("auto-run: blocked because user approval command requires explicit user action");
+    expect(result.stdout).toContain("suggested control: /docs approve product-definition");
+    expect(result.stdout).toContain("approval control: user approval command requires explicit user action: /docs approve product-definition");
+    expect(result.stdout).toContain("run explicitly: type the approval command yourself.");
+    expect(result.stdout).not.toContain("auto-run: blocked because user approval command requires explicit user action");
     expect(result.stdout).not.toContain("문서 승인 완료");
     const manifest = JSON.parse(fs.readFileSync(path.join(root, ".rph", "runtime", "current-session.json"), "utf8")) as {
       status: string;
       blocker?: string;
     };
-    expect(manifest.status).toBe("blocked");
-    expect(manifest.blocker).toContain("user approval command requires explicit user action");
+    expect(manifest.status).toBe("active");
+    expect(manifest.blocker).toBeFalsy();
+  }, 10000);
+
+  it("does not queue external action approvals from plain runtime chat", async () => {
+    writeOpenAiEnv(root, "https://example.invalid/v1");
+
+    const result = await runCli(["shell"], {
+      cwd: root,
+      stdinChunks: [
+        { text: "Notion live workspace를 만들어줘\n", delayMs: 0 },
+        { text: "/exit\n", delayMs: 50 }
+      ],
+      preloadFetchMutableNotionProposal: true
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("suggested control: /notion setup --live");
+    expect(result.stdout).toContain("external action: not queued from plain chat");
+    expect(result.stdout).toContain("run explicitly: use the matching slash command or repeat with rph ask --execute to create an approval request.");
+    expect(result.stdout).not.toContain("external action approval required");
+    expect(fs.existsSync(path.join(root, ".rph", "runtime", "action-approvals.json"))).toBe(false);
+    const manifest = JSON.parse(fs.readFileSync(path.join(root, ".rph", "runtime", "current-session.json"), "utf8")) as {
+      status: string;
+      blocker?: string;
+      pendingExternalActionId?: string | null;
+    };
+    expect(manifest.status).toBe("active");
+    expect(manifest.blocker).toBeFalsy();
+    expect(manifest.pendingExternalActionId ?? null).toBeNull();
   }, 10000);
 
     it("executes local workflow command proposals when ask --execute is explicit", async () => {
@@ -395,7 +433,8 @@ describe("Hermes-like runtime acceptance", () => {
       });
 
       expect(result.exitCode).toBe(0);
-      expect(result.stdout).toContain("agent proposed command: /status");
+      expect(result.stdout).toContain("suggested control: /status");
+      expect(result.stdout).toContain("run explicitly: type the suggested control when you want to execute it.");
       expect(fs.readFileSync(path.join(root, ".rph", "config.json"), "utf8")).toBe(configBefore);
       expect(fs.readFileSync(path.join(root, ".mcp", "config.json"), "utf8")).toBe(mcpBefore);
     }, 10000);
@@ -4179,8 +4218,8 @@ describe("Hermes-like CLI contracts", () => {
     const result = await runCli(["ask", "이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: AI 회의록 액션아이템 SaaS"], { cwd: root });
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("agent proposed command: /productize");
-    expect(result.stdout).toContain("auto-run: skipped for conversational input");
+    expect(result.stdout).toContain("suggested control: /productize");
+    expect(result.stdout).toContain("run explicitly: type the suggested control or pass --execute.");
     expect(fs.existsSync(path.join(root, ".rph", "golden-path", "latest.json"))).toBe(false);
   });
 
@@ -5443,7 +5482,7 @@ describe("Hermes-like CLI contracts", () => {
 
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toContain("Real Product Harness");
-      expect(result.stdout).toContain("control plane online");
+      expect(result.stdout).toContain("shell ready");
       expect(result.stdout).toContain("RPH start");
       expect(result.stdout).toContain("setup required before agent chat can run");
       expect(result.stdout).toContain("next:");

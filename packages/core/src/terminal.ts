@@ -32,13 +32,13 @@ export function renderRuntimeHero(projectRoot: string, sessionId: string, config
     paint(" |  _ <|  __/|  _  |", "magenta", color),
     paint(" |_| \\_\\_|   |_| |_|", "green", color),
     "",
-    `${paint("Real Product Harness", "bold", color)} ${paint("control plane online", "green", color)}`,
+    `${paint("Real Product Harness", "bold", color)} ${paint("shell ready", "green", color)}`,
     `${paint("session", "gray", color)} ${sessionId}`,
     `${paint("project", "gray", color)} ${projectRoot}`,
     `${paint("ai", "gray", color)} ${activeAi}`,
     `${paint("mcp", "gray", color)} ${mcpEnabled}`,
     "",
-    `${paint("chat", "gray", color)} plain text chats with the AI agent`,
+    `${paint("chat", "gray", color)} plain text goes to the agent`,
     `${paint("cmd", "gray", color)} /status  /next  /agent status  /pm start  /exit`
   ].join("\n");
 }

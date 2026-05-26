@@ -727,6 +727,7 @@ pnpm run live:configured
 4. Runtime chat/control boundary
    - 이전에 구현했던 command-like 자연어 alias는 기본 실행 경로에서 제거됐다.
    - 일반 텍스트는 `계속 진행해`, `현재 상태 보여줘`, `승인해`, `continue`처럼 command-like로 보여도 chat으로 들어간다.
+   - chat에서 나온 command proposal도 기본적으로 `suggested control`로만 출력되고, read-only/status/local-next/external approval queue 모두 자동 실행하지 않는다.
    - control은 slash command 또는 명시 실행 표면으로만 확정된다.
    - top-level bare text는 one-shot chat으로 라우팅되고, `statsu`처럼 실제 command typo로 보이는 단일 토큰만 suggestion을 유지한다.
    - 남은 단계는 setup/start/status/help의 모든 fallback copy를 같은 runtime-first 언어로 계속 압축하는 것이다.

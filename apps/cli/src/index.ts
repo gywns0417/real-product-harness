@@ -3839,10 +3839,10 @@ async function handleRuntimeAgentInput(
     });
   }
   if (plan.kind !== "chat" && plan.command) {
-    console.log(`agent proposed command: ${plan.command}`);
+    console.log(`suggested control: ${plan.command}`);
   }
   if (plan.kind !== "chat" && plan.command) {
-    console.log("auto-run: skipped for conversational input; type the slash command to run it.");
+    console.log("run explicitly: type the suggested control when you want to execute it.");
   }
   if (!safeHasReadyAiProvider(projectRoot)) {
     printMissingAiAgentGuidance(projectRoot, plan.command, "slash");
@@ -3942,51 +3942,6 @@ function normalizeNaturalRuntimeText(input: string): string {
     .replace(/\s+/g, " ");
 }
 
-function hasPendingNaturalGate(projectRoot: string, session: RuntimeSessionManifest | null): boolean {
-  if (session?.pendingExternalActionId) {
-    return true;
-  }
-  if (session?.waitCondition?.kind === "external_live_write" || session?.waitCondition?.kind === "user_approval") {
-    return true;
-  }
-  return pendingRuntimeExternalActions(projectRoot).length > 0;
-}
-
-function pendingRuntimeExternalActions(projectRoot: string): RuntimeActionApprovalRecord[] {
-  const session = loadRuntimeSession(projectRoot);
-  if (!session || session.waitCondition?.kind !== "external_live_write") {
-    return [];
-  }
-  const pending = loadRuntimeActionApprovals(projectRoot).filter((record) =>
-    record.status === "pending" && (!record.sessionId || record.sessionId === session.sessionId)
-  );
-  if (!session.pendingExternalActionId) {
-    return pending;
-  }
-  return pending.filter((record) => record.id === session.pendingExternalActionId);
-}
-
-function pendingUserApprovalCommands(projectRoot: string): string[] {
-  const state = loadState(projectRoot);
-  const stage = WORKFLOW_STAGES[state.currentStage];
-  const next = nextStage(state);
-  const stages = [stage, ...(next ? [WORKFLOW_STAGES[next]] : [])];
-  const documentCommands = Array.from(new Set(stages.flatMap((item) => item.requiredApprovals)))
-    .filter((docId) => state.documents[docId]?.currentVersion && state.documents[docId]?.status !== "approved")
-    .map((docId) => documentApprovalCommand(docId));
-  const designCommands = Array.from(new Set(stages.flatMap((item) => item.requiredDesignApprovals)))
-    .filter((artifactId) => state.designArtifacts?.[artifactId]?.currentVersion && state.designArtifacts?.[artifactId]?.status !== "approved")
-    .map((artifactId) => `/pd approve ${artifactId}`);
-  return [...documentCommands, ...designCommands];
-}
-
-function documentApprovalCommand(docId: DocumentId): string {
-  if ([FE_SPEC_DOC, BE_SPEC_DOC, API_CONTRACT_DOC, FE_SPRINT_PLAN_DOC, BE_SPRINT_PLAN_DOC].includes(docId)) {
-    return approvalCommandForEngineeringDoc(docId);
-  }
-  return `/docs approve ${docId}`;
-}
-
 async function handleRuntimeChat(
   projectRoot: string,
   sessionId: string,
@@ -4026,8 +3981,7 @@ async function handleRuntimeChat(
   console.log(turnResult.text.trim());
   await runAgentCommandProposal(projectRoot, turnResult.turn.proposedCommand, {
     sessionId,
-    executeAutonomousLocalProposals: true,
-    executeReadOnlyProposals: true
+    surface: "runtime-chat"
   });
   runAgentHandoffProposal(projectRoot, sessionId, turnResult.turn.proposedHandoff);
   console.log("");
@@ -4069,10 +4023,10 @@ async function handleAsk(
     return;
   }
   if (plan.kind !== "chat" && plan.command) {
-    console.log(`agent proposed command: ${plan.command}`);
+    console.log(`${executePlannedCommand ? "agent proposed command" : "suggested control"}: ${plan.command}`);
     console.log(executePlannedCommand
-      ? "auto-run: blocked because the command is not marked safe"
-      : "auto-run: skipped for conversational input; run the slash command or pass --execute");
+      ? "run explicitly: the command is not marked safe for ask --execute."
+      : "run explicitly: type the suggested control or pass --execute.");
     if (!safeHasReadyAiProvider(projectRoot)) {
       return;
     }
@@ -4099,7 +4053,8 @@ async function handleAsk(
   console.log(turnResult.text.trim());
   const executed = await runAgentCommandProposal(projectRoot, turnResult.turn.proposedCommand, {
     sessionId,
-    executeLocalMutations: executePlannedCommand
+    executeLocalMutations: executePlannedCommand,
+    surface: executePlannedCommand ? "execution" : "runtime-chat"
   });
   runAgentHandoffProposal(projectRoot, sessionId, turnResult.turn.proposedHandoff);
   if (executed && executePlannedCommand && optionBool(options, "loop") && isRuntimeProjectInitialized(projectRoot)) {
@@ -5013,16 +4968,17 @@ async function runAgentCommandProposal(
   projectRoot: string,
   proposal: { command: string; safeToAutoRun: boolean; reason?: string } | undefined,
   options: {
-    executeAutonomousLocalProposals?: boolean;
     executeLocalMutations?: boolean;
-    executeReadOnlyProposals?: boolean;
     sessionId?: string;
+    surface?: "runtime-chat" | "execution";
   } = {}
 ): Promise<boolean> {
   if (!proposal) {
     return false;
   }
-  console.log(`agent proposed command: ${proposal.command}`);
+  const conversational = options.surface === "runtime-chat"
+    && !options.executeLocalMutations;
+  console.log(`${conversational ? "suggested control" : "agent proposed command"}: ${proposal.command}`);
   if (proposal.reason) {
     console.log(`reason: ${proposal.reason}`);
   }
@@ -5032,11 +4988,20 @@ async function runAgentCommandProposal(
   const userApprovalAction = isUserApprovalAgentCommand(proposal.command);
   const sandboxBlocker = activeProfileSandboxCommandBlocker(projectRoot, proposal.command, readOnly);
   if (sandboxBlocker) {
+    if (conversational) {
+      console.log("run explicitly: type the suggested control when you want to execute it.");
+      return false;
+    }
     console.log(`auto-run: blocked by active TOML sandbox`);
     console.log(`reason: ${sandboxBlocker}`);
     return false;
   }
   if (mutableExternalAction) {
+    if (!options.executeLocalMutations) {
+      console.log("external action: not queued from plain chat");
+      console.log("run explicitly: use the matching slash command or repeat with rph ask --execute to create an approval request.");
+      return false;
+    }
     if (!isRuntimeProjectInitialized(projectRoot)) {
       console.log("auto-run: blocked because external actions require an initialized RPH project");
       return false;
@@ -5066,6 +5031,11 @@ async function runAgentCommandProposal(
   }
   if (userApprovalAction) {
     const blocker = `user approval command requires explicit user action: ${proposal.command}`;
+    if (!options.executeLocalMutations) {
+      console.log(`approval control: ${blocker}`);
+      console.log("run explicitly: type the approval command yourself.");
+      return false;
+    }
     console.log(`auto-run: blocked because ${blocker}`);
     if (isRuntimeProjectInitialized(projectRoot)) {
       const sessionId = options.sessionId ?? resolveRuntimeSessionId(projectRoot);
@@ -5077,21 +5047,9 @@ async function runAgentCommandProposal(
     }
     return false;
   }
-  if (proposal.safeToAutoRun && readOnly && options.executeReadOnlyProposals) {
-    console.log(`agent action: ${proposal.command}`);
-    console.log("execution-policy: runtime chat allowed read-only command");
-    const parsed = parseCli(parseCommandLine(proposal.command));
-    return runParsedCommand(projectRoot, parsed, false);
-  }
-  if (options.executeAutonomousLocalProposals && localMutation) {
-    if (!isCurrentAutonomousRuntimeCommand(projectRoot, proposal.command)) {
-      console.log("auto-run: blocked because the proposed local command is not the current autonomous step");
-      return false;
-    }
-    console.log(`agent action: ${proposal.command}`);
-    console.log("execution-policy: runtime chat allowed current autonomous local command");
-    const parsed = parseCli(parseCommandLine(proposal.command));
-    return runParsedCommand(projectRoot, parsed, false);
+  if (conversational) {
+    console.log("run explicitly: type the suggested control when you want to execute it.");
+    return false;
   }
   if (options.executeLocalMutations && localMutation) {
     console.log(`agent action: ${proposal.command}`);
@@ -5404,20 +5362,6 @@ function isMcpCallCommand(command: string): boolean {
   } catch {
     return false;
   }
-}
-
-function isCurrentAutonomousRuntimeCommand(projectRoot: string, command: string): boolean {
-  if (!isRuntimeProjectInitialized(projectRoot) || hasPendingNaturalGate(projectRoot, loadRuntimeSession(projectRoot))) {
-    return false;
-  }
-  if (!isAutonomousLocalCommand(command)) {
-    return false;
-  }
-  const current = selectNextOrchestrationAction(projectRoot);
-  if (current.blocker || !current.command) {
-    return false;
-  }
-  return normalizeRuntimeCommand(current.command) === normalizeRuntimeCommand(command);
 }
 
 function normalizeRuntimeCommand(command: string): string {

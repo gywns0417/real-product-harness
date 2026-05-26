@@ -21,7 +21,7 @@ const conversational = spawnSync(process.execPath, [cliEntry, "ask", `이 아이
 if (conversational.status !== 0) {
   fail(`conversational ask failed\nstdout:\n${conversational.stdout}\nstderr:\n${conversational.stderr}`);
 }
-if (!conversational.stdout.includes("agent proposed command: /productize")) {
+if (!conversational.stdout.includes("suggested control: /productize")) {
   fail(`conversational ask did not propose /productize\nstdout:\n${conversational.stdout}\nstderr:\n${conversational.stderr}`);
 }
 if (fs.existsSync(path.join(tmpRoot, ".rph", "golden-path", "latest.md"))) {

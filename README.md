@@ -123,10 +123,10 @@ execution. To control the harness, type the slash/control command explicitly: `/
 `/agent run --steps 6`, `/agent recover`, `/agent approve-action <id>`, `/pm start`, or their
 `rph ...` one-shot forms.
 
-Connected AI chat can also move the harness directly when the proposed command is safe and current:
-read-only proposals such as `/status` run immediately, and local workflow proposals run only when
-they match the current autonomous step selected by the control plane. User approval commands and
-external live writes still fail closed into explicit approval gates.
+Connected AI chat can suggest the exact control to run next, but plain chat does not execute or queue
+workflow commands by itself. Read-only proposals such as `/status`, local workflow proposals such as
+`/agent run --steps 6`, approval commands, and external live writes all require an explicit slash/control
+command or an explicit execution surface such as `rph ask --execute`.
 
 For one-shot operation, use natural language or a slash command from the shell:
 
