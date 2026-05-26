@@ -94,6 +94,7 @@
 - installer completion과 CLI help가 `/agent intents`, `/agent confirm-intent`, `/agent dismiss-intent`를 노출한다.
 - `/status` digest가 현재 세션의 pending intent count와 다음 confirm command를 보여준다.
 - `/setup auto --live` 성공 후 `Connected` handoff block을 출력해 AI/MCP 연결, secret 저장 위치, chat 시작 방식, `/pm start` 시작 명령을 한 번에 보여준다.
+- live setup 성공 후 `Capability summary`와 non-mutating `First demo turn`을 출력해, 사용자가 추가 명령을 외우지 않아도 연결된 AI agent가 바로 무엇을 해줄 수 있는지 보여준다.
 
 검증:
 
@@ -106,6 +107,7 @@
 - acceptance test가 `/agent session`/`/agent replay`의 intent timeline, pending follow-up, recovery brief 출력을 검증한다.
 - external live write 제안이 plain chat에서 action approval을 만들지 않고, confirm 후에만 external action approval로 넘어가는 acceptance를 추가했다.
 - interactive `/setup auto --live` 성공 출력이 `Connected`, AI/MCP 요약, chat handoff, `/pm start` 시작 명령을 포함하는 acceptance를 추가했다.
+- setup 성공 직후 first demo turn이 출력되고, demo만 실패해도 setup 성공/후속 chat이 유지되는 acceptance를 추가했다.
 - runtime JSON/text write를 temp-file + rename 방식으로 원자화해, worker가 `.rph/runtime/handoffs.json`을 갱신하는 중 reader가 partial JSON을 읽고 죽는 race를 막았다.
 
 현재 판정:
@@ -118,7 +120,7 @@
 - provider별 "신규 실계정 credential 입력부터 성공 연결까지" live green은 아직 전체 통과 상태가 아니다. 2026-05-26 최신 `live:configured` 기준 Gemini, Notion, GitHub, Stitch는 통과했고 OpenAI credential 401이 남은 live blocker다. Anthropic/local/Figma는 configured target이 아니라 skipped다.
 - runtime intent는 append-only journal까지 올라왔지만, 장기 운영에서는 compaction/rotation 정책이 더 필요하다.
 - custom TOML agent가 "profile/sandbox/model hint"를 넘어 실제 독립 process worker와 장기 memory lane으로 동작하는 수준은 더 보강해야 한다.
-- MCP setup은 connected proof와 tool contract는 갖췄지만, provider별 repair wizard와 first successful tool-call UX를 더 촘촘히 만들어야 한다.
+- MCP setup은 connected proof와 tool contract, setup 직후 capability/demo UX까지 갖췄지만, provider별 repair wizard와 first successful external-workflow UX를 더 촘촘히 만들어야 한다.
 - intent lifecycle은 `/agent replay` timeline과 recovery brief에는 들어왔지만, 장기적으로는 session/handoff/action approval까지 unified event log로 합치는 작업이 남아 있다.
 
 ## Continuation update

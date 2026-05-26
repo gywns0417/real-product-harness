@@ -5279,6 +5279,40 @@ describe("Hermes-like CLI contracts", () => {
     }
   }, 10000);
 
+  it("keeps setup successful when only the first demo turn fails", async () => {
+    const uninitializedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rph-setup-demo-failure-"));
+    try {
+      const setup = await runCli(["setup", "auto", "--from-env", "--live", "--ai", "openai", "--mcp", "none"], {
+        cwd: uninitializedRoot,
+        env: {
+          ...withoutProviderEnv(),
+          OPENAI_API_KEY: "test-openai"
+        },
+        preloadFetchOpenAiDemoFailure: true
+      });
+      expect(setup.exitCode).toBe(0);
+      expect(setup.stderr).toBe("");
+      expect(setup.stdout).toContain("setup live check passed");
+      expect(setup.stdout).toContain("Connected");
+      expect(setup.stdout).toContain("Capability summary");
+      expect(setup.stdout).toContain("First demo turn");
+      expect(setup.stdout).toContain("- skipped:");
+      expect(setup.stdout).toContain("- setup remains ready; continue with rph pm start or plain text chat");
+      expect(setup.stdout).toContain("next: rph pm start");
+
+      const ask = await runCli(["ask", "연결 확인 인사해줘"], {
+        cwd: uninitializedRoot,
+        env: withoutProviderEnv(),
+        preloadFetchOpenAiDemoFailure: true
+      });
+      expect(ask.exitCode).toBe(0);
+      expect(ask.stderr).toBe("");
+      expect(ask.stdout).toContain("OK");
+    } finally {
+      fs.rmSync(uninitializedRoot, { recursive: true, force: true });
+    }
+  }, 10000);
+
   it("connects setup auto --live to plain chat and an actual MCP read tool result", async () => {
     const uninitializedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rph-setup-live-mcp-chat-"));
     try {
@@ -5607,6 +5641,14 @@ describe("Hermes-like CLI contracts", () => {
       expect(result.stdout).toContain("- MCP: none");
       expect(result.stdout).toContain("- chat: plain text goes to the connected AI agent");
       expect(result.stdout).toContain("- start product work: /pm start");
+      expect(result.stdout).toContain("Capability summary");
+      expect(result.stdout).toContain("- connected AI: openai");
+      expect(result.stdout).toContain("- connected MCP: none");
+      expect(result.stdout).toContain("First demo turn");
+      expect(result.stdout).toContain("- provider: openai");
+      expect(result.stdout).toContain("한 줄 제품 정리");
+      expect(result.stdout).toContain("MVP 초안");
+      expect(result.stdout).toContain("추천 다음 행동");
       expect(result.stdout).toContain("이제 일반 텍스트를 입력하면 연결된 AI agent와 대화합니다.");
       expect(result.stdout).toContain("handoff: runtime ready");
       expect(result.stdout).toContain("next: /pm start");
@@ -5617,6 +5659,7 @@ describe("Hermes-like CLI contracts", () => {
       expect(envFile).toContain("OPENAI_BASE_URL=https://example.invalid/v1");
       const configFile = fs.readFileSync(path.join(uninitializedRoot, ".rph", "config.json"), "utf8");
       expect(configFile).not.toContain("test-openai-from-wizard");
+      expect(result.stdout).not.toContain("test-openai-from-wizard");
       const config = JSON.parse(configFile) as {
         activeAiProvider: string;
         aiProviders: {
@@ -5658,6 +5701,8 @@ describe("Hermes-like CLI contracts", () => {
       expect(result.stderr).toBe("");
       expect(result.stdout).toContain("setup live check passed");
       expect(result.stdout).toContain("이제 일반 텍스트를 입력하면 연결된 AI agent와 대화합니다.");
+      expect(result.stdout).toContain("Capability summary");
+      expect(result.stdout).toContain("First demo turn");
       expect((result.stdout.match(/\bOK\b/g) ?? []).length).toBeGreaterThanOrEqual(2);
       expect(result.stdout).toContain("- current: SETUP");
       expect(result.stdout).toContain("PM 워크플로우 시작");
@@ -6255,6 +6300,7 @@ async function runCli(
       reason?: string;
     };
     preloadFetchOpenAiConnectionSuccess?: boolean;
+    preloadFetchOpenAiDemoFailure?: boolean;
     preloadFetchOpenAiCredentialRetry?: boolean;
     preloadFetchOpenAiGenerationFailure?: boolean;
     preloadFetchGitHubRepoSuccess?: boolean;
@@ -6303,6 +6349,8 @@ async function runCli(
                             )
                           : options.preloadFetchOpenAiConnectionSuccess
                             ? createFetchOpenAiConnectionSuccessStub(options.cwd)
+                            : options.preloadFetchOpenAiDemoFailure
+                              ? createFetchOpenAiDemoFailureStub(options.cwd)
                             : options.preloadFetchOpenAiCredentialRetry
                               ? createFetchOpenAiCredentialRetryStub(options.cwd)
                             : options.preloadFetchOpenAiGenerationFailure
@@ -6530,6 +6578,31 @@ function createFetchOpenAiConnectionSuccessStub(projectRoot: string): string {
     "    return new Response(JSON.stringify({ data: [{ id: 'gpt-5.4' }] }), { status: 200, headers: { 'content-type': 'application/json' } });",
     "  }",
     "  if (target.endsWith('/responses')) {",
+    "    const input = typeof init.body === 'string' ? JSON.parse(init.body).input || '' : '';",
+    "    if (input.startsWith('RPH setup just verified live connections.')) {",
+    "      return new Response(JSON.stringify({ output_text: '한 줄 제품 정리: 아직 아이디어를 받지 않았습니다.\\nMVP 초안: 1) 문제 한 줄 입력 2) 핵심 사용자 정의 3) 첫 워크플로우 생성\\n추천 다음 행동: 제품 아이디어를 한 줄로 입력하거나 /pm start 를 실행하세요.', usage: { input_tokens: 60, output_tokens: 44 } }), { status: 200, headers: { 'content-type': 'application/json' } });",
+    "    }",
+    "    return new Response(JSON.stringify({ output_text: 'OK', usage: { input_tokens: 4, output_tokens: 1 } }), { status: 200, headers: { 'content-type': 'application/json' } });",
+    "  }",
+    "  return new Response(JSON.stringify({ error: { message: `unexpected URL ${target}` } }), { status: 500, headers: { 'content-type': 'application/json' } });",
+    "};"
+  ].join("\n"));
+  return preloadPath;
+}
+
+function createFetchOpenAiDemoFailureStub(projectRoot: string): string {
+  const preloadPath = path.join(projectRoot, "fetch-openai-demo-failure-preload.cjs");
+  fs.writeFileSync(preloadPath, [
+    "global.fetch = async (url, init = {}) => {",
+    "  const target = String(url);",
+    "  if (target.endsWith('/models')) {",
+    "    return new Response(JSON.stringify({ data: [{ id: 'gpt-5.4' }] }), { status: 200, headers: { 'content-type': 'application/json' } });",
+    "  }",
+    "  if (target.endsWith('/responses')) {",
+    "    const input = typeof init.body === 'string' ? JSON.parse(init.body).input || '' : '';",
+    "    if (input.startsWith('RPH setup just verified live connections.')) {",
+    "      return new Response(JSON.stringify({ error: { message: 'demo temporarily unavailable' } }), { status: 500, headers: { 'content-type': 'application/json' } });",
+    "    }",
     "    return new Response(JSON.stringify({ output_text: 'OK', usage: { input_tokens: 4, output_tokens: 1 } }), { status: 200, headers: { 'content-type': 'application/json' } });",
     "  }",
     "  return new Response(JSON.stringify({ error: { message: `unexpected URL ${target}` } }), { status: 500, headers: { 'content-type': 'application/json' } });",

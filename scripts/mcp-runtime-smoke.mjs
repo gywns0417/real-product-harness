@@ -72,6 +72,8 @@ if (setup.status !== 0) {
 }
 assertIncludes(setup.stdout, "setup live check passed", "setup output");
 assertIncludes(setup.stdout, "mcp:stitch", "setup output");
+assertIncludes(setup.stdout, "Capability summary", "setup output");
+assertIncludes(setup.stdout, "First demo turn", "setup output");
 assertIncludes(setup.stdout, "MCP read-only tool contracts bound: stitch", "setup output");
 
 const ask = runCli(["ask", "protocol MCP echo tool을 호출해서 runtime-smoke-ok를 확인해줘"], withoutProviderEnv(process.env));

@@ -6812,6 +6812,7 @@ async function handleSetup(
           printSetupRecoveryHints(checks, commandSurfaceFromOptions(options));
           console.log(`report: ${filePath}`);
           assertLiveSetupSucceeded(checks, options);
+          await printSetupFirstSuccessExperience(projectRoot, checks, options);
           if ((server.agentReadOnlyTools ?? []).length > 0) {
             const binding = await bindMcpReadOnlyToolContracts(projectRoot, server.id, process.env);
             console.log(`MCP read-only tool contracts bound: ${server.id}`);
@@ -6877,6 +6878,7 @@ async function printSetupAutoSummary(
     const checks = await runSetupChecks(projectRoot, appliedConfig, commandSurfaceFromOptions(options));
     await bindVerifiedMcpReadOnlyContracts(projectRoot, checks, options);
     assertLiveSetupSucceeded(checks, options);
+    await printSetupFirstSuccessExperience(projectRoot, checks, options);
     return;
   }
   console.log("대화형 연결 마법사로 값 입력까지 진행하려면 TTY에서 `rph setup auto`를 실행하세요.");
@@ -6975,6 +6977,7 @@ async function runSetupRepair(
     );
     await bindVerifiedMcpReadOnlyContracts(projectRoot, checks, repairOptions);
     assertLiveSetupSucceeded(checks, repairOptions);
+    await printSetupFirstSuccessExperience(projectRoot, checks, repairOptions);
   });
 }
 
@@ -7052,6 +7055,7 @@ async function runAutoSetupWizard(
     console.log("최종 상태");
     console.log(renderSetupGuide(syncHarnessConfigFromEnv(projectRoot)));
     assertLiveSetupSucceeded(checks, options);
+    await printSetupFirstSuccessExperience(projectRoot, checks, options);
   });
 }
 
@@ -7116,6 +7120,88 @@ function printSetupConnectedHandoff(checks: ConnectionCheck[], options: Record<s
   console.log("- chat: plain text goes to the connected AI agent");
   console.log(`- start product work: ${runtimeSurfaceCommand(commandSurface, "pm start")}`);
   console.log(`- inspect setup: ${runtimeSurfaceCommand(commandSurface, "status")} | ${runtimeSurfaceCommand(commandSurface, "setup auto --from-env --live")}`);
+}
+
+async function printSetupFirstSuccessExperience(
+  projectRoot: string,
+  checks: ConnectionCheck[],
+  options: Record<string, string | boolean>
+): Promise<void> {
+  if (!optionBool(options, "live")) {
+    return;
+  }
+  const passed = checks.filter((check) => check.status === "passed");
+  if (passed.length === 0) {
+    return;
+  }
+  const commandSurface = commandSurfaceFromOptions(options);
+  const aiChecks = passed.filter((check) => check.kind === "ai");
+  const mcpChecks = passed.filter((check) => check.kind === "mcp");
+  console.log("");
+  console.log("Capability summary");
+  console.log(`- connected AI: ${aiChecks.map((check) => check.id).join(", ") || "none"}`);
+  console.log(`- connected MCP: ${mcpChecks.map((check) => `${check.id} (${connectionTrustLabel(check)})`).join(", ") || "none"}`);
+  console.log("- plain text: describe the product you want and the connected AI agent will answer in this runtime");
+  console.log(`- first product workflow: ${runtimeSurfaceCommand(commandSurface, "pm start")}`);
+  console.log(`- setup proof: ${runtimeSurfaceCommand(commandSurface, "status")} shows the verified connection state`);
+
+  const demoProvider = aiChecks[0]?.id;
+  if (!demoProvider) {
+    console.log("- first demo turn: skipped because no AI provider was selected and verified");
+    return;
+  }
+  try {
+    const providerId = parseAiProviderId(demoProvider);
+    const config = syncHarnessConfigFromEnv(projectRoot);
+    const sessionId = resolveRuntimeSessionId(projectRoot);
+    const prompt = setupFirstDemoPrompt(passed, commandSurface);
+    const demoUserInput = "setup first demo: 연결된 기능으로 지금 무엇을 할 수 있는지 보여줘";
+    const result = await generateAiText(config, {
+      providerId,
+      prompt,
+      system: setupFirstDemoSystemPrompt(),
+      maxOutputTokens: 500,
+      temperature: 0
+    });
+    writeAiChatTurnRecord(projectRoot, createAiChatTurnRecord(result, sessionId, demoUserInput, prompt));
+    recordRuntimeSessionEvent(projectRoot, sessionId, {
+      kind: "chat",
+      message: `setup first demo turn completed with ${providerId}`,
+      ok: true
+    });
+    printAiProviderFallbackNotice(result);
+    console.log("");
+    console.log("First demo turn");
+    console.log(`- provider: ${providerId}`);
+    console.log(result.text.trim());
+  } catch (error) {
+    console.log("");
+    console.log("First demo turn");
+    console.log(`- skipped: ${error instanceof Error ? error.message : String(error)}`);
+    console.log(`- setup remains ready; continue with ${runtimeSurfaceCommand(commandSurface, "pm start")} or plain text chat`);
+  }
+}
+
+function setupFirstDemoPrompt(checks: ConnectionCheck[], commandSurface: CommandSurface): string {
+  const ai = checks.filter((check) => check.kind === "ai").map((check) => `${check.id}:${connectionTrustLabel(check)}`).join(", ") || "none";
+  const mcp = checks.filter((check) => check.kind === "mcp").map((check) => `${check.id}:${connectionTrustLabel(check)}`).join(", ") || "none";
+  return [
+    "RPH setup just verified live connections.",
+    `Verified AI: ${ai}`,
+    `Verified MCP: ${mcp}`,
+    `Primary workflow command: ${runtimeSurfaceCommand(commandSurface, "pm start")}`,
+    "In Korean, confirm that the agent is connected and list three concrete next product-building actions the user can ask for in plain language.",
+    "Do not mention secrets, tokens, API keys, raw URLs, or internal config values."
+  ].join("\n");
+}
+
+function setupFirstDemoSystemPrompt(): string {
+  return [
+    "You are Real Product Harness after setup verification.",
+    "Return concise Korean plain text only.",
+    "Make the user feel the connected AI agent is ready to help, but do not claim that any external write action has run.",
+    "Do not reveal or infer secrets, tokens, API keys, or raw configuration values."
+  ].join("\n");
 }
 
 function liveSetupFailures(checks: ConnectionCheck[], options: Record<string, string | boolean>): ConnectionCheck[] {

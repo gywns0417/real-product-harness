@@ -36,6 +36,8 @@ if (setup.status !== 0) {
   fail(`setup-live-chat setup failed\nstdout:\n${setup.stdout}\nstderr:\n${setup.stderr}`);
 }
 assertIncludes(setup.stdout, "setup live check passed", "setup output");
+assertIncludes(setup.stdout, "Capability summary", "setup output");
+assertIncludes(setup.stdout, "First demo turn", "setup output");
 
 const ask = runCli(["ask", "연결 확인 인사해줘"], withoutProviderEnv(process.env));
 if (ask.status !== 0) {

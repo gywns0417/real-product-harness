@@ -78,6 +78,8 @@ for (const provider of providers) {
   }
   assertIncludes(setup.stdout, "setup live check passed", `${provider.id} setup`);
   assertIncludes(setup.stdout, "Ready actions", `${provider.id} setup`);
+  assertIncludes(setup.stdout, "Capability summary", `${provider.id} setup`);
+  assertIncludes(setup.stdout, "First demo turn", `${provider.id} setup`);
   assertIncludes(setup.stdout, `ai:${provider.id} chat: /ai run --provider ${provider.id}`, `${provider.id} setup`);
 
   const ask = runCli(projectRoot, ["ask", `${provider.id} 연결 확인`], withoutProviderEnv(process.env));

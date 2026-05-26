@@ -21,6 +21,7 @@ The design mirrors a Hermes-style separation:
 - Execution lanes: PM, PD, FE, BE, QA, GitHub, Notion, and Docs handlers execute bounded workflow actions.
 - Records: product state remains in `.rph/`; runtime command history is appended under `.rph/runtime/`, durable AI-suggested controls are stored in `.rph/runtime/intents.json` with `.rph/runtime/intents.jsonl` as the append-only intent journal, and `/agent replay` renders journal-backed session plus intent history as a user-facing timeline before showing raw snapshot tail data.
 - Chat: runtime conversation turns are appended under `.rph/ai/chat/` so the agent feels like a top-level conversational layer, not a command-only CLI.
+- Setup handoff: after `setup auto --live` proves selected AI/MCP connections, the runtime prints a capability summary and runs one non-mutating first demo turn through the verified AI provider. Demo failure is non-fatal and does not change the live setup result.
 - AI run records: provider/model metadata and prompt/output previews are stored under `.rph/ai/runs/`; secrets stay in `.env`.
 - Settings: non-secret provider state lives in `.rph/config.json`; secrets stay in `.env`.
 - Resident workers: `/agent pool run` is the handoff-only supervisor loop, `/agent pool start` starts it as a detached background process, and `/agent pool service install` writes a per-project macOS LaunchAgent that runs `agent pool run` directly under launchd ownership. The service uses the existing `.rph/runtime/worker-pool.json` health contract rather than a second scheduler.

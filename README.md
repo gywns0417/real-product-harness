@@ -116,6 +116,10 @@ or open `rph help setup`. In an interactive terminal, plain `rph start` launches
 directly, writes the fresh project state, and hands off to the connected chat/runtime after successful
 verification. Setup flags such as `--from-env --live --ai openai --mcp none` keep the same setup-first
 path for automation.
+After live verification, setup also prints a `Capability summary` and runs one non-mutating
+`First demo turn` through the verified AI provider. That first turn is kept separate from connection
+proof: if the demo response fails, setup stays successful and the next action remains normal chat or
+`/pm start`.
 
 Plain text is chat. Command-like natural phrases such as `계속 진행해`, `현재 상태 보여줘`, `승인해`,
 or `continue` are sent to the connected AI agent instead of being silently promoted into local workflow
