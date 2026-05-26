@@ -65,20 +65,22 @@ assertIncludes(wrapper, `exec node "${installDir}/dist/apps/cli/src/index.js" "$
 assertIncludes(init, `export PATH="${binDir}:$PATH"`, "init.sh");
 assertIncludes(init, "function /pm() { command rph /pm \"$@\"; }", "init.sh");
 assertIncludes(init, "function /agent() { command rph /agent \"$@\"; }", "init.sh");
+assertIncludes(init, "function /daemon() { command rph /daemon \"$@\"; }", "init.sh");
 assertIncludes(init, "function /setup() { command rph /setup \"$@\"; }", "init.sh");
 assertIncludes(init, "function /home() { command rph /home \"$@\"; }", "init.sh");
 assertIncludes(init, "function /workspace() { command rph /workspace \"$@\"; }", "init.sh");
 assertIncludes(init, "function /live() { command rph /live \"$@\"; }", "init.sh");
-assertIncludes(init, "_rph_slash_helpers=\"/pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /productize /doctor /help\"", "init.sh");
+assertIncludes(init, "_rph_slash_helpers=\"/pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /daemon /productize /doctor /help\"", "init.sh");
 assertIncludes(init, 'if [ "${RPH_ENABLE_SLASH_COMMANDS:-1}" = "1" ]; then', "init.sh");
 assertIncludes(init, 'complete -F _rph_bash_complete "$helper" 2>/dev/null || true', "init.sh");
-assertIncludes(completion, "#compdef rph /pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /productize /doctor /help", "completion.zsh");
+assertIncludes(completion, "#compdef rph /pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /daemon /productize /doctor /help", "completion.zsh");
 assertIncludes(completion, "help version update home shell runtime init status workspace next pause resume cancel setup settings", "completion.zsh");
 assertIncludes(completion, "_rph_subcommands()", "completion.zsh");
-assertIncludes(completion, "compdef _rph rph /pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /productize /doctor /help", "completion.zsh");
+assertIncludes(completion, "compdef _rph rph /pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /daemon /productize /doctor /help", "completion.zsh");
 assertIncludes(completion, "setup_cmds=(auto repair detect apply check ai mcp custom)", "completion.zsh");
 assertIncludes(completion, "doctor_cmds=(status install shell)", "completion.zsh");
 assertIncludes(completion, "agent_cmds=(status roles catalog discover search import install use activate bind bindings unbind session journal replay handoffs actions action-approvals intents confirm-intent dismiss-intent lanes run continue recover pool worker claim heartbeat ack complete dead-letter approve-action reject-action clear reset)", "completion.zsh");
+assertIncludes(completion, "daemon_cmds=(status start run stop logs service install uninstall plist)", "completion.zsh");
 assertIncludes(completion, "live_cmds=(audit target ai:openai ai:anthropic ai:gemini mcp:stitch mcp:github mcp:notion mcp:figma)", "completion.zsh");
 assertIncludes(profile, "# >>> rph init >>>", "shell profile");
 assertIncludes(profile, `source "${initPath}"`, "shell profile");
@@ -235,7 +237,7 @@ const cleanUpdate = runChecked(wrapperPath, ["update"], {
 });
 assertIncludes(cleanUpdate.stdout, "updating", "installed clean update after dirty refusal");
 
-const shellHelpers = runChecked("zsh", ["-lc", `source "${initPath}"; cd "${slashProjectDir}"; /pm start --project-name "Shell Slash Product"; /workspace --json; /status`], {
+const shellHelpers = runChecked("zsh", ["-lc", `source "${initPath}"; cd "${slashProjectDir}"; /pm start --project-name "Shell Slash Product"; /workspace --json; /daemon status; /status`], {
   cwd: tmpRoot,
   env: {
     ...env,
@@ -246,6 +248,7 @@ const shellHelpers = runChecked("zsh", ["-lc", `source "${initPath}"; cd "${slas
 assertFile(path.join(slashProjectDir, ".rph", "state.json"), "slash helper project state");
 const shellWorkspaceJson = extractFirstJsonObject(shellHelpers.stdout, "installed shell slash helpers");
 assertJsonSchema(shellWorkspaceJson, "rph-operator-workspace-v0", "installed shell workspace json");
+assertIncludes(shellHelpers.stdout, "Worker pool daemon", "installed shell daemon helper");
 
 console.log("install e2e smoke passed");
 console.log(`tmp: ${tmpRoot}`);

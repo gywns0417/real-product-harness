@@ -25,6 +25,7 @@ export const TOP_LEVEL_COMMANDS = [
   "settings",
   "ask",
   "agent",
+  "daemon",
   "chat",
   "ai",
   "mcp",

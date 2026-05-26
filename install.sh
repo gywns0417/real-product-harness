@@ -159,7 +159,7 @@ cat > "$init_file" <<EOF
 # Real Product Harness shell bootstrap.
 # Source this file from ~/.zshrc or ~/.bashrc for the installed rph command.
 export PATH="$RPH_BIN_DIR:\$PATH"
-_rph_slash_helpers="/pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /productize /doctor /help"
+_rph_slash_helpers="/pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /daemon /productize /doctor /help"
 
 rph_enable_slash_commands() {
   if [ -z "\${BASH_VERSION:-}" ] && [ -z "\${ZSH_VERSION:-}" ]; then
@@ -185,6 +185,7 @@ function /docs() { command rph /docs "\$@"; }
 function /github() { command rph /github "\$@"; }
 function /notion() { command rph /notion "\$@"; }
 function /agent() { command rph /agent "\$@"; }
+function /daemon() { command rph /daemon "\$@"; }
 function /productize() { command rph /productize "\$@"; }
 function /doctor() { command rph /doctor "\$@"; }
 function /help() { command rph /help "\$@"; }
@@ -192,7 +193,7 @@ function /help() { command rph /help "\$@"; }
 }
 
 rph_disable_slash_commands() {
-  unset -f /pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /productize /doctor /help 2>/dev/null || true
+  unset -f /pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /daemon /productize /doctor /help 2>/dev/null || true
 }
 
 if [ "\${RPH_ENABLE_SLASH_COMMANDS:-1}" = "1" ]; then
@@ -204,7 +205,7 @@ if [ -n "\${BASH_VERSION:-}" ]; then
     local cur="\${COMP_WORDS[COMP_CWORD]}"
     local invoked="\${COMP_WORDS[0]:-}"
     local command=""
-    local words="help version update home shell runtime init status workspace next pause resume cancel setup settings ask agent chat ai mcp live doctor productize pm pd fe be qa notion docs github"
+    local words="help version update home shell runtime init status workspace next pause resume cancel setup settings ask agent daemon chat ai mcp live doctor productize pm pd fe be qa notion docs github"
     local subcommands=""
     if [ "\$invoked" = "rph" ]; then
       if [ "\$COMP_CWORD" -le 1 ]; then
@@ -219,6 +220,7 @@ if [ -n "\${BASH_VERSION:-}" ]; then
       setup) subcommands="auto repair detect apply check ai mcp custom" ;;
       doctor) subcommands="status install shell" ;;
       agent) subcommands="status roles catalog discover search import install use activate bind bindings unbind session journal replay handoffs actions action-approvals intents confirm-intent dismiss-intent lanes run continue recover pool worker claim heartbeat ack complete dead-letter approve-action reject-action clear reset" ;;
+      daemon) subcommands="status start run stop logs service install uninstall plist" ;;
       ai) subcommands="status test enable disable run" ;;
       mcp) subcommands="status tools call test enable disable" ;;
       live) subcommands="audit target ai:openai ai:anthropic ai:gemini mcp:stitch mcp:github mcp:notion mcp:figma" ;;
@@ -253,12 +255,13 @@ fi
 EOF
 
 cat > "$completion_file" <<'EOF'
-#compdef rph /pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /productize /doctor /help
+#compdef rph /pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /daemon /productize /doctor /help
 _rph_subcommands() {
   case "$1" in
     setup) print -r -- "auto repair detect apply check ai mcp custom" ;;
     doctor) print -r -- "status install shell" ;;
     agent) print -r -- "status roles catalog discover search import install use activate bind bindings unbind session journal replay handoffs actions action-approvals intents confirm-intent dismiss-intent lanes run continue recover pool worker claim heartbeat ack complete dead-letter approve-action reject-action clear reset" ;;
+    daemon) print -r -- "status start run stop logs service install uninstall plist" ;;
     ai) print -r -- "status test enable disable run" ;;
     mcp) print -r -- "status tools call test enable disable" ;;
     live) print -r -- "audit target ai:openai ai:anthropic ai:gemini mcp:stitch mcp:github mcp:notion mcp:figma" ;;
@@ -273,15 +276,16 @@ _rph_subcommands() {
   esac
 }
 _rph() {
-  local -a commands setup_cmds doctor_cmds agent_cmds ai_cmds mcp_cmds live_cmds pm_cmds pd_cmds fe_cmds be_cmds qa_cmds notion_cmds docs_cmds github_cmds subcommands
+  local -a commands setup_cmds doctor_cmds agent_cmds daemon_cmds ai_cmds mcp_cmds live_cmds pm_cmds pd_cmds fe_cmds be_cmds qa_cmds notion_cmds docs_cmds github_cmds subcommands
   local invoked effective_command
   commands=(
     help version update home shell runtime init status workspace next pause resume cancel setup settings
-    ask agent chat ai mcp live doctor productize pm pd fe be qa notion docs github
+    ask agent daemon chat ai mcp live doctor productize pm pd fe be qa notion docs github
   )
   setup_cmds=(auto repair detect apply check ai mcp custom)
   doctor_cmds=(status install shell)
   agent_cmds=(status roles catalog discover search import install use activate bind bindings unbind session journal replay handoffs actions action-approvals intents confirm-intent dismiss-intent lanes run continue recover pool worker claim heartbeat ack complete dead-letter approve-action reject-action clear reset)
+  daemon_cmds=(status start run stop logs service install uninstall plist)
   ai_cmds=(status test enable disable run)
   mcp_cmds=(status tools call test enable disable)
   live_cmds=(audit target ai:openai ai:anthropic ai:gemini mcp:stitch mcp:github mcp:notion mcp:figma)
@@ -333,7 +337,7 @@ _rph() {
     _describe 'rph command' commands
   fi
 }
-compdef _rph rph /pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /productize /doctor /help
+compdef _rph rph /pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /daemon /productize /doctor /help
 EOF
 
 install_shell_profile_hook() {
@@ -398,5 +402,6 @@ success "try: rph"
 success "one-shot: rph pm start"
 success "one-shot slash form: rph /pm start"
 success "shell helper: /pm start"
+success "daemon status: rph /daemon status"
 info "if this shell has not sourced RPH yet: source \"$init_file\""
 info "inside runtime: /init --yes --project-name \"My Product\""

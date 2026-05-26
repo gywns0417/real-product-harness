@@ -234,8 +234,8 @@ uses its active node as the stage authority and keeps `stageQueue` as a compatib
 
 For a Hermes-like top shell, the installer exposes the main control-plane domains as shell
 functions that dispatch to `rph`: `/pm`, `/pd`, `/setup`, `/status`, `/workspace`, `/next`, `/qa`, `/fe`,
-`/be`, `/ai`, `/mcp`, `/live`, `/docs`, `/github`, `/notion`, `/agent`, `/productize`, `/doctor`, and
-`/help`.
+`/be`, `/ai`, `/mcp`, `/live`, `/docs`, `/github`, `/notion`, `/agent`, `/daemon`, `/productize`,
+`/doctor`, and `/help`.
 
 They are enabled by default when the installed init file is sourced. Enable them in the current
 shell without reopening the terminal:
@@ -318,13 +318,14 @@ and records a per-lane tool budget (`maxToolCalls`, `remainingToolCalls`, `maxOu
 `executedCommand` in the lane run JSON. Tool calls are now enforced: local fallback commands,
 AI lane turns, and autonomous command execution decrement the lane budget and a zero budget blocks
 execution before a command can run.
-For resident operation, `/agent pool start` launches the same handoff-only supervisor as a detached
+For resident operation, `/daemon start` launches the same handoff-only supervisor as a detached
 background pool, writes `.rph/runtime/worker-pool.json` plus `.rph/runtime/worker-pool.log`, and
-returns control to the terminal. `/agent pool status`, `/agent pool logs`, and `/agent pool stop`
-are the operator surface for that background runtime; `/agent pool run` remains the foreground/debug
-path. On macOS, `/agent pool service install` writes a per-project LaunchAgent that runs
-`agent pool run` directly under launchd ownership, with `/agent pool service status`,
-`/agent pool service uninstall`, and `/agent pool service plist` as the service surface. Pool-owned
+returns control to the terminal. `/daemon status`, `/daemon logs`, and `/daemon stop`
+are the operator surface for that background runtime; `/daemon run` remains the foreground/debug
+path. On macOS, `/daemon service install` writes a per-project LaunchAgent that runs
+`agent pool run` directly under launchd ownership, with `/daemon service status`,
+`/daemon service uninstall`, and `/daemon service plist` as the service surface. The lower-level
+`/agent pool ...` form remains supported for compatibility and scripting. Pool-owned
 work carries `poolId`, `slotId`, and `slotIndex` into the handoff and lane records, so `/agent workers`
 and `/agent lanes` can connect daemon ownership back to the exact execution slot. Pool state also
 stores a process-start fingerprint; mismatched or corrupt pool state is treated as unsafe instead of
@@ -366,11 +367,11 @@ Examples:
 /agent unbind --role QA --stage QA_REVIEW
 /agent handoffs
 /agent lanes
-/agent pool start
-/agent pool status
-/agent pool logs
-/agent pool service install
-/agent pool service status
+/daemon start
+/daemon status
+/daemon logs
+/daemon service install
+/daemon service status
 /agent run --steps 3
 /agent claim <handoff-id>
 rph "Use documentation-engineer to tighten the install section."
@@ -457,13 +458,13 @@ and writes MCP client config to `.mcp/config.json`.
 /agent handoffs
 /agent actions
 /agent lanes
-/agent pool start
-/agent pool status
-/agent pool logs
-/agent pool service install
-/agent pool service status
-/agent pool service uninstall
-/agent pool stop --reason "operator requested stop"
+/daemon start
+/daemon status
+/daemon logs
+/daemon service install
+/daemon service status
+/daemon service uninstall
+/daemon stop --reason "operator requested stop"
 /agent run --steps 5
 /agent reduce <stage>
 /agent worker run <handoff-id>

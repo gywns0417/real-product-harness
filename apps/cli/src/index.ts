@@ -428,6 +428,7 @@ const HELP_TOPIC_LINES: Record<string, string[]> = {
     "  /chat status | clear",
     "  /agent status | roles | pack | import <toml> | use <name> | bind <name> --role <role> [--stage <stage>] | bindings | unbind --role <role> [--stage <stage>] | session | replay [session-id] | graph | handoffs | actions | intents | confirm-intent <id> | dismiss-intent <id> | lanes | workers | pool | run | recover [--steps N] | reduce <stage> | clear",
     "  /agent pool service install | status | uninstall | plist",
+    "  /daemon status | start | stop | logs | service",
     "  /agent claim <handoff-id> | heartbeat <handoff-id> | dead-letter <handoff-id>",
     "  /agent approve-action <action-id> | reject-action <action-id>",
     "  /exit"
@@ -463,6 +464,21 @@ const HELP_TOPIC_LINES: Record<string, string[]> = {
     "  /agent handoffs | actions | intents | confirm-intent <id> | dismiss-intent <id> | lanes | workers | pool status | pool start | pool service install | pool service status | pool run | pool stop | run | recover [--steps N] | reduce <stage>",
     "",
     "Discovers Awesome Codex Subagents from ~/Desktop/awesome-codex-subagents/categories and imports selected TOML agents into the project-local .rph/agents catalog. `agent pack` installs a recommended Hermes-operator set in one command. The active custom agent guides chat by default; `agent bind` pins imported TOML agents to lane roles/stages. RPH approval gates and external-write policy still win."
+  ],
+  daemon: [
+    "Daemon commands",
+    "",
+    "  rph daemon",
+    "  rph daemon status",
+    "  rph daemon start --concurrency 2",
+    "  rph daemon stop --reason \"operator requested stop\"",
+    "  rph daemon logs",
+    "  rph daemon service install",
+    "  rph /daemon status",
+    "  /daemon start",
+    "",
+    "Top-level alias for the durable worker-pool daemon behind `/agent pool ...`.",
+    "Use it when the harness should keep polling safe local handoffs in the background. External writes and approvals still require explicit `/agent approve-action <id>` controls."
   ],
   workspace: [
     "Workspace commands",
@@ -776,6 +792,9 @@ export async function runParsedCommand(
         break;
       case "agent":
         await handleAgentControlCommand(projectRoot, parsed.subcommand, parsed.args, parsed.options, context);
+        break;
+      case "daemon":
+        await handleDaemonCommand(projectRoot, parsed.subcommand, parsed.args, parsed.options, context);
         break;
       case "ai":
         await handleAi(projectRoot, parsed.subcommand, parsed.args, parsed.options);
@@ -3015,7 +3034,7 @@ async function handleAgentPoolCommand(
       await startRuntimeWorkerPoolBackground(projectRoot, options);
       return;
     case "status":
-      printRuntimeWorkerPoolStatus(projectRoot, optionBool(options, "debug"), commandSurfaceFromOptions(options));
+      printRuntimeWorkerPoolStatus(projectRoot, optionBool(options, "debug"), commandSurfaceFromOptions(options), poolCommandSurfaceFromOptions(options));
       return;
     case "logs":
     case "log":
@@ -3037,6 +3056,62 @@ async function handleAgentPoolCommand(
       process.exitCode = 2;
       return;
   }
+}
+
+async function handleDaemonCommand(
+  projectRoot: string,
+  subcommand: string | undefined,
+  args: string[],
+  options: Record<string, string | boolean>,
+  context: CommandContext
+): Promise<void> {
+  const action = subcommand ?? "status";
+  const poolArgs = normalizeDaemonPoolArgs(action, args);
+  if (!poolArgs) {
+    console.log("usage: /daemon <status|start|run|stop|logs|service> [--concurrency N] [--poll-ms N] [--idle-ms N] [--max-cycles N] [--log PATH] [--force] [--debug]");
+    console.log("service: /daemon service <install|status|uninstall|plist> [--no-load] [--no-unload]");
+    process.exitCode = 2;
+    return;
+  }
+  await handleAgentPoolCommand(projectRoot, poolArgs, {
+    ...options,
+    commandSurface: context.runtimeShell ? "slash" : commandSurfaceFromOptions(options),
+    poolCommandSurface: "daemon"
+  });
+}
+
+function normalizeDaemonPoolArgs(action: string, args: string[]): string[] | null {
+  switch (action) {
+    case "status":
+    case "start":
+    case "daemon":
+    case "background":
+    case "run":
+    case "stop":
+    case "logs":
+    case "log":
+    case "service":
+      return [action, ...args];
+    case "install":
+    case "uninstall":
+    case "remove":
+    case "plist":
+      return ["service", action, ...args];
+    default:
+      return null;
+  }
+}
+
+type RuntimePoolCommandSurface = "agent" | "daemon";
+
+function poolCommandSurfaceFromOptions(options: Record<string, string | boolean>): RuntimePoolCommandSurface {
+  return options.poolCommandSurface === "daemon" ? "daemon" : "agent";
+}
+
+function runtimePoolSurfaceCommand(surface: CommandSurface, poolSurface: RuntimePoolCommandSurface, command: string): string {
+  return poolSurface === "daemon"
+    ? runtimeSurfaceCommand(surface, `daemon ${command}`)
+    : agentSurfaceCommand(surface, `pool ${command}`);
 }
 
 function runtimeWorkerPoolFile(projectRoot: string): string {
@@ -3254,7 +3329,7 @@ async function handleRuntimeWorkerPoolServiceCommand(
       printRuntimeWorkerPoolServicePlist(projectRoot, options);
       return;
     default:
-      console.log("usage: /agent pool service <install|status|uninstall|plist> [--concurrency N] [--poll-ms N] [--idle-ms N] [--no-load] [--no-unload]");
+      console.log(`usage: ${runtimePoolSurfaceCommand(commandSurfaceFromOptions(options), poolCommandSurfaceFromOptions(options), "service <install|status|uninstall|plist>")} [--concurrency N] [--poll-ms N] [--idle-ms N] [--no-load] [--no-unload]`);
       process.exitCode = 2;
       return;
   }
@@ -3293,7 +3368,7 @@ function installRuntimeWorkerPoolService(projectRoot: string, options: Record<st
   const currentPoolProcess = currentPool ? runtimeWorkerPoolProcessState(currentPool) : "dead";
   if (currentPool && currentPoolActive && (currentPoolProcess === "alive" || currentPoolProcess === "unknown")) {
     console.log(`worker pool service install blocked: worker pool already active (${currentPool.poolId})`);
-    console.log("next: rph agent pool status");
+    console.log(`next: ${runtimePoolSurfaceCommand(commandSurfaceFromOptions(options), poolCommandSurfaceFromOptions(options), "status")}`);
     process.exitCode = 1;
     return;
   }
@@ -3327,7 +3402,7 @@ function installRuntimeWorkerPoolService(projectRoot: string, options: Record<st
 
   if (optionBool(options, "no-load")) {
     console.log("- launchctl=skipped (--no-load)");
-    console.log("next: rph agent pool service status");
+    console.log(`next: ${runtimePoolSurfaceCommand(commandSurfaceFromOptions(options), poolCommandSurfaceFromOptions(options), "service status")}`);
     return;
   }
   const loaded = loadRuntimeWorkerPoolLaunchAgent(rendered.label, plistPath);
@@ -3338,7 +3413,7 @@ function installRuntimeWorkerPoolService(projectRoot: string, options: Record<st
     return;
   }
   console.log("- launchctl=loaded");
-  console.log("next: rph agent pool service status");
+  console.log(`next: ${runtimePoolSurfaceCommand(commandSurfaceFromOptions(options), poolCommandSurfaceFromOptions(options), "service status")}`);
 }
 
 function uninstallRuntimeWorkerPoolService(projectRoot: string, options: Record<string, string | boolean>): void {
@@ -3362,11 +3437,12 @@ function uninstallRuntimeWorkerPoolService(projectRoot: string, options: Record<
   console.log(existed ? "worker pool service uninstalled" : "worker pool service not installed");
   console.log(`- label=${label}`);
   console.log(`- plist=${servicePathForDisplay(plistPath)}`);
-  console.log("next: rph agent pool service status");
+  console.log(`next: ${runtimePoolSurfaceCommand(commandSurfaceFromOptions(options), poolCommandSurfaceFromOptions(options), "service status")}`);
 }
 
 function printRuntimeWorkerPoolServiceStatus(projectRoot: string, options: Record<string, string | boolean>): void {
   const surface = commandSurfaceFromOptions(options);
+  const poolSurface = poolCommandSurfaceFromOptions(options);
   const plistPath = runtimeWorkerPoolServicePlistPath(projectRoot);
   const label = runtimeWorkerPoolServiceLabel(projectRoot);
   console.log("Worker pool service");
@@ -3400,8 +3476,8 @@ function printRuntimeWorkerPoolServiceStatus(projectRoot: string, options: Recor
     console.log("- launchctl=not-checked");
   }
   const next = installed
-    ? (plistIssue ? `inspect or remove ${servicePathForDisplay(plistPath)}` : agentSurfaceCommand(surface, "pool service uninstall"))
-    : agentSurfaceCommand(surface, "pool service install");
+    ? (plistIssue ? `inspect or remove ${servicePathForDisplay(plistPath)}` : runtimePoolSurfaceCommand(surface, poolSurface, "service uninstall"))
+    : runtimePoolSurfaceCommand(surface, poolSurface, "service install");
   console.log(`next: ${next}`);
 }
 
@@ -3698,7 +3774,12 @@ function runtimeWorkerPoolProcessState(record: RuntimeWorkerPoolRecord): Runtime
   return startedAt === record.pidStartedAt ? "alive" : "identity-mismatch";
 }
 
-function printRuntimeWorkerPoolStatus(projectRoot: string, debug: boolean, surface: CommandSurface): void {
+function printRuntimeWorkerPoolStatus(
+  projectRoot: string,
+  debug: boolean,
+  surface: CommandSurface,
+  poolSurface: RuntimePoolCommandSurface = "agent"
+): void {
   if (!isRuntimeProjectInitialized(projectRoot)) {
     console.log("worker pool: project is not initialized");
     return;
@@ -3709,12 +3790,12 @@ function printRuntimeWorkerPoolStatus(projectRoot: string, debug: boolean, surfa
   if (!record && readIssue) {
     console.log("- status=unreadable");
     console.log(`- issue=${readIssue}`);
-    console.log(`next: ${agentSurfaceCommand(surface, "pool start")}`);
+    console.log(`next: ${runtimePoolSurfaceCommand(surface, poolSurface, "start")}`);
     return;
   }
   if (!record) {
     console.log("- status=none");
-    console.log(`next: ${agentSurfaceCommand(surface, "pool start")}`);
+    console.log(`next: ${runtimePoolSurfaceCommand(surface, poolSurface, "start")}`);
     return;
   }
   const processState = runtimeWorkerPoolProcessState(record);
@@ -3754,8 +3835,8 @@ function printRuntimeWorkerPoolStatus(projectRoot: string, debug: boolean, surfa
     console.log(`- debug-pid=${record.pid}`);
   }
   const next = record.status === "running" || record.status === "stopping"
-    ? agentSurfaceCommand(surface, "pool stop")
-    : agentSurfaceCommand(surface, "pool start");
+    ? runtimePoolSurfaceCommand(surface, poolSurface, "stop")
+    : runtimePoolSurfaceCommand(surface, poolSurface, "start");
   console.log(`next: ${next}`);
 }
 
@@ -3897,7 +3978,7 @@ async function startRuntimeWorkerPoolBackground(projectRoot: string, options: Re
   const existingProcessState = existing ? runtimeWorkerPoolProcessState(existing) : "dead";
   if (existing && existingIsActive && (existingProcessState === "alive" || existingProcessState === "unknown")) {
     console.log(`worker pool start blocked: already running (${existing.poolId})`);
-    console.log("next: rph agent pool status");
+    console.log(`next: ${runtimePoolSurfaceCommand(commandSurfaceFromOptions(options), poolCommandSurfaceFromOptions(options), "status")}`);
     process.exitCode = 1;
     return;
   }
@@ -4001,7 +4082,7 @@ async function startRuntimeWorkerPoolBackground(projectRoot: string, options: Re
     if (!started) {
       console.log("worker pool start warning: background process has not written a running heartbeat yet");
     }
-    console.log("next: rph agent pool status");
+    console.log(`next: ${runtimePoolSurfaceCommand(commandSurfaceFromOptions(options), poolCommandSurfaceFromOptions(options), "status")}`);
   } catch (error) {
     if (logFd !== null) {
       fs.closeSync(logFd);
@@ -4101,7 +4182,7 @@ async function runRuntimeWorkerPool(projectRoot: string, options: Record<string,
     existing.pid !== process.pid
   ) {
     console.log(`worker pool blocked: already running (${existing.poolId})`);
-    console.log("next: rph agent pool status");
+    console.log(`next: ${runtimePoolSurfaceCommand(commandSurfaceFromOptions(options), poolCommandSurfaceFromOptions(options), "status")}`);
     process.exitCode = 1;
     return;
   }
@@ -9906,6 +9987,8 @@ function printInstallDoctor(projectRoot: string): void {
   const completionExists = fs.existsSync(layout.completionPath);
   const profile = detectShellProfile(layout);
   const profileText = profile.path ? readTextIfExists(profile.path) : null;
+  const hasWorkspaceHelper = Boolean(initText?.includes("function /workspace()"));
+  const hasDaemonHelper = Boolean(initText?.includes("function /daemon()"));
   const workspaceJson = runInstalledJsonProbe(layout.wrapperPath, ["workspace", "--json"], projectRoot);
   const statusJson = runInstalledJsonProbe(layout.wrapperPath, ["status", "--json"], projectRoot);
   const installHead = gitHead(layout.installDir);
@@ -9915,7 +9998,8 @@ function printInstallDoctor(projectRoot: string): void {
     wrapperTargetExists ? null : "installed wrapper target is missing",
     wrapperTarget ? (wrapperTargetInInstallDir ? null : "installed wrapper target is outside install dir") : null,
     fs.existsSync(layout.initPath) ? null : "shell init file is missing",
-    initText?.includes("function /workspace()") ? null : "shell init is missing /workspace helper",
+    hasWorkspaceHelper ? null : "shell init is missing /workspace helper",
+    hasDaemonHelper ? null : "shell init is missing /daemon helper",
     completionExists ? null : "zsh completion file is missing",
     workspaceJson.ok ? null : "installed rph workspace --json is not current",
     statusJson.ok ? null : "installed rph status --json is not current",
@@ -9929,7 +10013,7 @@ function printInstallDoctor(projectRoot: string): void {
   }
   console.log(`- wrapper: ${layout.wrapperPath} present=${yesNo(fs.existsSync(layout.wrapperPath))}`);
   console.log(`- wrapper_target: ${wrapperTarget ?? "unknown"} present=${yesNo(wrapperTargetExists)} current_install=${yesNo(wrapperTargetInInstallDir)}`);
-  console.log(`- shell_init: ${layout.initPath} present=${yesNo(fs.existsSync(layout.initPath))} workspace_helper=${yesNo(Boolean(initText?.includes("function /workspace()")))}`);
+  console.log(`- shell_init: ${layout.initPath} present=${yesNo(fs.existsSync(layout.initPath))} workspace_helper=${yesNo(hasWorkspaceHelper)} daemon_helper=${yesNo(hasDaemonHelper)}`);
   console.log(`- completion: ${layout.completionPath} present=${yesNo(completionExists)}`);
   console.log(`- profile_hook: ${profile.path ?? "unknown"} present=${yesNo(Boolean(profileText?.includes("# >>> rph init >>>")))}`);
   console.log(`- workspace-json=${workspaceJson.ok ? "ok" : `failed reason=${workspaceJson.reason}`}`);
@@ -9960,7 +10044,9 @@ function printShellDoctor(projectRoot = process.cwd()): void {
   const commandShadowed = Boolean(resolvedRph && path.resolve(resolvedRph) !== path.resolve(layout.wrapperPath));
   const zshProbe = runShellHelperJsonProbe(layout.initPath, "zsh", projectRoot);
   const bashProbe = runShellHelperJsonProbe(layout.initPath, "bash", projectRoot);
-  const helpers = ["/setup", "/pm", "/status", "/workspace", "/agent"]
+  const requiredShellHelpers = ["/setup", "/pm", "/status", "/workspace", "/agent", "/daemon"];
+  const missingShellHelpers = requiredShellHelpers.filter((helper) => !initText?.includes(`function ${helper}()`));
+  const helpers = requiredShellHelpers
     .map((helper) => `${helper}=${yesNo(Boolean(initText?.includes(`function ${helper}()`)))}`)
     .join(" ");
 
@@ -9973,7 +10059,8 @@ function printShellDoctor(projectRoot = process.cwd()): void {
   console.log(`- profile_hook: ${profile.path ?? "unknown"} present=${yesNo(Boolean(profileText?.includes("# >>> rph init >>>")))}`);
   console.log(`- zsh-workspace-json=${zshProbe.ok ? "ok" : `failed reason=${zshProbe.reason}`}`);
   console.log(`- bash-workspace-json=${bashProbe.ok ? "ok" : `failed reason=${bashProbe.reason}`}`);
-  if (!initText?.includes("function /workspace()")) {
+  if (missingShellHelpers.length > 0) {
+    console.log(`- missing_slash_helpers: ${missingShellHelpers.join(" ")}`);
     console.log(fs.existsSync(layout.initPath) ? `next=source "${layout.initPath}"` : "next=rph update");
   } else if (!pathHasBin || commandShadowed) {
     console.log(`next=source "${layout.initPath}"`);
@@ -12613,7 +12700,7 @@ function renderHelp(topic?: string): string {
   const suggestion = suggestCommand(normalizedTopic, Object.keys(HELP_TOPIC_LINES));
   return [
     `unknown help topic: ${normalizedTopic}`,
-    suggestion ? `Try: help ${suggestion}` : "Available topics: runtime, productize, setup, agent, workspace, ai, mcp, live, proofs, pm, pd, fe, be, qa, notion, docs, github",
+    suggestion ? `Try: help ${suggestion}` : "Available topics: runtime, productize, setup, agent, daemon, workspace, ai, mcp, live, proofs, pm, pd, fe, be, qa, notion, docs, github",
     "",
     renderGeneralHelp()
   ].join("\n");
@@ -12655,6 +12742,8 @@ function renderGeneralHelp(): string {
     "    Show the active workflow, runtime graph digest, blockers, and next safe command.",
     "  rph workspace",
     "    Show one operator view of runtime, readiness, approvals, artifacts, PR/QA blockers, and next action.",
+    "  rph daemon status",
+    "    Inspect or run the durable background worker pool without spelling the lower-level agent pool command.",
     "  rph doctor install",
     "    Diagnose stale installed wrappers, shell init, completion, and JSON operator command support.",
     "  rph update",
@@ -12673,6 +12762,7 @@ function renderGeneralHelp(): string {
     "  /setup auto --live",
     "  /pm start",
     "  /agent run --steps 5",
+    "  /daemon status",
     "  /agent bind qa-expert --role QA",
     "  /mcp tools stitch",
     "  /live audit",
@@ -12689,7 +12779,7 @@ function renderGeneralHelp(): string {
     "  rph help mcp",
     "  rph help pm",
     "",
-    "All topics: shell, status, runtime, productize, setup, agent, workspace, doctor, ai, mcp, live, proofs, pm, pd, fe, be, qa, notion, docs, github",
+    "All topics: shell, status, runtime, productize, setup, agent, daemon, workspace, doctor, ai, mcp, live, proofs, pm, pd, fe, be, qa, notion, docs, github",
     "",
     `Document IDs: ${DOCUMENT_IDS.map((docId) => `${docId}(${DOCUMENT_TITLES[docId]})`).join(", ")}`,
     `Design Artifact IDs: ${DESIGN_ARTIFACT_IDS.map((artifactId) => `${artifactId}(${DESIGN_ARTIFACT_TITLES[artifactId]})`).join(", ")}`

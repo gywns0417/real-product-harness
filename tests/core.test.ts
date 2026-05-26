@@ -1208,6 +1208,23 @@ describe("command parser and env validation", () => {
     expect(parseCli(["pm", "start"])).toEqual(parseCli(["/pm", "start"]));
   });
 
+  it("treats daemon controls and slash daemon controls as the same top-level operator entry", () => {
+    expect(parseCli(["daemon", "start"])).toEqual(parseCli(["/daemon", "start"]));
+    expect(parseCli(["/daemon", "start", "--concurrency", "2", "--poll-ms", "50"])).toMatchObject({
+      command: "daemon",
+      subcommand: "start",
+      options: {
+        concurrency: "2",
+        "poll-ms": "50"
+      }
+    });
+    expect(parseCli(["/daemon", "service", "status"])).toMatchObject({
+      command: "daemon",
+      subcommand: "service",
+      args: ["status"]
+    });
+  });
+
   it("accepts slash-command argv for live audit", () => {
     const parsed = parseCli(["/live", "audit", "--strict", "--output", "reports/audit"]);
 
@@ -1278,6 +1295,7 @@ describe("command parser and env validation", () => {
         "function /status() { command rph /status \"$@\"; }",
         "function /workspace() { command rph /workspace \"$@\"; }",
         "function /agent() { command rph /agent \"$@\"; }",
+        "function /daemon() { command rph /daemon \"$@\"; }",
         ""
       ].join("\n"));
       fs.writeFileSync(path.join(configDir, "completion.zsh"), "#compdef rph\n");
@@ -1299,6 +1317,7 @@ describe("command parser and env validation", () => {
         const installOutput = logSpy.mock.calls.flat().join("\n");
         expect(installOutput).toContain("RPH install doctor");
         expect(installOutput).toContain("current_install=yes");
+        expect(installOutput).toContain("daemon_helper=yes");
         expect(installOutput).toContain("- workspace-json=ok");
         expect(installOutput).toContain("- status-json=ok");
         expect(installOutput).toContain("next=none");
@@ -1308,6 +1327,7 @@ describe("command parser and env validation", () => {
         const shellOutput = logSpy.mock.calls.flat().join("\n");
         expect(shellOutput).toContain("RPH shell doctor");
         expect(shellOutput).toContain("/workspace=yes");
+        expect(shellOutput).toContain("/daemon=yes");
         expect(shellOutput).toContain("- zsh-workspace-json=ok");
         expect(shellOutput).toContain("next=none");
       });
@@ -1637,6 +1657,20 @@ describe("command parser and env validation", () => {
     expect(output).toContain("/agent confirm-intent <id>");
     expect(output).toContain("/agent dismiss-intent <id>");
     expect(output).toContain("/agent replay [session-id]");
+  });
+
+  it("prints topic help for daemon worker-pool controls", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const ok = await runParsedCommand(root, parseCli(["help", "daemon"]));
+
+    expect(ok).toBe(true);
+    const output = logSpy.mock.calls.flat().join("\n");
+    expect(output).toContain("rph daemon start");
+    expect(output).toContain("rph daemon status");
+    expect(output).toContain("rph daemon stop");
+    expect(output).toContain("rph daemon logs");
+    expect(output).toContain("rph daemon service install");
   });
 
   it("prints runtime help with conversational intent controls", async () => {

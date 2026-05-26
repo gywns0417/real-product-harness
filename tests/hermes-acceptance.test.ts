@@ -3466,6 +3466,30 @@ describe("Hermes-like runtime acceptance", () => {
     expect(start.stdout).toContain("next: inspect or remove .rph/runtime/worker-pool.json");
   }, 10000);
 
+  it("routes daemon status and stop through the worker-pool state surface", async () => {
+    const poolPath = path.join(root, ".rph", "runtime", "worker-pool.json");
+    fs.mkdirSync(path.dirname(poolPath), { recursive: true });
+    fs.writeFileSync(poolPath, "{not-json");
+
+    const status = await runCli(["daemon", "status"], { cwd: root, env: withoutProviderEnv() });
+    expect(status.exitCode).toBe(0);
+    expect(status.stdout).toContain("Worker pool daemon");
+    expect(status.stdout).toContain("- status=unreadable");
+    expect(status.stdout).toContain("- issue=state file is unreadable JSON");
+    expect(status.stdout).toContain("next: rph daemon start");
+
+    const slashStatus = await runCli(["/daemon", "status"], { cwd: root, env: withoutProviderEnv() });
+    expect(slashStatus.exitCode).toBe(0);
+    expect(slashStatus.stdout).toContain("next: /daemon start");
+
+    const stop = await runCli(["daemon", "stop", "--force", "--reason", "corrupt state"], {
+      cwd: root,
+      env: withoutProviderEnv()
+    });
+    expect(stop.exitCode).toBe(1);
+    expect(stop.stdout).toContain("worker pool stop blocked: state file is unreadable JSON");
+  }, 10000);
+
   it("drains current background work and stops before claiming queued handoffs", async () => {
     const first = recordRuntimeHandoff(root, "session-worker-pool-drain", {
       fromAgent: "Orchestrator",
