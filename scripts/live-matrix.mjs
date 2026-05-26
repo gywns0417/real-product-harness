@@ -73,6 +73,12 @@ if (!report.provenance || typeof report.provenance !== "object") {
   }
   if (!Array.isArray(report.provenance.selectedTargets)) {
     failures.push("connection report provenance selectedTargets missing");
+  } else {
+    const checkedTargets = checks.map((check) => matrixKey(check.kind, check.id));
+    const selectedTargets = report.provenance.selectedTargets;
+    if (!sameTargetSet(selectedTargets, checkedTargets)) {
+      failures.push(`connection report provenance selectedTargets mismatch selected=[${selectedTargets.join(",")}] checks=[${checkedTargets.join(",")}]`);
+    }
   }
   if (report.provenance.checkedTargetCount !== checks.length) {
     failures.push(`connection report provenance checkedTargetCount mismatch value=${report.provenance.checkedTargetCount ?? "missing"} expected=${checks.length}`);
@@ -179,6 +185,15 @@ function buildRequiredMatrix(aiDefinitions, mcpDefinitions) {
 
 function matrixKey(kind, id) {
   return `${kind}:${id}`;
+}
+
+function sameTargetSet(left, right) {
+  if (!Array.isArray(left) || left.length !== right.length) {
+    return false;
+  }
+  const leftSorted = [...left].sort();
+  const rightSorted = [...right].sort();
+  return leftSorted.every((item, index) => item === rightSorted[index]);
 }
 
 function proofParityFailures(kind, id, check, proof) {

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadRuntimeActionApprovals, recordRuntimeActionApproval } from "../packages/core/src/agent-action-approvals";
 import { approveDocument } from "../packages/core/src/approvals";
@@ -4744,6 +4744,45 @@ describe("Hermes-like CLI contracts", () => {
     expect(fs.existsSync(path.join(root, ".rph", "live-audit", "latest.md"))).toBe(true);
   }, 10000);
 
+  it("shows latest live proof status without rerunning network checks", async () => {
+    const audit = await runCli(["live", "audit"], {
+      cwd: root,
+      env: {
+        ...withoutProviderEnv(),
+        GH_TOKEN: undefined,
+        GITHUB_TOKEN_SOURCE: undefined,
+        GITHUB_OWNER: undefined,
+        GITHUB_REPO: undefined,
+        NOTION_PARENT_PAGE_ID: undefined,
+        FIGMA_FILE_ID: undefined,
+        OPENAI_API_KEY: "test-openai"
+      },
+      preloadFetchOpenAiGenerationFailure: true
+    });
+    expect(audit.exitCode).toBe(0);
+
+    const status = await runCli(["live", "status"], {
+      cwd: root,
+      env: withoutProviderEnv()
+    });
+
+    expect(status.exitCode).toBe(0);
+    expect(status.stderr).toBe("");
+    expect(status.stdout).toContain("Live proof status");
+    expect(status.stdout).toContain("- release readiness: no");
+    expect(status.stdout).toContain("- ai:openai status=failed");
+    expect(status.stdout).toContain("recheck: rph live ai:openai");
+    expect(status.stdout).toContain("release gate: blocked");
+    expect(status.stdout).toContain("repair: rph live repair");
+
+    const strict = await runCli(["live", "status", "--strict"], {
+      cwd: root,
+      env: withoutProviderEnv()
+    });
+    expect(strict.exitCode).toBe(1);
+    expect(strict.stdout).toContain("- release readiness: no");
+  }, 10000);
+
   it("runs rph live audit --strict as a failing release gate", async () => {
     const result = await runCli(["live", "audit", "--strict"], {
       cwd: root,
@@ -5459,6 +5498,45 @@ describe("Hermes-like CLI contracts", () => {
     } finally {
       fs.rmSync(uninitializedRoot, { recursive: true, force: true });
     }
+  }, 10000);
+
+  it("adds .env to gitignore before writing from-env credentials in a git repo", async () => {
+    spawnSync("git", ["init"], { cwd: root, stdio: "ignore" });
+
+    const result = await runCli(["setup", "auto", "--from-env", "--live", "--ai", "openai", "--mcp", "none"], {
+      cwd: root,
+      env: {
+        ...withoutProviderEnv(),
+        OPENAI_API_KEY: "test-openai"
+      },
+      preloadFetchOpenAiConnectionSuccess: true
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("git safety: added .env to .gitignore before writing credentials");
+    expect(fs.readFileSync(path.join(root, ".gitignore"), "utf8")).toContain(".env");
+    expect(fs.readFileSync(path.join(root, ".env"), "utf8")).toContain("OPENAI_API_KEY=test-openai");
+  }, 10000);
+
+  it("refuses to write setup secrets when .env is already tracked", async () => {
+    spawnSync("git", ["init"], { cwd: root, stdio: "ignore" });
+    fs.writeFileSync(path.join(root, ".env"), "OPENAI_API_KEY=old-tracked-value\n");
+    spawnSync("git", ["add", ".env"], { cwd: root, stdio: "ignore" });
+
+    const result = await runCli(["setup", "auto", "--from-env", "--live", "--ai", "openai", "--mcp", "none"], {
+      cwd: root,
+      env: {
+        ...withoutProviderEnv(),
+        OPENAI_API_KEY: "test-openai"
+      },
+      preloadFetchOpenAiConnectionSuccess: true
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain(".env is already tracked by git; refusing to write secret values");
+    expect(fs.readFileSync(path.join(root, ".env"), "utf8")).toContain("OPENAI_API_KEY=old-tracked-value");
+    expect(fs.readFileSync(path.join(root, ".env"), "utf8")).not.toContain("OPENAI_API_KEY=test-openai");
   }, 10000);
 
   it("repairs failed setup live checks from the latest report without widening scope", async () => {

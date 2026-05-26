@@ -435,6 +435,7 @@ const HELP_TOPIC_LINES: Record<string, string[]> = {
     "  /daemon status | start | stop | logs | service",
     "  /agent claim <handoff-id> | heartbeat <handoff-id> | dead-letter <handoff-id>",
     "  /agent approve-action <action-id> | reject-action <action-id>",
+    "  /live status | audit | repair | ai:openai | mcp:stitch",
     "  /exit"
   ],
   agent: [
@@ -579,14 +580,19 @@ const HELP_TOPIC_LINES: Record<string, string[]> = {
     "  rph live ai:gemini",
     "  rph live mcp:stitch",
     "  rph live target mcp:github",
+    "  rph live status [--strict]",
     "  rph live audit [--strict] [--output <path>]",
+    "  rph live repair",
     "",
     "Runtime slash form:",
     "  /live ai:openai",
     "  /live mcp:stitch",
+    "  /live status",
     "  /live audit",
+    "  /live repair",
     "",
     "Runs one selected provider or connector through live setup/test, writes .rph/connections/latest.json, and exits non-zero when the target is not verified.",
+    "live status reads the latest local evidence without network calls and prints exact repair/recheck commands.",
     "live audit writes .rph/live-audit/latest.json and .md. Default audit mode exits zero while clearly reporting release_ready=no; --strict exits non-zero on release blockers."
   ],
   proofs: [
@@ -807,7 +813,7 @@ export async function runParsedCommand(
         await handleMcp(projectRoot, parsed.subcommand, parsed.args, parsed.options);
         break;
       case "live":
-        await handleLive(projectRoot, parsed.subcommand, parsed.args, parsed.options);
+        await handleLive(projectRoot, parsed.subcommand, parsed.args, parsed.options, context);
         break;
       case "proofs":
         handleProofs(projectRoot, parsed.subcommand, parsed.args, parsed.options);
@@ -8987,12 +8993,42 @@ function saveSetupEnvValues(projectRoot: string, envValues: Record<string, strin
   if (Object.keys(envValues).length === 0) {
     return [];
   }
+  ensureEnvFileIgnoredBeforeSecretWrite(projectRoot);
   const result = upsertEnvFileValues(path.join(projectRoot, ".env"), envValues);
   Object.assign(process.env, envValues);
   const keys = [...new Set([...result.updatedKeys, ...result.appendedKeys])].sort();
   console.log("");
   console.log(`${message}: ${keys.join(", ")}`);
   return keys;
+}
+
+function ensureEnvFileIgnoredBeforeSecretWrite(projectRoot: string): void {
+  const insideGit = spawnSync("git", ["-C", projectRoot, "rev-parse", "--is-inside-work-tree"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"]
+  });
+  if (insideGit.status !== 0 || insideGit.stdout.trim() !== "true") {
+    return;
+  }
+  const tracked = spawnSync("git", ["-C", projectRoot, "ls-files", "--error-unmatch", ".env"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"]
+  });
+  if (tracked.status === 0) {
+    throw new Error(".env is already tracked by git; refusing to write secret values. Remove it from git tracking or choose a different credential storage flow.");
+  }
+  const ignored = spawnSync("git", ["-C", projectRoot, "check-ignore", "-q", ".env"], {
+    encoding: "utf8",
+    stdio: "ignore"
+  });
+  if (ignored.status === 0) {
+    return;
+  }
+  const gitignorePath = path.join(projectRoot, ".gitignore");
+  const existing = fs.existsSync(gitignorePath) ? fs.readFileSync(gitignorePath, "utf8") : "";
+  const prefix = existing && !existing.endsWith("\n") ? "\n" : "";
+  appendText(gitignorePath, `${prefix}.env\n`);
+  console.log("git safety: added .env to .gitignore before writing credentials");
 }
 
 async function askText(prompter: SetupPrompter, label: string, defaultValue: string): Promise<string> {
@@ -9496,8 +9532,17 @@ async function handleLive(
   projectRoot: string,
   subcommand: string | undefined,
   args: string[],
-  options: Record<string, string | boolean>
+  options: Record<string, string | boolean>,
+  context: CommandContext = {}
 ): Promise<void> {
+  if (subcommand === "status" || optionBool(options, "status")) {
+    handleLiveStatus(projectRoot, options, context.runtimeShell ? "slash" : commandSurfaceFromOptions(options));
+    return;
+  }
+  if (subcommand === "repair") {
+    await runSetupRepair(projectRoot, { ...options, live: true }, context);
+    return;
+  }
   if (subcommand === "audit" || optionBool(options, "audit")) {
     await handleLiveAudit(projectRoot, args, options);
     return;
@@ -9510,12 +9555,16 @@ async function handleLive(
     console.log("  rph live ai:gemini");
     console.log("  rph live mcp:stitch");
     console.log("  rph live target mcp:github");
+    console.log("  rph live status [--strict]");
     console.log("  rph live audit [--strict] [--output <path>]");
+    console.log("  rph live repair");
     console.log("");
     console.log("Runtime slash form:");
     console.log("  /live ai:openai");
     console.log("  /live mcp:stitch");
+    console.log("  /live status");
     console.log("  /live audit");
+    console.log("  /live repair");
     return;
   }
   if (!isRuntimeProjectInitialized(projectRoot)) {
@@ -9548,6 +9597,66 @@ async function handleLive(
   printSetupRecoveryHints(checks);
   console.log(`report: ${filePath}`);
   if (checks.some((check) => check.status !== "passed")) {
+    process.exitCode = 1;
+  }
+}
+
+function handleLiveStatus(
+  projectRoot: string,
+  options: Record<string, string | boolean>,
+  commandSurface: CommandSurface = "rph"
+): void {
+  const strict = optionBool(options, "strict");
+  const auditPath = path.join(projectRoot, ".rph", "live-audit", "latest.json");
+  const reportPath = connectionReportFile(projectRoot);
+  const audit = readCliLiveAuditReport(projectRoot);
+  console.log("Live proof status");
+  if (audit) {
+    console.log(`- release readiness: ${audit.summary.releaseReady ? "yes" : "no"}`);
+    console.log(`- summary: passed=${audit.summary.passed} failed=${audit.summary.failed} skipped=${audit.summary.skipped} total=${audit.summary.total}`);
+    console.log(`- audit: ${auditPath}`);
+    console.log(`- source report: ${audit.sourceReport}`);
+    printLiveStatusChecks(audit.checks, commandSurface);
+    if (audit.summary.releaseReady) {
+      console.log("release gate: ready");
+    } else {
+      console.log("release gate: blocked");
+      console.log(`repair: ${runtimeSurfaceCommand(commandSurface, "live repair")}`);
+    }
+    if (strict && !audit.summary.releaseReady) {
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  const report = readConnectionReport(projectRoot);
+  if (report?.checks?.length) {
+    const checks = report.checks;
+    const failures = liveAuditFailures(checks, false);
+    const counts = connectionStatusCounts(checks);
+    console.log(`- release readiness: ${failures.length === 0 ? "yes" : "no"}`);
+    console.log(`- summary: passed=${counts.passed} failed=${counts.failed} skipped=${counts.skipped} total=${checks.length}`);
+    console.log(`- connection report: ${reportPath}`);
+    if (report.provenance?.source) {
+      console.log(`- source: ${report.provenance.source}`);
+    }
+    printLiveConnectionStatusChecks(checks, commandSurface);
+    if (failures.length === 0) {
+      console.log("release gate: ready");
+    } else {
+      console.log("release gate: blocked");
+      console.log(`repair: ${runtimeSurfaceCommand(commandSurface, "setup repair --live")}`);
+    }
+    if (strict && failures.length > 0) {
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  console.log("- release readiness: unknown");
+  console.log("- evidence: none");
+  console.log(`next: ${runtimeSurfaceCommand(commandSurface, "setup auto --live")}`);
+  if (strict) {
     process.exitCode = 1;
   }
 }
@@ -9657,6 +9766,67 @@ interface CliLiveAuditReport {
   skippedTargets: string[];
   checks: CliLiveAuditCheck[];
   failures: string[];
+}
+
+function readCliLiveAuditReport(projectRoot: string): CliLiveAuditReport | null {
+  const filePath = path.join(projectRoot, ".rph", "live-audit", "latest.json");
+  if (!fs.existsSync(filePath)) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as Partial<CliLiveAuditReport>;
+    if (parsed.schema !== "rph-live-audit-v0" || !parsed.summary || !Array.isArray(parsed.checks)) {
+      return null;
+    }
+    return parsed as CliLiveAuditReport;
+  } catch {
+    return null;
+  }
+}
+
+function printLiveStatusChecks(checks: CliLiveAuditCheck[], commandSurface: CommandSurface): void {
+  for (const check of checks) {
+    console.log(`- ${check.kind}:${check.id} status=${check.status} trust=${check.trust}:${check.provenStage}`);
+    if (check.usableAction?.status === "passed") {
+      console.log(`  usable_action: ${check.usableAction.action} target=${check.usableAction.targetId} verified_by=${check.usableAction.verifiedBy}`);
+    }
+    if (check.status !== "passed") {
+      if (check.cause) {
+        console.log(`  cause: ${redactCliAuditSecretText(check.cause)}`);
+      }
+      if ((check.missingEnv ?? []).length > 0) {
+        console.log(`  missing_env: ${check.missingEnv.join(", ")}`);
+      }
+      console.log(`  recheck: ${runtimeSurfaceCommand(commandSurface, `live ${check.kind}:${check.id}`)}`);
+    }
+  }
+}
+
+function printLiveConnectionStatusChecks(checks: ConnectionCheck[], commandSurface: CommandSurface): void {
+  for (const check of checks) {
+    const trust = `${check.readiness?.mode ?? "unverified"}:${check.readiness?.provenStage ?? "none"}`;
+    console.log(`- ${check.kind}:${check.id} status=${check.status} trust=${trust}`);
+    if (check.status !== "passed") {
+      const cause = check.missingEnv.length > 0
+        ? `missing ${check.missingEnv.join(", ")}`
+        : failedReadinessStage(check)
+          ? `${failedReadinessStage(check)?.stage} failed: ${failedReadinessStage(check)?.message}`
+          : check.message;
+      console.log(`  cause: ${sanitizeConnectionDiagnosticText(cause)}`);
+      if (check.missingEnv.length > 0) {
+        console.log(`  missing_env: ${check.missingEnv.join(", ")}`);
+      }
+      console.log(`  recheck: ${runtimeSurfaceCommand(commandSurface, `live ${check.kind}:${check.id}`)}`);
+    }
+  }
+}
+
+function connectionStatusCounts(checks: ConnectionCheck[]): { passed: number; failed: number; skipped: number } {
+  const counts = { passed: 0, failed: 0, skipped: 0 };
+  for (const check of checks) {
+    counts[check.status] += 1;
+  }
+  return counts;
 }
 
 function liveAuditFailures(checks: ConnectionCheck[], configuredOnly: boolean): string[] {
@@ -12709,7 +12879,7 @@ function renderHelp(topic?: string): string {
   const suggestion = suggestCommand(normalizedTopic, Object.keys(HELP_TOPIC_LINES));
   return [
     `unknown help topic: ${normalizedTopic}`,
-    suggestion ? `Try: help ${suggestion}` : "Available topics: runtime, productize, setup, agent, daemon, workspace, ai, mcp, live, proofs, pm, pd, fe, be, qa, notion, docs, github",
+    suggestion ? `Try: help ${suggestion}` : `Available topics: ${Object.keys(HELP_TOPIC_LINES).join(", ")}`,
     "",
     renderGeneralHelp()
   ].join("\n");
@@ -12775,13 +12945,24 @@ function renderGeneralHelp(): string {
     "  /shell",
     "  /chat \"다음에 뭐 하면 돼?\"",
     "  /setup auto --live",
+    "  /status",
+    "  /home",
+    "  /workspace",
+    "  /next",
     "  /pm start",
     "  /agent run --steps 5",
     "  /daemon status",
     "  /agent bind qa-expert --role QA",
+    "  /ai status",
     "  /mcp tools stitch",
+    "  /live status",
     "  /live audit",
-    "  /workspace",
+    "  /proofs status",
+    "  /docs list",
+    "  /github sync",
+    "  /notion sync",
+    "  /doctor shell",
+    "  /help",
     "",
     "Topic help:",
     "  rph help setup",

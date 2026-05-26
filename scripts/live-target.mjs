@@ -72,12 +72,24 @@ if (result.status !== 0) {
 if (!report.provenance) {
   failures.push("connection report provenance missing");
 } else {
-  if (!Array.isArray(report.provenance.selectedTargets) || !report.provenance.selectedTargets.includes(target)) {
-    failures.push(`connection report provenance does not include selected target ${target}`);
+  if (!Array.isArray(report.provenance.selectedTargets) || report.provenance.selectedTargets.length !== 1 || report.provenance.selectedTargets[0] !== target) {
+    failures.push(`selected target proof is not single-target: selectedTargets must equal [${target}]`);
   }
   if (report.provenance.checkedTargetCount !== (Array.isArray(report.checks) ? report.checks.length : 0)) {
     failures.push("connection report provenance checkedTargetCount mismatch");
   }
+}
+const checkTargets = Array.isArray(report.checks)
+  ? report.checks.map((item) => `${item.kind}:${item.id}`)
+  : [];
+if (checkTargets.length !== 1 || checkTargets[0] !== target) {
+  failures.push(`selected target proof is not single-target: checks=[${checkTargets.join(",")}] expected=[${target}]`);
+}
+const proofTargets = Array.isArray(report.onboardingProof)
+  ? report.onboardingProof.map((item) => `${item.kind}:${item.id}`)
+  : [];
+if (proofTargets.length !== 1 || proofTargets[0] !== target) {
+  failures.push(`selected target proof is not single-target: onboardingProof=[${proofTargets.join(",")}] expected=[${target}]`);
 }
 if (!check) {
   failures.push(`${target} missing from report`);

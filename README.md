@@ -89,6 +89,7 @@ Inside the runtime, type normal messages to chat with the connected AI agent. Us
 /workspace
 /ai status
 /mcp status
+/live status
 /live audit
 What should I do next for this product?
 Turn the current idea into a sharper MVP direction.
@@ -273,6 +274,7 @@ rph /pm start
 /next
 /ai status
 /mcp status
+/live status
 /live audit
 /agent run --steps 5
 /docs list
@@ -597,7 +599,9 @@ helpers against a fresh product directory.
 currently configured provider/MCP target and skips entries whose env values are absent.
 `rph live ai:openai` or `rph live mcp:stitch` verifies one selected provider/connector from the
 harness CLI itself, which is the preferred way to isolate credential, quota, or target-specific
-failures before re-running the whole matrix. `rph live audit` or runtime `/live audit` writes
+failures before re-running the whole matrix. `rph live status` or runtime `/live status` reads the
+latest local proof snapshot without network calls and prints exact repair/recheck commands.
+`rph live audit` or runtime `/live audit` writes
 a sanitized `.rph/live-audit/latest.json` and `.md` proof snapshot; the default mode is evidence-only
 and exits zero even when it reports `release_readiness: no`, while `rph live audit --strict` is the
 release-gate form that exits non-zero on blockers. The package script fallback remains

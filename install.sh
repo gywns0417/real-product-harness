@@ -207,7 +207,7 @@ if [ -n "\${BASH_VERSION:-}" ]; then
     local cur="\${COMP_WORDS[COMP_CWORD]}"
     local invoked="\${COMP_WORDS[0]:-}"
     local command=""
-    local words="help version update home shell runtime init status workspace next pause resume cancel setup settings ask agent daemon chat ai mcp live doctor productize pm pd fe be qa notion docs github"
+    local words="help version update home go shell runtime init status workspace next pause resume cancel setup settings ask agent daemon chat ai mcp live proofs doctor productize pm pd fe be qa notion docs github"
     local subcommands=""
     if [ "\$invoked" = "rph" ]; then
       if [ "\$COMP_CWORD" -le 1 ]; then
@@ -219,13 +219,14 @@ if [ -n "\${BASH_VERSION:-}" ]; then
       command="\${invoked#/}"
     fi
     case "\$command" in
-      setup) subcommands="auto repair detect apply check ai mcp custom" ;;
+      setup) subcommands="auto repair detect apply check ai provider mcp custom" ;;
       doctor) subcommands="status install shell" ;;
-      agent) subcommands="status roles catalog discover search import install use activate bind bindings unbind session journal replay handoffs actions action-approvals intents confirm-intent dismiss-intent lanes run continue recover pool worker claim heartbeat ack complete dead-letter approve-action reject-action clear reset" ;;
+      agent) subcommands="status roles catalog discover search import install use activate bind bindings unbind session journal replay graph handoffs actions action-approvals intents confirm-intent dismiss-intent lanes workers run continue recover pool worker claim heartbeat ack complete dead-letter approve-action reject-action clear reset" ;;
       daemon) subcommands="status start run stop logs service install uninstall plist" ;;
       ai) subcommands="status test enable disable run" ;;
-      mcp) subcommands="status tools call test enable disable" ;;
-      live) subcommands="audit target ai:openai ai:anthropic ai:gemini mcp:stitch mcp:github mcp:notion mcp:figma" ;;
+      mcp) subcommands="status tools call canary test enable disable" ;;
+      live) subcommands="status audit repair target ai:openai ai:anthropic ai:gemini mcp:stitch mcp:github mcp:notion mcp:figma" ;;
+      proofs) subcommands="status events" ;;
       pm) subcommands="start interview draft revise approve diff rollback finalize" ;;
       pd) subcommands="start references directions landing-preview design-system pages show revise approve export finalize" ;;
       fe) subcommands="spec approve sprint-plan issue-create work pr" ;;
@@ -260,13 +261,14 @@ cat > "$completion_file" <<'EOF'
 #compdef rph /shell /chat /pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /daemon /productize /doctor /help
 _rph_subcommands() {
   case "$1" in
-    setup) print -r -- "auto repair detect apply check ai mcp custom" ;;
+    setup) print -r -- "auto repair detect apply check ai provider mcp custom" ;;
     doctor) print -r -- "status install shell" ;;
-    agent) print -r -- "status roles catalog discover search import install use activate bind bindings unbind session journal replay handoffs actions action-approvals intents confirm-intent dismiss-intent lanes run continue recover pool worker claim heartbeat ack complete dead-letter approve-action reject-action clear reset" ;;
+    agent) print -r -- "status roles catalog discover search import install use activate bind bindings unbind session journal replay graph handoffs actions action-approvals intents confirm-intent dismiss-intent lanes workers run continue recover pool worker claim heartbeat ack complete dead-letter approve-action reject-action clear reset" ;;
     daemon) print -r -- "status start run stop logs service install uninstall plist" ;;
     ai) print -r -- "status test enable disable run" ;;
-    mcp) print -r -- "status tools call test enable disable" ;;
-    live) print -r -- "audit target ai:openai ai:anthropic ai:gemini mcp:stitch mcp:github mcp:notion mcp:figma" ;;
+    mcp) print -r -- "status tools call canary test enable disable" ;;
+    live) print -r -- "status audit repair target ai:openai ai:anthropic ai:gemini mcp:stitch mcp:github mcp:notion mcp:figma" ;;
+    proofs) print -r -- "status events" ;;
     pm) print -r -- "start interview draft revise approve diff rollback finalize" ;;
     pd) print -r -- "start references directions landing-preview design-system pages show revise approve export finalize" ;;
     fe) print -r -- "spec approve sprint-plan issue-create work pr" ;;
@@ -278,19 +280,20 @@ _rph_subcommands() {
   esac
 }
 _rph() {
-  local -a commands setup_cmds doctor_cmds agent_cmds daemon_cmds ai_cmds mcp_cmds live_cmds pm_cmds pd_cmds fe_cmds be_cmds qa_cmds notion_cmds docs_cmds github_cmds subcommands
+  local -a commands setup_cmds doctor_cmds agent_cmds daemon_cmds ai_cmds mcp_cmds live_cmds proofs_cmds pm_cmds pd_cmds fe_cmds be_cmds qa_cmds notion_cmds docs_cmds github_cmds subcommands
   local invoked effective_command
   commands=(
-    help version update home shell runtime init status workspace next pause resume cancel setup settings
-    ask agent daemon chat ai mcp live doctor productize pm pd fe be qa notion docs github
+    help version update home go shell runtime init status workspace next pause resume cancel setup settings
+    ask agent daemon chat ai mcp live proofs doctor productize pm pd fe be qa notion docs github
   )
-  setup_cmds=(auto repair detect apply check ai mcp custom)
+  setup_cmds=(auto repair detect apply check ai provider mcp custom)
   doctor_cmds=(status install shell)
-  agent_cmds=(status roles catalog discover search import install use activate bind bindings unbind session journal replay handoffs actions action-approvals intents confirm-intent dismiss-intent lanes run continue recover pool worker claim heartbeat ack complete dead-letter approve-action reject-action clear reset)
+  agent_cmds=(status roles catalog discover search import install use activate bind bindings unbind session journal replay graph handoffs actions action-approvals intents confirm-intent dismiss-intent lanes workers run continue recover pool worker claim heartbeat ack complete dead-letter approve-action reject-action clear reset)
   daemon_cmds=(status start run stop logs service install uninstall plist)
   ai_cmds=(status test enable disable run)
-  mcp_cmds=(status tools call test enable disable)
-  live_cmds=(audit target ai:openai ai:anthropic ai:gemini mcp:stitch mcp:github mcp:notion mcp:figma)
+  mcp_cmds=(status tools call canary test enable disable)
+  live_cmds=(status audit repair target ai:openai ai:anthropic ai:gemini mcp:stitch mcp:github mcp:notion mcp:figma)
+  proofs_cmds=(status events)
   pm_cmds=(start interview draft revise approve diff rollback finalize)
   pd_cmds=(start references directions landing-preview design-system pages show revise approve export finalize)
   fe_cmds=(spec approve sprint-plan issue-create work pr)

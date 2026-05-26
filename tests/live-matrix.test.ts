@@ -11,7 +11,7 @@ describe("live matrix report integrity", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rph-live-matrix-provenance-"));
     try {
       const reportPath = path.join(root, "latest.json");
-      const report = createMatrixReport();
+      const report = createSingleTargetReport("ai:openai");
       delete (report as { provenance?: unknown }).provenance;
       fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
 
@@ -36,7 +36,7 @@ describe("live matrix report integrity", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rph-live-target-openai-"));
     try {
       const reportPath = path.join(root, "latest.json");
-      const report = createMatrixReport();
+      const report = createSingleTargetReport("ai:openai");
       fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
 
       const result = spawnSync(process.execPath, [
@@ -57,11 +57,63 @@ describe("live matrix report integrity", () => {
     }
   });
 
+  it("rejects a matrix report reused as single-target proof", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rph-live-target-matrix-reuse-"));
+    try {
+      const reportPath = path.join(root, "latest.json");
+      const report = createMatrixReport();
+      fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
+
+      const result = spawnSync(process.execPath, [
+        path.resolve(__dirname, "..", "scripts", "live-target.mjs"),
+        "ai:openai",
+        "--validate-report",
+        reportPath
+      ], {
+        cwd: path.resolve(__dirname, ".."),
+        encoding: "utf8"
+      });
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("selected target proof is not single-target");
+      expect(result.stderr).toContain("selectedTargets must equal [ai:openai]");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails single-target validation when extra checks are present", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rph-live-target-extra-checks-"));
+    try {
+      const reportPath = path.join(root, "latest.json");
+      const report = createMatrixReport();
+      report.provenance.selectedTargets = ["ai:openai"];
+      report.provenance.checkedTargetCount = 1;
+      fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
+
+      const result = spawnSync(process.execPath, [
+        path.resolve(__dirname, "..", "scripts", "live-target.mjs"),
+        "ai:openai",
+        "--validate-report",
+        reportPath
+      ], {
+        cwd: path.resolve(__dirname, ".."),
+        encoding: "utf8"
+      });
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("selected target proof is not single-target");
+      expect(result.stderr).toContain("checks=[ai:openai,ai:anthropic,ai:gemini,ai:local,mcp:notion,mcp:github,mcp:figma,mcp:stitch]");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("fails single live target validation when the target check failed", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rph-live-target-failed-"));
     try {
       const reportPath = path.join(root, "latest.json");
-      const report = createMatrixReport();
+      const report = createSingleTargetReport("ai:openai");
       report.checks[0] = failedAiCheck("openai", "2026-01-01T00:00:00.000Z");
       report.onboardingProof[0] = proofFromCheck(report.checks[0]);
       fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
@@ -78,6 +130,32 @@ describe("live matrix report integrity", () => {
 
       expect(result.status).toBe(1);
       expect(result.stderr).toContain("ai:openai status=failed stage=none");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails when live matrix provenance selectedTargets do not exactly match the checks array", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rph-live-matrix-selected-targets-"));
+    try {
+      const reportPath = path.join(root, "latest.json");
+      const report = createMatrixReport();
+      report.provenance.selectedTargets = ["ai:openai"];
+      fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
+
+      const result = spawnSync(process.execPath, [
+        path.resolve(__dirname, "..", "scripts", "live-matrix.mjs"),
+        "--configured-only",
+        "--validate-report",
+        reportPath
+      ], {
+        cwd: path.resolve(__dirname, ".."),
+        encoding: "utf8"
+      });
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("connection report provenance selectedTargets mismatch");
+      expect(result.stderr).toContain("selected=[ai:openai]");
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -495,6 +573,20 @@ function createMatrixReport() {
     checks,
     onboardingProof: checks.map((check) => proofFromCheck(check))
   };
+}
+
+function createSingleTargetReport(target: string) {
+  const report = createMatrixReport();
+  const [kind, id] = target.split(":");
+  const check = report.checks.find((item) => item.kind === kind && item.id === id);
+  if (!check) {
+    throw new Error(`fixture target missing: ${target}`);
+  }
+  report.checks = [check];
+  report.onboardingProof = [proofFromCheck(check)];
+  report.provenance.selectedTargets = [target];
+  report.provenance.checkedTargetCount = 1;
+  return report;
 }
 
 function passedAiCheck(id: string, checkedAt: string) {
