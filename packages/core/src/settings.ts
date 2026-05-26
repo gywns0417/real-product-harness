@@ -695,6 +695,10 @@ export function renderSetupGuide(config: HarnessConfig): string {
     "- 프로젝트 범위 비밀값은 .env에만 두고, .rph/config.json에는 상태와 env key 이름만 저장합니다.",
     "- GitHub는 GITHUB_TOKEN 대신 GITHUB_TOKEN_SOURCE=gh-cli로 기존 gh 로그인을 사용할 수 있습니다.",
     "",
+    "바로 다음 행동",
+    `- ${setupGuidePrimaryAction(config)}`,
+    `- ${setupGuidePrimaryReason(config)}`,
+    "",
     "1. AI agent 연결",
     ...Object.values(config.aiProviders).map((provider) => {
       const ready = provider.configured ? "configured" : "needs env";
@@ -734,6 +738,30 @@ export function renderSetupGuide(config: HarnessConfig): string {
     "- 산출물 생성은 rph pm draft product-definition --ai 처럼 실행합니다.",
     "- 연결 상태가 바뀌면 rph setup auto를 다시 실행하세요."
   ].join("\n");
+}
+
+function setupGuidePrimaryAction(config: HarnessConfig): string {
+  const configuredAi = configuredAiProviders(config)[0];
+  if (configuredAi) {
+    return "rph setup auto --from-env --live";
+  }
+  const candidate = config.aiProviders.openai ?? Object.values(config.aiProviders)[0];
+  if (candidate) {
+    return `rph setup auto --live --ai ${candidate.id} --mcp none`;
+  }
+  return "rph setup auto --live";
+}
+
+function setupGuidePrimaryReason(config: HarnessConfig): string {
+  const configuredAi = configuredAiProviders(config)[0];
+  if (configuredAi) {
+    return `${configuredAi.name} env가 감지됨: live 검증 후 바로 agent chat으로 넘깁니다.`;
+  }
+  const candidate = config.aiProviders.openai ?? Object.values(config.aiProviders)[0];
+  if (candidate?.missingEnv.length) {
+    return `${candidate.name} 연결에 필요한 값: ${candidate.missingEnv.join(", ")}`;
+  }
+  return "TTY에서 실행하면 setup wizard가 credential 입력부터 live 검증까지 이어갑니다.";
 }
 
 function buildAiProviderConfig(

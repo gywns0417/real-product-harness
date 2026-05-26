@@ -5246,6 +5246,50 @@ describe("Hermes-like CLI contracts", () => {
     }
   }, 10000);
 
+  it("imports and activates the Hermes operator agent pack during setup auto", async () => {
+    const uninitializedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rph-setup-auto-agent-pack-"));
+    try {
+      const result = await runCli([
+        "setup",
+        "auto",
+        "--from-env",
+        "--ai",
+        "none",
+        "--mcp",
+        "none",
+        "--agent-pack",
+        "--activate",
+        "workflow-orchestrator"
+      ], {
+        cwd: uninitializedRoot,
+        env: withoutProviderEnv()
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("4. Agent profiles");
+      expect(result.stdout).toContain("agent pack imported from setup");
+      expect(result.stdout).toContain("- workflow-orchestrator");
+      expect(result.stdout).toContain("active custom agent: workflow-orchestrator");
+      expect(result.stdout).not.toContain("ai:openai");
+      expect(result.stdout).not.toContain("mcp:notion");
+      const workflowProfile = JSON.parse(fs.readFileSync(path.join(uninitializedRoot, ".rph", "agents", "workflow-orchestrator.json"), "utf8")) as {
+        slug: string;
+        developerInstructions: string;
+      };
+      expect(workflowProfile.slug).toBe("workflow-orchestrator");
+      expect(workflowProfile.developerInstructions).toContain("Own workflow orchestration");
+      const active = JSON.parse(fs.readFileSync(path.join(uninitializedRoot, ".rph", "agents", "active.json"), "utf8")) as {
+        slug: string;
+      };
+      expect(active.slug).toBe("workflow-orchestrator");
+      const profileText = fs.readFileSync(path.join(uninitializedRoot, ".rph", "agents", "workflow-orchestrator.json"), "utf8");
+      expect(profileText).not.toContain("/Users/king/Desktop/awesome-codex-subagents");
+    } finally {
+      fs.rmSync(uninitializedRoot, { recursive: true, force: true });
+    }
+  }, 10000);
+
   it("fails setup auto --live when a selected provider cannot be verified", async () => {
     const uninitializedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rph-setup-live-fail-"));
     try {
@@ -6228,6 +6272,8 @@ describe("Hermes-like CLI contracts", () => {
       expect(result.stdout).toContain("custom-echo");
       expect(result.stdout).toContain("mcp:custom-echo trust=protocol-ready:protocol-tool-call");
       expect(result.stdout).toContain("detail=mcp.tools.call target_id=custom-echo:echo verified_by=protocol-tool-call");
+      expect(result.stdout).toContain("MCP read-only tool contracts bound: custom-echo");
+      expect(result.stdout).toContain("report refreshed after MCP contract binding");
       expect(result.stdout).toContain("setup live check passed");
       expect(result.stdout).not.toContain("custom-secret-from-wizard");
 
@@ -6239,6 +6285,18 @@ describe("Hermes-like CLI contracts", () => {
       expect(configFile).toContain("\"protocolReadiness\": \"tools/call\"");
       expect(configFile).toContain("\"toolName\": \"echo\"");
       expect(configFile).not.toContain("custom-secret-from-wizard");
+      const config = JSON.parse(configFile) as {
+        mcpPolicyRegistry?: {
+          servers: Record<string, {
+            agentReadOnlyTools?: string[];
+            allowReadOnlyToolCall?: boolean;
+            toolContracts?: Record<string, { fingerprint?: string }>;
+          }>;
+        };
+      };
+      expect(config.mcpPolicyRegistry?.servers["custom-echo"].agentReadOnlyTools).toEqual(["echo"]);
+      expect(config.mcpPolicyRegistry?.servers["custom-echo"].allowReadOnlyToolCall).toBe(true);
+      expect(config.mcpPolicyRegistry?.servers["custom-echo"].toolContracts?.echo?.fingerprint).toEqual(expect.any(String));
 
       const mcpConfigFile = fs.readFileSync(path.join(uninitializedRoot, ".mcp", "config.json"), "utf8");
       expect(mcpConfigFile).toContain("\"custom-echo\"");
@@ -6249,6 +6307,19 @@ describe("Hermes-like CLI contracts", () => {
       expect(reportFile).toContain("\"id\": \"custom-echo\"");
       expect(reportFile).toContain("\"provenStage\": \"protocol-tool-call\"");
       expect(reportFile).not.toContain("custom-secret-from-wizard");
+
+      const tools = await runCli(["mcp", "tools", "custom-echo", "--agent"], {
+        cwd: uninitializedRoot,
+        env: {
+          ...withoutProviderEnv(),
+          CUSTOM_ECHO_MCP_TOKEN: "custom-secret-from-wizard"
+        },
+        preloadFetchMcpRuntime: true
+      });
+      expect(tools.exitCode).toBe(0);
+      expect(tools.stdout).toContain("\"agentReadOnlyTools\": [");
+      expect(tools.stdout).toContain("\"echo\"");
+      expect(tools.stdout).not.toContain("custom-secret-from-wizard");
     } finally {
       fs.rmSync(uninitializedRoot, { recursive: true, force: true });
     }
@@ -6824,6 +6895,32 @@ describe("Hermes-like CLI contracts", () => {
       fs.rmSync(uninitializedRoot, { recursive: true, force: true });
     }
   });
+
+  it("does not show untrusted connection proof as verified on the operator home", async () => {
+    fs.writeFileSync(path.join(root, ".rph", "config.json"), JSON.stringify(createHarnessConfig({
+      OPENAI_API_KEY: "test-openai"
+    } as NodeJS.ProcessEnv), null, 2));
+    writeConnectionReport(root, [passedOpenAiConnectionCheck()], {
+      source: "mock",
+      runner: "test",
+      command: "mock setup proof"
+    });
+
+    const result = await runCli(["home"], {
+      cwd: root,
+      env: {
+        ...withoutProviderEnv(),
+        OPENAI_API_KEY: "test-openai"
+      }
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("RPH home");
+    expect(result.stdout).toContain("- chat lane: configured openai; run live setup to verify");
+    expect(result.stdout).toContain("- proof lane: live proof needs refresh (non-live-source)");
+    expect(result.stdout).not.toContain("- chat lane: ready via verified openai");
+  }, 10000);
 
   it("lets rph start run live setup from env as one top-level entrypoint", async () => {
     const uninitializedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rph-start-live-setup-"));

@@ -2564,6 +2564,9 @@ describe("command parser and env validation", () => {
     const guide = renderSetupGuide(config);
 
     expect(guide).toContain("RPH Setup Assistant");
+    expect(guide).toContain("바로 다음 행동");
+    expect(guide).toContain("- rph setup auto --from-env --live");
+    expect(guide).toContain("OpenAI env가 감지됨");
     expect(guide).toContain("1. AI agent 연결");
     expect(guide).toContain("2. Connector 연결");
     expect(guide).toContain("[configured] OpenAI");

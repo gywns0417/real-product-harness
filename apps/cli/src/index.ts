@@ -508,6 +508,7 @@ const HELP_TOPIC_LINES: Record<string, string[]> = {
     "  rph setup auto",
     "    Guided assistant. In TTY it can collect/apply/check end-to-end.",
     "    Also accepts --deployment <local|docker|aws|gcp|vercel|render|fly|railway|custom|later>, --stack <recommended|custom|analyze-existing>, --theme <hacker|mono|minimal>.",
+    "    Use --agent-pack to import the recommended Hermes operator TOML profiles during setup; add --activate-agent <name> to choose the active profile.",
     "    Use --customize with plain `rph setup auto` to force the custom settings questions.",
     "    GitHub can use an existing gh login without copying the gh token into project .env.",
     "  rph setup repair --live",
@@ -6970,9 +6971,10 @@ function printRuntimeHomeCard(
   const config = guidanceHarnessConfig(projectRoot);
   const initialized = isRuntimeProjectInitialized(projectRoot);
   const checks = initialized ? readLatestConnectionChecks(projectRoot) : [];
+  const trustedChecks = initialized ? readTrustedConnectionChecks(projectRoot) : [];
   const workspace = buildOperatorWorkspace(projectRoot);
-  const passedAi = checks.filter((check) => check.kind === "ai" && check.status === "passed").map((check) => check.id);
-  const passedMcp = checks.filter((check) => check.kind === "mcp" && check.status === "passed").map((check) => check.id);
+  const passedAi = trustedChecks.filter((check) => check.kind === "ai" && check.status === "passed").map((check) => check.id);
+  const passedMcp = trustedChecks.filter((check) => check.kind === "mcp" && check.status === "passed").map((check) => check.id);
   const configuredAi = configuredAiProviders(config).map((provider) => provider.id);
   const configuredMcp = configuredMcpServers(config).map((server) => server.id);
   const failed = checks.filter((check) => check.status === "failed");
@@ -7914,6 +7916,7 @@ async function runAutoSetupWizard(
     if (changedCustomSettings.length > 0) {
       console.log(`custom settings saved: ${changedCustomSettings.join(", ")}`);
     }
+    await configureSetupAgentProfiles(prompter, projectRoot, options, fromEnv);
 
     const savedKeys = saveSetupEnvValues(projectRoot, envValues);
     if (savedKeys.length === 0) {
@@ -7951,6 +7954,99 @@ async function runAutoSetupWizard(
     console.log("최종 상태");
     console.log(renderSetupGuide(syncHarnessConfigFromEnv(projectRoot)));
   });
+}
+
+async function configureSetupAgentProfiles(
+  prompter: SetupPrompter,
+  projectRoot: string,
+  options: Record<string, string | boolean>,
+  fromEnv: boolean
+): Promise<void> {
+  const explicit = setupAgentPackOption(options);
+  const scopedConnectionSetup = Boolean(optionString(options, "ai") ?? optionString(options, "provider") ?? optionString(options, "mcp"));
+  const shouldPrompt = !fromEnv && !scopedConnectionSetup && explicit === undefined;
+  if (!shouldPrompt && explicit === undefined) {
+    return;
+  }
+
+  console.log("");
+  console.log("4. Agent profiles");
+  const libraryRoot = agentLibraryRootFromOptions(options);
+  const library = discoverAgentLibraryProfiles({ libraryRoot, limit: 1 });
+  if (library.length === 0) {
+    console.log(`- skipped: Awesome Codex Subagents library not found at ${libraryRoot ?? defaultAgentLibraryRoot()}`);
+    console.log("- next: /agent discover 또는 /agent import <agent.toml>");
+    return;
+  }
+
+  const shouldImport = explicit ?? parseSetupAgentPackChoice(await askText(prompter, "Import Hermes operator agent pack", "yes"));
+  if (!shouldImport) {
+    console.log("- skipped: agent pack import");
+    return;
+  }
+
+  const requested = setupAgentPackNames(options);
+  const names = requested.length > 0 ? requested : [...HERMES_OPERATOR_AGENT_PACK];
+  const imported = [];
+  for (const name of names) {
+    try {
+      imported.push(importCustomAgentProfile(projectRoot, name, { libraryRoot }));
+    } catch (error) {
+      console.log(`- skipped ${name}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  console.log(`agent pack imported from setup: ${imported.length}/${names.length}`);
+  for (const profile of imported) {
+    const model = profile.model ? ` model=${profile.model}` : "";
+    const sandbox = profile.sandboxMode ? ` sandbox=${profile.sandboxMode}` : "";
+    console.log(`- ${profile.slug}${model}${sandbox}`);
+  }
+  if (imported.length === 0) {
+    console.log("- next: /agent discover");
+    return;
+  }
+
+  const activateName = optionString(options, "activate-agent")
+    ?? optionString(options, "active-agent")
+    ?? optionString(options, "activate")
+    ?? "workflow-orchestrator";
+  const active = activateCustomAgentProfile(projectRoot, activateName);
+  console.log(`active custom agent: ${active.name}`);
+  console.log("policy: imported agent instructions guide chat/lane execution, but RPH approval gates still win");
+}
+
+function setupAgentPackOption(options: Record<string, string | boolean>): boolean | undefined {
+  const value = options["agent-pack"] ?? options.agents ?? options["hermes-agents"];
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value === "boolean") {
+    return value;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (["0", "false", "no", "n", "off", "none", "skip", "later"].includes(normalized)) {
+    return false;
+  }
+  return true;
+}
+
+function setupAgentPackNames(options: Record<string, string | boolean>): string[] {
+  const value = optionString(options, "agent-pack") ?? optionString(options, "agents") ?? optionString(options, "hermes-agents");
+  if (!value || ["true", "yes", "y", "1", "recommended", "default", "hermes", "hermes-operator"].includes(value.trim().toLowerCase())) {
+    return [];
+  }
+  return value.split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+function parseSetupAgentPackChoice(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  if (["0", "false", "no", "n", "off", "none", "skip", "later"].includes(normalized)) {
+    return false;
+  }
+  if (["", "1", "true", "yes", "y", "on", "recommended", "default", "hermes", "hermes-operator"].includes(normalized)) {
+    return true;
+  }
+  throw new Error(`invalid agent pack choice: ${value}`);
 }
 
 async function configureSetupCustomSettings(

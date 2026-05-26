@@ -364,6 +364,9 @@ rph "Use product-manager to turn this idea into a PM draft."
 shot: workflow orchestration, coordination, task distribution, product, CLI, MCP, test, security,
 risk, and error-coordination profiles. It does not activate a profile unless you pass
 `--activate <name>`, so existing runtime behavior stays stable until the operator chooses a role.
+You can also fold this into first setup with `rph setup auto --agent-pack --activate-agent
+workflow-orchestrator`; scoped provider setup such as `--ai openai --mcp none` stays focused on
+credential onboarding unless `--agent-pack` is explicit.
 
 When the connected AI agent proposes an external live write such as `/notion setup --live`,
 `/notion sync --live`, `/github create-repo`, `/github setup-labels`,
