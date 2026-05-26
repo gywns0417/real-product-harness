@@ -7430,20 +7430,36 @@ function handleStatus(projectRoot: string, options: { commandSurface?: "rph" | "
   const config = loadHarnessConfig(projectRoot);
   const stage = WORKFLOW_STAGES[state.currentStage];
   const session = loadRuntimeSession(projectRoot);
+  const commandSurface = options.commandSurface ?? "rph";
+  const workspace = buildOperatorWorkspace(projectRoot);
   const advance = workflowAdvanceStatusFromRuntimeQueue(session, state) ?? workflowAdvanceStatus(state);
   const digestCommand = advance.canAdvance
     ? advance.nextCommand ?? (advance.nextStage ? recommendedCommand(state, advance.nextStage) : undefined)
     : commandForWorkflowStage(state.currentStage) ?? advance.nextCommand ?? (advance.nextStage ? recommendedCommand(state, advance.nextStage) : undefined);
-  const renderedNext = digestCommand
-    ? renderSurfaceNextCommand(options.commandSurface ?? "rph", digestCommand)
-    : "none";
+  const operatorControlTakesPrecedence = ["approval", "runtime"].includes(workspace.nextAction.kind);
+  const statusCommand = operatorControlTakesPrecedence
+    ? workspace.nextAction.command
+    : digestCommand ?? workspace.nextAction.command;
+  const statusReason = operatorControlTakesPrecedence
+    ? workspace.nextAction.reason
+    : advance.reasons[0] ?? workspace.nextAction.reason;
+  const statusBlockedBy = operatorControlTakesPrecedence
+    ? workspace.nextAction.blockedBy
+    : uniqueStatusStrings([...advance.reasons, ...workspace.nextAction.blockedBy]);
+  const renderedNext = renderSurfaceNextCommand(commandSurface, statusCommand);
   console.log("RPH status");
   console.log(`- current: ${stage.id} (${stage.name}) owner=${stage.ownerAgent}`);
   console.log(`- next: ${renderedNext}`);
   console.log(`- blocked: ${advance.canAdvance ? "none" : advance.reasons[0] ?? "unknown"}`);
+  if (statusBlockedBy.length > 0) {
+    console.log(`- blocked by: ${statusBlockedBy.slice(0, 3).join("; ")}`);
+  }
+  console.log(`- do now: ${renderedNext}`);
+  console.log(`- why: ${statusReason}`);
   console.log("- chat: rph shell (plain text goes to the connected AI agent)");
   console.log("- one-shot chat: rph ask \"다음에 뭐 하면 돼?\"");
-  console.log("- control: /status, /next, /agent status");
+  console.log(`- control: ${renderedNext}`);
+  console.log("- inspect: rph workspace");
   for (const line of runtimeDigestLines(projectRoot, session)) {
     console.log(line);
   }
@@ -7512,6 +7528,10 @@ function handleStatus(projectRoot: string, options: { commandSurface?: "rph" | "
 
 function renderSurfaceNextCommand(surface: CommandSurface, command: string): string {
   return runtimeSurfaceCommand(surface, command.replace(/^\//, ""));
+}
+
+function uniqueStatusStrings(values: string[]): string[] {
+  return [...new Set(values.filter(Boolean))];
 }
 
 function sanitizeRuntimeHomeText(text: string): string {
@@ -8307,6 +8327,10 @@ async function printSetupFirstSuccessExperience(
   console.log(`- first product workflow: ${runtimeSurfaceCommand(commandSurface, "pm start")}`);
   console.log(`- setup proof: ${runtimeSurfaceCommand(commandSurface, "status")} shows the verified connection state`);
   printSetupAskExamples(aiChecks, mcpChecks);
+  const operatorProofCompleted = await printSetupOperatorProofTurn(projectRoot, passed, options);
+  if (operatorProofCompleted) {
+    return;
+  }
 
   const demoProvider = aiChecks[0]?.id;
   if (!demoProvider) {
@@ -8345,6 +8369,82 @@ async function printSetupFirstSuccessExperience(
     console.log(`- skipped: ${error instanceof Error ? error.message : String(error)}`);
     console.log(`- setup remains ready; continue with ${runtimeSurfaceCommand(commandSurface, "pm start")} or plain text chat`);
   }
+}
+
+async function printSetupOperatorProofTurn(
+  projectRoot: string,
+  checks: ConnectionCheck[],
+  options: Record<string, string | boolean>
+): Promise<boolean> {
+  const commandSurface = commandSurfaceFromOptions(options);
+  const aiCheck = checks.find((check) => check.kind === "ai" && check.status === "passed");
+  if (!aiCheck) {
+    return false;
+  }
+  const snapshot = buildOperatorWorkspace(projectRoot);
+  const mcpCheck = checks.find((check) =>
+    check.kind === "mcp"
+    && check.status === "passed"
+    && (check.firstActionProof?.action === "mcp.tools.call" || check.firstActionProof?.action === "mcp.tools.list")
+  );
+  console.log("");
+  console.log("Operator proof turn");
+  console.log(`- stage: ${snapshot.workflow.currentStage} (${snapshot.workflow.currentStageName})`);
+  console.log(`- active AI: ${aiCheck.id}`);
+  console.log(`- next action: ${renderSurfaceNextCommand(commandSurface, snapshot.nextAction.command)}`);
+  if (!mcpCheck) {
+    console.log("- connector proof: pending (no verified protocol MCP read-only tool)");
+    return false;
+  }
+
+  const providerId = parseAiProviderId(aiCheck.id);
+  const serverId = parseMcpServerId(mcpCheck.id);
+  const sessionId = resolveRuntimeSessionId(projectRoot);
+  const config = syncHarnessConfigFromEnv(projectRoot);
+  const userInput = setupOperatorProofInput(serverId);
+  try {
+    const turnResult = await executeAgentTurn({
+      projectRoot,
+      sessionId,
+      userInput,
+      history: loadRuntimeChatHistory(projectRoot, sessionId),
+      config,
+      maxOutputTokens: 900
+    });
+    writeAiChatTurnRecord(projectRoot, createAiChatTurnRecord(
+      turnResult.result,
+      sessionId,
+      userInput,
+      turnResult.prompt,
+      turnResult.turn.id
+    ));
+    recordRuntimeSessionEvent(projectRoot, sessionId, {
+      kind: "chat",
+      message: `setup operator proof turn completed with ${providerId}`,
+      ok: true
+    });
+    const proofCall = turnResult.turn.toolCalls.find((call) =>
+      call.status === "succeeded" && (call.name === "mcp.tools.call" || call.name === "mcp.tools.list")
+    );
+    printAiProviderFallbackNotice(turnResult.result);
+    console.log("First demo turn");
+    console.log("- mode: operator proof");
+    console.log(`- provider: ${providerId}`);
+    console.log(`- connector proof: ${proofCall ? `${serverId} ${proofCall.name} ${summarizeValue(proofCall.observation)}` : "pending (agent did not call a connector tool)"}`);
+    console.log(firstLine(turnResult.text));
+    return Boolean(proofCall);
+  } catch (error) {
+    console.log(`- connector proof: skipped (${error instanceof Error ? error.message : String(error)})`);
+    console.log(`- recovery: ${runtimeSurfaceCommand(commandSurface, "doctor --live")}`);
+    return false;
+  }
+}
+
+function setupOperatorProofInput(serverId: McpServerId): string {
+  if (serverId === "custom-echo") {
+    return "operator proof: custom-echo echo 도구로 acceptance-mcp-ok를 확인하고 현재 workflow status와 next action을 요약해줘";
+  }
+  return "operator proof: protocol MCP list_projects tool을 호출해서 acceptance-mcp-ok를 확인하고 현재 workflow status와 next action을 요약해줘";
 }
 
 function setupFirstDemoPrompt(checks: ConnectionCheck[], commandSurface: CommandSurface): string {

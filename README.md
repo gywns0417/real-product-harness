@@ -143,10 +143,12 @@ setup CTA: `rph setup auto --live`. In an interactive terminal, plain `rph start
 wizard directly, writes the fresh project state, and hands off to the connected chat/runtime after
 successful verification. Setup flags such as `--from-env --live --ai openai --mcp none` keep the same
 setup-first path for automation.
-After live verification, setup also prints a `Capability summary` and runs one non-mutating
-`First demo turn` through the verified AI provider. That first turn is kept separate from connection
-proof: if the demo response fails, setup stays successful and the next action remains normal chat or
-`/pm start`.
+After live verification, setup also prints a `Capability summary` and an `Operator proof turn`.
+When a verified protocol MCP connector exposes a read-only tool, that proof turn runs through the
+connected agent, calls the connector tool, records the tool trace in the runtime session, and prints
+the current stage plus the exact next action. If no read-only connector is available, setup falls back
+to an AI-only `First demo turn` and says connector proof is still pending. Demo/proof failure is
+non-fatal: setup stays successful and the recovery command is `rph doctor --live`.
 
 Plain text is chat. Command-like natural phrases such as `계속 진행해`, `현재 상태 보여줘`,
 or `continue` are sent to the connected AI agent instead of being silently promoted into local workflow

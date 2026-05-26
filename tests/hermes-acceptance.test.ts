@@ -5118,10 +5118,13 @@ describe("Hermes-like CLI contracts", () => {
     expect(statusBefore.stdout).toContain("RPH status");
     expect(statusBefore.stdout).toContain("- current: PM_PRODUCT_DEFINITION_REVIEW");
     expect(statusBefore.stdout).toContain("- next: rph docs approve product-definition");
+    expect(statusBefore.stdout).toContain("- do now: rph docs approve product-definition");
+    expect(statusBefore.stdout).toContain("- why: required approval missing: product-definition");
     expect(statusBefore.stdout).toContain("- blocked: required approval missing: product-definition");
     expect(statusBefore.stdout).toContain("- chat: rph shell (plain text goes to the connected AI agent)");
     expect(statusBefore.stdout).toContain("- one-shot chat: rph ask \"다음에 뭐 하면 돼?\"");
-    expect(statusBefore.stdout).toContain("- control: /status, /next, /agent status");
+    expect(statusBefore.stdout).toContain("- control: rph docs approve product-definition");
+    expect(statusBefore.stdout).toContain("- inspect: rph workspace");
     expect(statusBefore.stdout).toContain("현재 단계: PM_PRODUCT_DEFINITION_REVIEW");
     expect(statusBefore.stdout).toContain("승인 필요: product-definition");
 
@@ -5946,6 +5949,26 @@ describe("Hermes-like CLI contracts", () => {
       expect(setup.stdout).toContain("ai:openai trust=protocol-ready:protocol-tool-call");
       expect(setup.stdout).toContain("mcp:stitch trust=protocol-ready:protocol-tool-call");
       expect(setup.stdout).toContain("First action verified");
+      expect(setup.stdout).toContain("Operator proof turn");
+      expect(setup.stdout).toContain("- stage: SETUP");
+      expect(setup.stdout).toContain("- active AI: openai");
+      expect(setup.stdout).toContain("- connector proof: stitch mcp.tools.call");
+      expect(setup.stdout).toContain("acceptance-mcp-ok");
+      expect(setup.stdout).toContain("- next action: rph pm interview");
+      const setupManifest = JSON.parse(fs.readFileSync(path.join(uninitializedRoot, ".rph", "runtime", "current-session.json"), "utf8")) as {
+        activeTurn?: {
+          status: string;
+          toolCalls: Array<{ name: string; status: string; observation?: string }>;
+        };
+        toolTrace?: Array<{ name: string; status: string; observation?: string }>;
+      };
+      expect(setupManifest.activeTurn?.status).toBe("complete");
+      expect(setupManifest.activeTurn?.toolCalls.find((call) => call.name === "mcp.tools.call")).toMatchObject({
+        name: "mcp.tools.call",
+        status: "succeeded",
+        observation: expect.stringContaining("acceptance-mcp-ok")
+      });
+      expect(setupManifest.toolTrace?.some((call) => call.name === "mcp.tools.call" && call.status === "succeeded")).toBe(true);
 
       const ask = await runCli(["ask", "protocol MCP list_projects tool을 호출해서 acceptance-mcp-ok를 확인해줘"], {
         cwd: uninitializedRoot,
@@ -7046,6 +7069,179 @@ describe("Hermes-like CLI contracts", () => {
     expect(result.stdout).toContain("- control: rph doctor --live");
     expect(result.stdout).not.toContain("test-openai");
     expect(result.stdout).not.toContain("- chat lane: ready via verified openai");
+  }, 10000);
+
+  it("keeps home and workspace json aligned for a blocked operator state", async () => {
+    fs.writeFileSync(path.join(root, ".rph", "config.json"), JSON.stringify(createHarnessConfig({
+      OPENAI_API_KEY: "test-openai"
+    } as NodeJS.ProcessEnv), null, 2));
+    writeConnectionReport(root, [passedOpenAiConnectionCheck()], {
+      source: "mock",
+      runner: "test",
+      command: "mock setup proof"
+    });
+    const approval = recordRuntimeActionApproval(root, {
+      sessionId: "session-home-workspace-json",
+      command: "/github create-issue --agent FE --title \"Ship cockpit\" --live",
+      reason: "agent proposed live GitHub issue"
+    });
+    saveRuntimeSession(root, {
+      ...createRuntimeSessionManifest(root, "session-home-workspace-json", "2026-05-26T00:00:00.000Z"),
+      status: "blocked",
+      blocker: "waiting for external approval",
+      pendingExternalActionId: approval.id
+    });
+
+    const workspace = await runCli(["workspace", "--json"], {
+      cwd: root,
+      env: {
+        ...withoutProviderEnv(),
+        OPENAI_API_KEY: "test-openai"
+      }
+    });
+    const homeJson = await runCli(["home", "--json"], {
+      cwd: root,
+      env: {
+        ...withoutProviderEnv(),
+        OPENAI_API_KEY: "test-openai"
+      }
+    });
+    const home = await runCli(["home"], {
+      cwd: root,
+      env: {
+        ...withoutProviderEnv(),
+        OPENAI_API_KEY: "test-openai"
+      }
+    });
+    const status = await runCli(["status"], {
+      cwd: root,
+      env: {
+        ...withoutProviderEnv(),
+        OPENAI_API_KEY: "test-openai"
+      }
+    });
+
+    expect(workspace.exitCode).toBe(0);
+    expect(homeJson.exitCode).toBe(0);
+    expect(home.exitCode).toBe(0);
+    expect(status.exitCode).toBe(0);
+    const workspacePayload = JSON.parse(workspace.stdout) as {
+      schemaVersion: string;
+      project: { name: string };
+      readiness: { liveVerification: string; lastKnownPassedChecks: string[] };
+      approvals: { externalActions: Array<{ id: string; status: string; command: string }> };
+      nextAction: { kind: string; command: string; safeToAutoRun: boolean; blockedBy: string[] };
+      blockers: string[];
+    };
+    const homePayload = JSON.parse(homeJson.stdout) as typeof workspacePayload;
+
+    expect(homePayload.schemaVersion).toBe(workspacePayload.schemaVersion);
+    expect(homePayload.project.name).toBe(workspacePayload.project.name);
+    expect(homePayload.readiness).toEqual(workspacePayload.readiness);
+    expect(homePayload.approvals.externalActions).toEqual(workspacePayload.approvals.externalActions);
+    expect(homePayload.nextAction).toEqual(workspacePayload.nextAction);
+    expect(workspacePayload.readiness.liveVerification).toBe("not-current");
+    expect(workspacePayload.readiness.lastKnownPassedChecks).toContain("ai:openai");
+    expect(workspacePayload.nextAction).toMatchObject({
+      kind: "approval",
+      command: `/agent approve-action ${approval.id}`,
+      safeToAutoRun: false
+    });
+    expect(workspacePayload.nextAction.blockedBy).toContain(`external action pending: ${approval.id}`);
+    expect(workspacePayload.blockers).toEqual(expect.arrayContaining([
+      "waiting for external approval",
+      "live verification not current: non-live-source",
+      `external action pending: ${approval.id}`
+    ]));
+    expect(home.stdout).toContain("- proof lane: live proof needs refresh (non-live-source)");
+    expect(home.stdout).toContain("- approval lane: 1 external action(s) waiting; next /github create-issue --agent FE --title Ship cockpit --live");
+    expect(home.stdout).toContain(`- do now: rph agent approve-action ${approval.id}`);
+    expect(home.stdout).toContain(`- control: rph agent approve-action ${approval.id}`);
+    expect(status.stdout).toContain(`- next: rph agent approve-action ${approval.id}`);
+    expect(status.stdout).toContain(`- blocked by: external action pending: ${approval.id}`);
+    expect(status.stdout).toContain(`- do now: rph agent approve-action ${approval.id}`);
+    expect(status.stdout).toContain("- why: external live write requires explicit approval");
+    expect(status.stdout).toContain(`- control: rph agent approve-action ${approval.id}`);
+  }, 10000);
+
+  it("keeps home and workspace json aligned on blocked runtime recovery when live proof is current", async () => {
+    fs.writeFileSync(path.join(root, ".rph", "config.json"), JSON.stringify(createHarnessConfig({
+      OPENAI_API_KEY: "test-openai"
+    } as NodeJS.ProcessEnv), null, 2));
+    writeConnectionReport(root, [passedOpenAiConnectionCheck("2026-05-26T00:00:00.000Z")], {
+      source: "live",
+      runner: "test",
+      command: "test fixture",
+      projectInitialized: true,
+      selectedTargets: ["ai:openai"],
+      checkedTargetCount: 1
+    });
+    saveRuntimeSession(root, {
+      ...createRuntimeSessionManifest(root, "session-home-runtime-blocked", "2026-05-26T00:00:00.000Z"),
+      status: "blocked",
+      blocker: "pending lane result integration blocked: pm-lane-1"
+    });
+
+    const workspace = await runCli(["workspace", "--json"], {
+      cwd: root,
+      env: {
+        ...withoutProviderEnv(),
+        OPENAI_API_KEY: "test-openai"
+      }
+    });
+    const homeJson = await runCli(["home", "--json"], {
+      cwd: root,
+      env: {
+        ...withoutProviderEnv(),
+        OPENAI_API_KEY: "test-openai"
+      }
+    });
+    const home = await runCli(["home"], {
+      cwd: root,
+      env: {
+        ...withoutProviderEnv(),
+        OPENAI_API_KEY: "test-openai"
+      }
+    });
+    const status = await runCli(["status"], {
+      cwd: root,
+      env: {
+        ...withoutProviderEnv(),
+        OPENAI_API_KEY: "test-openai"
+      }
+    });
+
+    expect(workspace.exitCode).toBe(0);
+    expect(homeJson.exitCode).toBe(0);
+    expect(home.exitCode).toBe(0);
+    expect(status.exitCode).toBe(0);
+    const workspacePayload = JSON.parse(workspace.stdout) as {
+      readiness: { liveVerification: string };
+      nextAction: { kind: string; command: string; safeToAutoRun: boolean; reason: string; blockedBy: string[] };
+      blockers: string[];
+    };
+    const homePayload = JSON.parse(homeJson.stdout) as typeof workspacePayload;
+
+    expect(homePayload.nextAction).toEqual(workspacePayload.nextAction);
+    expect(workspacePayload.readiness.liveVerification).toBe("current");
+    expect(workspacePayload.nextAction).toMatchObject({
+      kind: "runtime",
+      command: "/agent recover --steps 1",
+      safeToAutoRun: true,
+      reason: "runtime session is blocked"
+    });
+    expect(workspacePayload.nextAction.blockedBy).toEqual(expect.arrayContaining([
+      "pending lane result integration blocked: pm-lane-1"
+    ]));
+    expect(workspacePayload.blockers).toContain("pending lane result integration blocked: pm-lane-1");
+    expect(home.stdout).toContain("- proof lane: live proof current");
+    expect(home.stdout).toContain("- blocked by: pending lane result integration blocked: pm-lane-1");
+    expect(home.stdout).toContain("- do now: rph agent recover --steps 1");
+    expect(home.stdout).toContain("- why: runtime session is blocked");
+    expect(home.stdout).not.toContain("rph doctor --live");
+    expect(status.stdout).toContain("- next: rph agent recover --steps 1");
+    expect(status.stdout).toContain("- why: runtime session is blocked");
+    expect(workspacePayload.nextAction.command).not.toBe("/doctor --live");
   }, 10000);
 
   it("lets rph start run live setup from env as one top-level entrypoint", async () => {
