@@ -165,6 +165,8 @@ const pnpmLog = readFile(path.join(logDir, "pnpm.log"));
 
 assertIncludes(wrapper, `exec node "${installDir}/dist/apps/cli/src/index.js" "$@"`, "wrapper");
 assertIncludes(initFile, `export PATH="${binDir}:$PATH"`, "init.sh");
+assertIncludes(initFile, "function /shell() { command rph shell \"$@\"; }", "init.sh");
+assertIncludes(initFile, "function /chat() { command rph /chat \"$@\"; }", "init.sh");
 assertIncludes(initFile, "function /pm() { command rph /pm \"$@\"; }", "init.sh");
 assertIncludes(initFile, "function /agent() { command rph /agent \"$@\"; }", "init.sh");
 assertIncludes(initFile, "function /ai() { command rph /ai \"$@\"; }", "init.sh");
@@ -177,14 +179,14 @@ assertIncludes(initFile, "function /doctor() { command rph /doctor \"$@\"; }", "
 assertIncludes(initFile, "function /github() { command rph /github \"$@\"; }", "init.sh");
 assertIncludes(initFile, "function /notion() { command rph /notion \"$@\"; }", "init.sh");
 assertIncludes(initFile, "function /daemon() { command rph /daemon \"$@\"; }", "init.sh");
-assertIncludes(initFile, "_rph_slash_helpers=\"/pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /daemon /productize /doctor /help\"", "init.sh");
+assertIncludes(initFile, "_rph_slash_helpers=\"/shell /chat /pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /daemon /productize /doctor /help\"", "init.sh");
 assertIncludes(initFile, 'if [ "${RPH_ENABLE_SLASH_COMMANDS:-1}" = "1" ]; then', "init.sh");
 assertIncludes(initFile, 'complete -F _rph_bash_complete "$helper" 2>/dev/null || true', "init.sh");
 assertIncludes(initFile, `source "${completionPath}"`, "init.sh");
-assertIncludes(completion, "#compdef rph /pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /daemon /productize /doctor /help", "completion.zsh");
+assertIncludes(completion, "#compdef rph /shell /chat /pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /daemon /productize /doctor /help", "completion.zsh");
 assertIncludes(completion, "help version update home shell runtime init status workspace next pause resume cancel setup settings", "completion.zsh");
 assertIncludes(completion, "_rph_subcommands()", "completion.zsh");
-assertIncludes(completion, "compdef _rph rph /pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /daemon /productize /doctor /help", "completion.zsh");
+assertIncludes(completion, "compdef _rph rph /shell /chat /pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /daemon /productize /doctor /help", "completion.zsh");
 assertIncludes(completion, "setup_cmds=(auto repair detect apply check ai mcp custom)", "completion.zsh");
 assertIncludes(completion, "doctor_cmds=(status install shell)", "completion.zsh");
 assertIncludes(completion, "agent_cmds=(status roles catalog discover search import install use activate bind bindings unbind session journal replay handoffs actions action-approvals intents confirm-intent dismiss-intent lanes run continue recover pool worker claim heartbeat ack complete dead-letter approve-action reject-action clear reset)", "completion.zsh");
@@ -293,7 +295,7 @@ function assertJsonSchema(text, label) {
 }
 
 function assertShellHelper(initFile, envValues, shellName) {
-  const result = spawnSync(shellName, ["-lc", `source "${initFile}"; /agent status; /daemon status; /status; /workspace --json; /pm start`], {
+  const result = spawnSync(shellName, ["-lc", `source "${initFile}"; /shell --help; /chat "hello"; /agent status; /daemon status; /status; /workspace --json; /pm start`], {
     env: {
       ...envValues,
       PATH: `${binDir}:${envValues.PATH}`
@@ -303,6 +305,8 @@ function assertShellHelper(initFile, envValues, shellName) {
   if (result.status !== 0) {
     fail(`${shellName} slash helper execution failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
   }
+  assertIncludes(result.stdout, "rph stub args=shell --help", `${shellName} slash helper`);
+  assertIncludes(result.stdout, "rph stub args=/chat hello", `${shellName} slash helper`);
   assertIncludes(result.stdout, "rph stub args=/agent status", `${shellName} slash helper`);
   assertIncludes(result.stdout, "rph stub args=/daemon status", `${shellName} slash helper`);
   assertIncludes(result.stdout, "rph stub args=/status", `${shellName} slash helper`);

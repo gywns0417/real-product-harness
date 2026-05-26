@@ -5305,6 +5305,38 @@ describe("Hermes-like CLI contracts", () => {
     }
   });
 
+  it("defaults setup auto MCP onboarding to the built-in protocol proof path", async () => {
+    const uninitializedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rph-setup-default-mcp-"));
+    try {
+      const result = await runCli(["setup", "auto", "--from-env", "--ai", "none"], {
+        cwd: uninitializedRoot,
+        env: {
+          ...withoutProviderEnv(),
+          STITCH_API_KEY: "stitch-default-key"
+        },
+        preloadFetchMcpRuntime: true
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("MCP 연결: Stitch");
+      expect(result.stdout).toContain("- STITCH_API_KEY: 이미 설정됨");
+      expect(result.stdout).not.toContain("MCP 연결: Notion");
+      expect(result.stdout).not.toContain("MCP 연결: GitHub");
+      const envFile = fs.readFileSync(path.join(uninitializedRoot, ".env"), "utf8");
+      expect(envFile).toContain("STITCH_API_KEY=stitch-default-key");
+      const config = JSON.parse(fs.readFileSync(path.join(uninitializedRoot, ".rph", "config.json"), "utf8")) as {
+        mcpServers: Record<string, { configured?: boolean; enabled?: boolean }>;
+      };
+      expect(config.mcpServers.stitch).toMatchObject({
+        configured: true,
+        enabled: true
+      });
+    } finally {
+      fs.rmSync(uninitializedRoot, { recursive: true, force: true });
+    }
+  });
+
   it("applies custom setup settings during setup auto without widening connection scope", async () => {
     const uninitializedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rph-setup-auto-custom-"));
     try {

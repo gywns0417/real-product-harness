@@ -856,7 +856,7 @@ function setupGuidePrimaryAction(config: HarnessConfig): string {
   }
   const candidate = config.aiProviders.openai ?? Object.values(config.aiProviders)[0];
   if (candidate) {
-    return `rph setup auto --live --ai ${candidate.id} --mcp none`;
+    return `rph setup auto --live --ai ${candidate.id} --mcp stitch`;
   }
   return "rph setup auto --live";
 }

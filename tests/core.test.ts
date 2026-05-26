@@ -1290,6 +1290,8 @@ describe("command parser and env validation", () => {
       const initPath = path.join(configDir, "init.sh");
       fs.writeFileSync(initPath, [
         `export PATH="${binDir}:$PATH"`,
+        "function /shell() { command rph shell \"$@\"; }",
+        "function /chat() { command rph /chat \"$@\"; }",
         "function /setup() { command rph /setup \"$@\"; }",
         "function /pm() { command rph /pm \"$@\"; }",
         "function /status() { command rph /status \"$@\"; }",
@@ -1317,6 +1319,8 @@ describe("command parser and env validation", () => {
         const installOutput = logSpy.mock.calls.flat().join("\n");
         expect(installOutput).toContain("RPH install doctor");
         expect(installOutput).toContain("current_install=yes");
+        expect(installOutput).toContain("shell_helper=yes");
+        expect(installOutput).toContain("chat_helper=yes");
         expect(installOutput).toContain("daemon_helper=yes");
         expect(installOutput).toContain("- workspace-json=ok");
         expect(installOutput).toContain("- status-json=ok");
@@ -1326,6 +1330,8 @@ describe("command parser and env validation", () => {
         expect(await runParsedCommand(freshRoot, parseCli(["doctor", "shell"]))).toBe(true);
         const shellOutput = logSpy.mock.calls.flat().join("\n");
         expect(shellOutput).toContain("RPH shell doctor");
+        expect(shellOutput).toContain("/shell=yes");
+        expect(shellOutput).toContain("/chat=yes");
         expect(shellOutput).toContain("/workspace=yes");
         expect(shellOutput).toContain("/daemon=yes");
         expect(shellOutput).toContain("- zsh-workspace-json=ok");
@@ -4450,6 +4456,73 @@ describe("command parser and env validation", () => {
     expect(binding.boundTools).toEqual([]);
     expect(binding.autoSelectedTools).toEqual([]);
     expect(binding.skippedReason).toContain("multiple read-only no-arg tools");
+    expect(synced.mcpPolicyRegistry.servers["custom-echo"]).toMatchObject({
+      kind: "protocol-tools-list",
+      agentReadOnlyTools: [],
+      allowReadOnlyToolCall: false
+    });
+  });
+
+  it("does not auto-bind a read-only MCP tool when the schema requires arguments", async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { id?: string; method?: string };
+      if (body.method === "initialize") {
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: body.id,
+          result: {
+            protocolVersion: "2025-06-18",
+            capabilities: { tools: {} },
+            serverInfo: { name: "custom-echo", version: "test" }
+          }
+        }), {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            "Mcp-Session-Id": "session-required-arg-auto-bind"
+          }
+        });
+      }
+      if (body.method === "notifications/initialized") {
+        return new Response(null, { status: 202 });
+      }
+      if (body.method === "tools/list") {
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: body.id,
+          result: {
+            tools: [{
+              name: "echo",
+              inputSchema: {
+                type: "object",
+                properties: { text: { type: "string" } },
+                required: ["text"]
+              },
+              annotations: { readOnlyHint: true, destructiveHint: false }
+            }]
+          }
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      throw new Error(`unexpected MCP method: ${body.method}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const env = {
+      CUSTOM_ECHO_MCP_TOKEN: "custom-secret"
+    } as NodeJS.ProcessEnv;
+    addCustomProtocolMcpServer(root, {
+      id: "custom-echo",
+      name: "Custom Echo",
+      url: "https://mcp.example.test/echo",
+      authMode: "bearer",
+      authEnvKey: "CUSTOM_ECHO_MCP_TOKEN"
+    }, env);
+
+    const binding = await autoBindMcpReadOnlyToolContracts(root, "custom-echo", env);
+    const synced = readHarnessConfigSnapshot(root, env);
+
+    expect(binding.boundTools).toEqual([]);
+    expect(binding.autoSelectedTools).toEqual([]);
+    expect(binding.skippedReason).toBe("no read-only no-arg tool was advertised by tools/list");
     expect(synced.mcpPolicyRegistry.servers["custom-echo"]).toMatchObject({
       kind: "protocol-tools-list",
       agentReadOnlyTools: [],

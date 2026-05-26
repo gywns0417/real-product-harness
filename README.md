@@ -18,11 +18,15 @@ Safe top-level entry paths:
 
 ```bash
 rph
+/shell
+rph "다음에 뭐 하면 돼?"
+/chat "다음에 뭐 하면 돼?"
 rph pm start
 rph /pm start
 ```
 
-If shell integration is loaded, the same PM kickoff is available directly as `/pm start`.
+If shell integration is loaded, the same runtime and one-shot chat paths are available directly as
+`/shell` and `/chat "..."`; PM kickoff is available as `/pm start`.
 
 ## Install
 
@@ -141,8 +145,11 @@ Turn the current idea into a sharper MVP direction.
 In a fresh non-interactive folder, `rph start` shows the runtime opener plus a chat-first home and one
 setup CTA: `rph setup auto --live`. In an interactive terminal, plain `rph start` launches the setup
 wizard directly, writes the fresh project state, and hands off to the connected chat/runtime after
-successful verification. Setup flags such as `--from-env --live --ai openai --mcp none` keep the same
-setup-first path for automation.
+successful verification. Setup defaults the MCP prompt to `stitch`, the built-in protocol MCP path
+that can prove `tools/list` and a read-only `tools/call`; REST adapters such as Notion/GitHub/Figma
+remain selectable but prove adapter credentials rather than an agent-usable MCP tool session. Setup
+flags such as `--from-env --live --ai openai --mcp stitch` keep the same setup-first path for
+automation, while `--mcp none` stays available for AI-only onboarding.
 After live verification, setup also prints a `Capability summary` and an `Operator proof turn`.
 When a verified protocol MCP connector exposes a read-only tool, that proof turn runs through the
 connected agent, calls the connector tool, records the tool trace in the runtime session, and prints
@@ -173,8 +180,10 @@ For one-shot operation, use natural language or a slash command from the shell:
 
 ```bash
 rph start
+/shell
 rph hello
 rph "다음에 뭐 하면 돼?"
+/chat "다음에 뭐 하면 돼?"
 rph "이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: AI 회의록을 액션아이템과 담당자 추적으로 바꾸는 SaaS"
 rph ask "이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: AI 회의록을 액션아이템과 담당자 추적으로 바꾸는 SaaS"
 rph ask "이 계획 실행해줘"
@@ -233,9 +242,9 @@ uses its active node as the stage authority and keeps `stageQueue` as a compatib
 ## Shell Slash Helpers
 
 For a Hermes-like top shell, the installer exposes the main control-plane domains as shell
-functions that dispatch to `rph`: `/pm`, `/pd`, `/setup`, `/status`, `/workspace`, `/next`, `/qa`, `/fe`,
-`/be`, `/ai`, `/mcp`, `/live`, `/docs`, `/github`, `/notion`, `/agent`, `/daemon`, `/productize`,
-`/doctor`, and `/help`.
+functions that dispatch to `rph`: `/shell`, `/chat`, `/pm`, `/pd`, `/setup`, `/status`, `/workspace`,
+`/next`, `/qa`, `/fe`, `/be`, `/ai`, `/mcp`, `/live`, `/docs`, `/github`, `/notion`, `/agent`,
+`/daemon`, `/productize`, `/doctor`, and `/help`.
 
 They are enabled by default when the installed init file is sourced. Enable them in the current
 shell without reopening the terminal:

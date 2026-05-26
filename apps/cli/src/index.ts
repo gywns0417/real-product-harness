@@ -360,8 +360,10 @@ const HELP_TOPIC_LINES: Record<string, string[]> = {
     "Runtime shell",
     "",
     "  rph",
+    "  /shell",
     "  rph shell",
     "  rph runtime",
+    "  /chat \"다음에 뭐 하면 돼?\"",
     "  rph pm start",
     "  rph /pm start",
     "",
@@ -398,9 +400,11 @@ const HELP_TOPIC_LINES: Record<string, string[]> = {
     "",
     "Talk:",
     "  rph",
+    "  /shell",
     "  rph \"what should I do next?\"",
     "  rph 다음에 뭐 하면 돼?",
     "  rph ask <message>",
+    "  /chat <message>",
     "",
     "Reviewable plan cards:",
     "  rph ask \"이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: ...\"",
@@ -8714,7 +8718,8 @@ async function chooseMcpServers(
   const defaultServers = defaultMcpServers(config, projectRoot);
   console.log("");
   console.log("2. MCP 선택");
-  console.log("  notion, github, figma, stitch 또는 추가된 custom id를 쉼표로 입력하세요.");
+  console.log("  stitch = built-in protocol MCP tool proof; notion/github/figma = REST adapter credential checks.");
+  console.log("  stitch, notion, github, figma 또는 추가된 custom id를 쉼표로 입력하세요.");
   console.log("  built-in 선택 뒤 custom protocol MCP 서버를 이 wizard 안에서 바로 추가할 수 있습니다.");
   console.log("  all = 전체, none = 건너뛰기");
   const answer = await askText(prompter, "MCP", defaultServers.join(","));
@@ -9085,8 +9090,8 @@ function defaultMcpServers(config: ReturnType<typeof loadHarnessConfig>, project
   if (configured.length > 0) {
     return configured;
   }
-  const discovered = discoverGitHubEnv(projectRoot);
-  return discovered.GITHUB_OWNER && discovered.GITHUB_REPO ? ["github", "notion"] : ["notion", "github"];
+  void projectRoot;
+  return ["stitch"];
 }
 
 function parseMcpSelection(value: string, config?: ReturnType<typeof loadHarnessConfig>): McpServerId[] {
@@ -9987,6 +9992,8 @@ function printInstallDoctor(projectRoot: string): void {
   const completionExists = fs.existsSync(layout.completionPath);
   const profile = detectShellProfile(layout);
   const profileText = profile.path ? readTextIfExists(profile.path) : null;
+  const hasShellHelper = Boolean(initText?.includes("function /shell()"));
+  const hasChatHelper = Boolean(initText?.includes("function /chat()"));
   const hasWorkspaceHelper = Boolean(initText?.includes("function /workspace()"));
   const hasDaemonHelper = Boolean(initText?.includes("function /daemon()"));
   const workspaceJson = runInstalledJsonProbe(layout.wrapperPath, ["workspace", "--json"], projectRoot);
@@ -9998,6 +10005,8 @@ function printInstallDoctor(projectRoot: string): void {
     wrapperTargetExists ? null : "installed wrapper target is missing",
     wrapperTarget ? (wrapperTargetInInstallDir ? null : "installed wrapper target is outside install dir") : null,
     fs.existsSync(layout.initPath) ? null : "shell init file is missing",
+    hasShellHelper ? null : "shell init is missing /shell helper",
+    hasChatHelper ? null : "shell init is missing /chat helper",
     hasWorkspaceHelper ? null : "shell init is missing /workspace helper",
     hasDaemonHelper ? null : "shell init is missing /daemon helper",
     completionExists ? null : "zsh completion file is missing",
@@ -10013,7 +10022,7 @@ function printInstallDoctor(projectRoot: string): void {
   }
   console.log(`- wrapper: ${layout.wrapperPath} present=${yesNo(fs.existsSync(layout.wrapperPath))}`);
   console.log(`- wrapper_target: ${wrapperTarget ?? "unknown"} present=${yesNo(wrapperTargetExists)} current_install=${yesNo(wrapperTargetInInstallDir)}`);
-  console.log(`- shell_init: ${layout.initPath} present=${yesNo(fs.existsSync(layout.initPath))} workspace_helper=${yesNo(hasWorkspaceHelper)} daemon_helper=${yesNo(hasDaemonHelper)}`);
+  console.log(`- shell_init: ${layout.initPath} present=${yesNo(fs.existsSync(layout.initPath))} shell_helper=${yesNo(hasShellHelper)} chat_helper=${yesNo(hasChatHelper)} workspace_helper=${yesNo(hasWorkspaceHelper)} daemon_helper=${yesNo(hasDaemonHelper)}`);
   console.log(`- completion: ${layout.completionPath} present=${yesNo(completionExists)}`);
   console.log(`- profile_hook: ${profile.path ?? "unknown"} present=${yesNo(Boolean(profileText?.includes("# >>> rph init >>>")))}`);
   console.log(`- workspace-json=${workspaceJson.ok ? "ok" : `failed reason=${workspaceJson.reason}`}`);
@@ -10044,7 +10053,7 @@ function printShellDoctor(projectRoot = process.cwd()): void {
   const commandShadowed = Boolean(resolvedRph && path.resolve(resolvedRph) !== path.resolve(layout.wrapperPath));
   const zshProbe = runShellHelperJsonProbe(layout.initPath, "zsh", projectRoot);
   const bashProbe = runShellHelperJsonProbe(layout.initPath, "bash", projectRoot);
-  const requiredShellHelpers = ["/setup", "/pm", "/status", "/workspace", "/agent", "/daemon"];
+  const requiredShellHelpers = ["/shell", "/chat", "/setup", "/pm", "/status", "/workspace", "/agent", "/daemon"];
   const missingShellHelpers = requiredShellHelpers.filter((helper) => !initText?.includes(`function ${helper}()`));
   const helpers = requiredShellHelpers
     .map((helper) => `${helper}=${yesNo(Boolean(initText?.includes(`function ${helper}()`)))}`)
@@ -12724,8 +12733,12 @@ function renderGeneralHelp(): string {
     "    Show the chat-first operator home without entering the runtime.",
     "  rph shell",
     "    Explicit name for the same conversation runtime.",
+    "  /shell",
+    "    Installed shell helper for entering the same runtime without spelling `rph shell`.",
     "  rph \"what should I do next?\"",
     "    Send a one-shot chat message to the current runtime session.",
+    "  /chat \"what should I do next?\"",
+    "    Installed shell helper for one-shot chat through the connected AI agent.",
     "  rph 다음에 뭐 하면 돼?",
     "    Unknown bare text is treated as conversation, not as a failed command.",
     "",
@@ -12759,6 +12772,8 @@ function renderGeneralHelp(): string {
     "  rph /productize <product idea>",
     "",
     "Installed shell slash helpers:",
+    "  /shell",
+    "  /chat \"다음에 뭐 하면 돼?\"",
     "  /setup auto --live",
     "  /pm start",
     "  /agent run --steps 5",

@@ -63,6 +63,8 @@ const completion = fs.readFileSync(completionPath, "utf8");
 const profile = fs.readFileSync(profilePath, "utf8");
 assertIncludes(wrapper, `exec node "${installDir}/dist/apps/cli/src/index.js" "$@"`, "wrapper");
 assertIncludes(init, `export PATH="${binDir}:$PATH"`, "init.sh");
+assertIncludes(init, "function /shell() { command rph shell \"$@\"; }", "init.sh");
+assertIncludes(init, "function /chat() { command rph /chat \"$@\"; }", "init.sh");
 assertIncludes(init, "function /pm() { command rph /pm \"$@\"; }", "init.sh");
 assertIncludes(init, "function /agent() { command rph /agent \"$@\"; }", "init.sh");
 assertIncludes(init, "function /daemon() { command rph /daemon \"$@\"; }", "init.sh");
@@ -70,13 +72,13 @@ assertIncludes(init, "function /setup() { command rph /setup \"$@\"; }", "init.s
 assertIncludes(init, "function /home() { command rph /home \"$@\"; }", "init.sh");
 assertIncludes(init, "function /workspace() { command rph /workspace \"$@\"; }", "init.sh");
 assertIncludes(init, "function /live() { command rph /live \"$@\"; }", "init.sh");
-assertIncludes(init, "_rph_slash_helpers=\"/pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /daemon /productize /doctor /help\"", "init.sh");
+assertIncludes(init, "_rph_slash_helpers=\"/shell /chat /pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /daemon /productize /doctor /help\"", "init.sh");
 assertIncludes(init, 'if [ "${RPH_ENABLE_SLASH_COMMANDS:-1}" = "1" ]; then', "init.sh");
 assertIncludes(init, 'complete -F _rph_bash_complete "$helper" 2>/dev/null || true', "init.sh");
-assertIncludes(completion, "#compdef rph /pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /daemon /productize /doctor /help", "completion.zsh");
+assertIncludes(completion, "#compdef rph /shell /chat /pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /daemon /productize /doctor /help", "completion.zsh");
 assertIncludes(completion, "help version update home shell runtime init status workspace next pause resume cancel setup settings", "completion.zsh");
 assertIncludes(completion, "_rph_subcommands()", "completion.zsh");
-assertIncludes(completion, "compdef _rph rph /pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /daemon /productize /doctor /help", "completion.zsh");
+assertIncludes(completion, "compdef _rph rph /shell /chat /pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /daemon /productize /doctor /help", "completion.zsh");
 assertIncludes(completion, "setup_cmds=(auto repair detect apply check ai mcp custom)", "completion.zsh");
 assertIncludes(completion, "doctor_cmds=(status install shell)", "completion.zsh");
 assertIncludes(completion, "agent_cmds=(status roles catalog discover search import install use activate bind bindings unbind session journal replay handoffs actions action-approvals intents confirm-intent dismiss-intent lanes run continue recover pool worker claim heartbeat ack complete dead-letter approve-action reject-action clear reset)", "completion.zsh");
@@ -125,10 +127,20 @@ const topLevelChat = runChecked(wrapperPath, ["chat", "두 번째 인사도 해�
   label: "installed top-level chat alias"
 });
 assertIncludes(topLevelChat.stdout, "OK", "installed top-level chat alias");
+const topLevelShellChat = runChecked("zsh", ["-lc", `source "${initPath}"; cd "${topLevelProjectDir}"; /chat "세 번째 인사도 해줘"`], {
+  cwd: tmpRoot,
+  env: {
+    ...topLevelEnv,
+    PATH: `${binDir}:${topLevelEnv.PATH}`
+  },
+  label: "installed shell chat helper"
+});
+assertIncludes(topLevelShellChat.stdout, "OK", "installed shell chat helper");
 const capturedTopLevelCalls = fs.readFileSync(topLevelCapture, "utf8");
 assertIncludes(capturedTopLevelCalls, "Reply with exactly OK.", "installed top-level captured smoke");
 assertIncludes(capturedTopLevelCalls, "연결 확인 인사해줘", "installed top-level captured first chat");
 assertIncludes(capturedTopLevelCalls, "두 번째 인사도 해줘", "installed top-level captured second chat");
+assertIncludes(capturedTopLevelCalls, "세 번째 인사도 해줘", "installed shell captured third chat");
 
 const pmStart = runChecked(wrapperPath, ["/pm", "start", "--project-name", "Install E2E Product"], {
   cwd: projectDir,
