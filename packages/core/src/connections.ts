@@ -93,12 +93,15 @@ async function testMcpConnectionRaw(
 
   const protocolReadiness = server.protocolReadiness ?? contract.protocolReadiness;
   if (server.kind === "mcp-server" && (protocolReadiness === "tools/list" || protocolReadiness === "tools/call")) {
-    return testProtocolMcpReadiness(serverId, server.name, server.envKeys, protocolMcpEndpoint(serverId, server.url ?? contract.url), {
-      ...contract,
-      protocolReadiness,
-      protocolToolCallProbe: server.protocolToolCallProbe ?? contract.protocolToolCallProbe,
-      agentReadOnlyTools: server.agentReadOnlyTools ?? contract.agentReadOnlyTools ?? []
-    }, env);
+    const readinessContract = server.custom
+      ? {
+          ...contract,
+          protocolReadiness,
+          protocolToolCallProbe: server.protocolToolCallProbe ?? contract.protocolToolCallProbe,
+          agentReadOnlyTools: server.agentReadOnlyTools ?? contract.agentReadOnlyTools ?? []
+        }
+      : contract;
+    return testProtocolMcpReadiness(serverId, server.name, server.envKeys, protocolMcpEndpoint(serverId, server.url ?? contract.url), readinessContract, env);
   }
 
   switch (serverId) {
@@ -580,9 +583,9 @@ function mcpContractForRuntimeServer(server: HarnessConfig["mcpServers"][string]
     return {
       ...builtIn,
       auth: server.authMode ? { mode: server.authMode, envKey: server.authEnvKey } : builtIn.auth,
-      protocolReadiness: server.protocolReadiness ?? builtIn.protocolReadiness,
-      protocolToolCallProbe: server.protocolToolCallProbe ?? builtIn.protocolToolCallProbe,
-      agentReadOnlyTools: server.agentReadOnlyTools ?? builtIn.agentReadOnlyTools,
+      protocolReadiness: builtIn.protocolReadiness ?? server.protocolReadiness,
+      protocolToolCallProbe: builtIn.protocolToolCallProbe ?? server.protocolToolCallProbe,
+      agentReadOnlyTools: builtIn.agentReadOnlyTools ?? server.agentReadOnlyTools,
       protocolReason: server.protocolReason ?? builtIn.protocolReason,
       url: server.url ?? builtIn.url
     };

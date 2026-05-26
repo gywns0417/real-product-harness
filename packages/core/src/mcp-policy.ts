@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { MCP_SERVER_CONTRACTS, type McpServerContract } from "../../integrations/src/mcp";
 import type { McpHttpSession, McpToolSummary } from "./mcp-client";
 import {
   ConnectionCheck,
@@ -312,16 +313,20 @@ function deriveMcpServerPolicy(
   server: McpServerRuntimeConfig,
   inherited?: Partial<McpServerPolicy>
 ): McpServerPolicy {
+  const builtIn = server.custom ? undefined : (MCP_SERVER_CONTRACTS as Record<string, McpServerContract>)[server.id];
   const protocolReadiness = server.custom
     ? (inherited?.protocolReadiness ?? server.protocolReadiness ?? (server.kind === "mcp-server" ? "tools/list" : "not-applicable"))
-    : (server.protocolReadiness ?? inherited?.protocolReadiness ?? (server.kind === "mcp-server" ? "tools/list" : "not-applicable"));
-  const protocolToolCallProbe = inherited?.protocolToolCallProbe ?? server.protocolToolCallProbe;
+    : (builtIn?.protocolReadiness ?? server.protocolReadiness ?? inherited?.protocolReadiness ?? (server.kind === "mcp-server" ? "tools/list" : "not-applicable"));
+  const protocolToolCallProbe = server.custom
+    ? inherited?.protocolToolCallProbe ?? server.protocolToolCallProbe
+    : builtIn?.protocolToolCallProbe ?? server.protocolToolCallProbe ?? inherited?.protocolToolCallProbe;
   const agentReadOnlyTools = normalizeMcpToolNames(
-    inherited && "agentReadOnlyTools" in inherited
+    server.custom && inherited && "agentReadOnlyTools" in inherited
       ? inherited.agentReadOnlyTools ?? []
-      : server.agentReadOnlyTools ?? []
+      : builtIn?.agentReadOnlyTools ?? server.agentReadOnlyTools ?? []
   );
-  const toolContracts = normalizeMcpToolContracts(inherited?.toolContracts);
+  const normalizedContracts = normalizeMcpToolContracts(inherited?.toolContracts);
+  const toolContracts = Object.fromEntries(Object.entries(normalizedContracts).filter(([toolName]) => agentReadOnlyTools.includes(toolName)));
   const kind = server.kind !== "mcp-server"
     ? "rest-adapter-readback"
     : protocolReadiness === "tools/call"

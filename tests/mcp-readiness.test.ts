@@ -419,6 +419,85 @@ describe("MCP readiness", () => {
     });
   });
 
+  it("uses the current built-in Stitch read-only probe over stale persisted echo config", async () => {
+    const calledTools: string[] = [];
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        method?: string;
+        id?: string;
+        params?: { name?: string };
+      };
+      if (body.method === "initialize") {
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: body.id,
+          result: {
+            protocolVersion: "2025-06-18",
+            capabilities: { tools: {} },
+            serverInfo: { name: "stitch", version: "test" }
+          }
+        }), {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            "Mcp-Session-Id": "session-stale-stitch"
+          }
+        });
+      }
+      if (body.method === "notifications/initialized") {
+        return new Response(null, { status: 202 });
+      }
+      if (body.method === "tools/list") {
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: body.id,
+          result: {
+            tools: [{
+              name: "list_projects",
+              annotations: { readOnlyHint: true, destructiveHint: false }
+            }]
+          }
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (body.method === "tools/call") {
+        calledTools.push(String(body.params?.name ?? ""));
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: body.id,
+          result: {
+            content: [{ type: "text", text: "projects:list" }],
+            structuredContent: { projects: [] },
+            isError: false
+          }
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      throw new Error(`unexpected method ${body.method ?? "missing"}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const env = { STITCH_API_KEY: "stitch-secret" } as NodeJS.ProcessEnv;
+    const config = createHarnessConfig(env);
+    config.mcpServers.stitch.protocolToolCallProbe = {
+      toolName: "echo",
+      arguments: { text: "old" }
+    };
+    config.mcpServers.stitch.agentReadOnlyTools = [];
+    config.mcpPolicyRegistry!.servers.stitch.protocolToolCallProbe = {
+      toolName: "echo",
+      arguments: { text: "old" }
+    };
+    config.mcpPolicyRegistry!.servers.stitch.agentReadOnlyTools = [];
+
+    const result = await testMcpConnection(config, "stitch", env);
+
+    expect(result.status).toBe("passed");
+    expect(result.firstActionProof?.targetId).toBe("stitch:list_projects");
+    expect(result.policy).toMatchObject({
+      state: "proved-now",
+      agentReadOnlyTools: ["list_projects"]
+    });
+    expect(calledTools).toEqual(["list_projects"]);
+  });
+
   it("sends Authorization bearer auth for custom protocol MCP readiness checks", async () => {
     const methods: string[] = [];
     const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
