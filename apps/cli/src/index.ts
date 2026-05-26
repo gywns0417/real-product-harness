@@ -4215,6 +4215,10 @@ async function handleRuntimeAgentInput(
   chatHistory: AiChatMessage[],
   userInput: string
 ): Promise<boolean> {
+  const confirmedIntent = await tryConfirmRuntimeIntentFromPlainChat(projectRoot, sessionId, userInput);
+  if (confirmedIntent !== null) {
+    return confirmedIntent;
+  }
   const plan = createRuntimePlan(projectRoot, userInput);
   if (isRuntimeProjectInitialized(projectRoot)) {
     recordRuntimeSessionEvent(projectRoot, sessionId, {
@@ -4223,6 +4227,26 @@ async function handleRuntimeAgentInput(
       ok: true,
       plan
     });
+  }
+  if (plan.kind === "start-workflow" && plan.command) {
+    const intent = isRuntimeProjectInitialized(projectRoot)
+      ? recordRuntimePlanIntent(projectRoot, sessionId, plan)
+      : null;
+    printExecutionPlanCard(userInput, plan, {
+      confirmCommand: intent
+        ? `/agent confirm-intent ${intent.id}`
+        : `rph ask --execute ${quoteShellArg(userInput)}`,
+      dismissCommand: intent ? `/agent dismiss-intent ${intent.id}` : undefined
+    });
+    console.log(`suggested control: ${plan.command}`);
+    console.log("run explicitly: type the suggested control when you want to execute it.");
+    if (intent) {
+      rememberPresentedIntent(projectRoot, sessionId, plan, intent);
+      console.log(`intent saved: ${intent.id}`);
+      console.log(`confirm: /agent confirm-intent ${intent.id}`);
+      console.log(`dismiss: /agent dismiss-intent ${intent.id}`);
+    }
+    return true;
   }
   if (plan.kind !== "chat" && plan.command) {
     console.log(`suggested control: ${plan.command}`);
@@ -4279,7 +4303,28 @@ function naturalRuntimeIntent(input: string): NaturalRuntimeIntent | null {
       "pick up where we left off",
       "continue last session"
     ],
-    approve: ["승인", "승인해", "승인해줘", "허용", "허용해", "approve", "approve it", "confirm", "allow"],
+    approve: [
+      "승인",
+      "승인해",
+      "승인해줘",
+      "허용",
+      "허용해",
+      "이 계획 실행",
+      "이 계획 실행해",
+      "이 계획 실행해줘",
+      "이 계획으로 실행",
+      "이 계획으로 실행해",
+      "이 계획으로 실행해줘",
+      "실행해",
+      "실행해줘",
+      "approve",
+      "approve it",
+      "confirm",
+      "confirm intent",
+      "execute plan",
+      "run plan",
+      "allow"
+    ],
     reject: ["거절", "거절해", "거절해줘", "반려", "반려해", "reject", "reject it", "deny", "decline"],
     status: [
       "현재 상태",
@@ -4383,8 +4428,17 @@ async function handleAsk(
   if (!prompt.trim()) {
     throw new Error("usage: rph ask <message> 또는 rph ask --prompt <message>");
   }
-  const plan = createRuntimePlan(projectRoot, prompt);
   const sessionId = resolveRuntimeSessionId(projectRoot);
+  const confirmedIntent = await tryConfirmRuntimeIntentFromPlainChat(projectRoot, sessionId, prompt, "user");
+  if (confirmedIntent !== null) {
+    return;
+  }
+  if (shouldSkipConfirmQuestionForPendingIntent(projectRoot, sessionId, prompt)) {
+    console.log("plain confirm skipped: question-shaped confirmation text does not execute runtime intents.");
+    console.log("confirm exactly: confirm 또는 이 계획 실행해줘");
+    return;
+  }
+  const plan = createRuntimePlan(projectRoot, prompt);
   const executePlannedCommand = optionBool(options, "execute");
   if (plan.kind === "blocked") {
     console.log(`[blocked] ${plan.reason}`);
@@ -4405,6 +4459,26 @@ async function handleAsk(
         concurrency: loopConcurrency(options),
         laneMaxToolCalls: parseOptionalNonNegativeInt(optionString(options, "max-tool-calls"))
       });
+    }
+    return;
+  }
+  if (plan.kind === "start-workflow" && plan.command) {
+    const intent = isRuntimeProjectInitialized(projectRoot)
+      ? recordRuntimePlanIntent(projectRoot, sessionId, plan)
+      : null;
+    printExecutionPlanCard(prompt, plan, {
+      confirmCommand: intent
+        ? `/agent confirm-intent ${intent.id}`
+        : `rph ask --execute ${quoteShellArg(prompt)}`,
+      dismissCommand: intent ? `/agent dismiss-intent ${intent.id}` : undefined
+    });
+    console.log(`suggested control: ${plan.command}`);
+    console.log("run explicitly: type the suggested control or pass --execute.");
+    if (intent) {
+      rememberPresentedIntent(projectRoot, sessionId, plan, intent);
+      console.log(`intent saved: ${intent.id}`);
+      console.log(`confirm: /agent confirm-intent ${intent.id}`);
+      console.log(`dismiss: /agent dismiss-intent ${intent.id}`);
     }
     return;
   }
@@ -4449,6 +4523,216 @@ async function handleAsk(
       concurrency: loopConcurrency(options),
       laneMaxToolCalls: parseOptionalNonNegativeInt(optionString(options, "max-tool-calls"))
     });
+  }
+}
+
+async function tryConfirmRuntimeIntentFromPlainChat(
+  projectRoot: string,
+  sessionId: string,
+  userInput: string,
+  confirmedBy = "runtime-chat"
+): Promise<boolean | null> {
+  if (naturalRuntimeIntent(userInput) !== "approve") {
+    return null;
+  }
+  if (!isRuntimeProjectInitialized(projectRoot)) {
+    return null;
+  }
+  const session = loadRuntimeSession(projectRoot);
+  const pendingExternal = session?.pendingExternalActionId
+    ? loadRuntimeActionApprovals(projectRoot).find((record) => record.id === session.pendingExternalActionId)
+    : undefined;
+  if (pendingExternal?.status === "pending") {
+    console.log(`external action requires explicit approval: /agent approve-action ${pendingExternal.id}`);
+    console.log("plain confirm did not approve a live external write.");
+    return false;
+  }
+  const pendingIntents = loadRuntimeIntents(projectRoot)
+    .filter((record) => record.status === "pending" && record.sessionId === sessionId)
+    .reverse();
+  if (pendingIntents.length === 0) {
+    return null;
+  }
+  const presentedId = presentedIntentId(session);
+  if (!presentedId) {
+    console.log("intent blocked: no presented runtime intent to confirm");
+    console.log("inspect: /agent intents");
+    return false;
+  }
+  const presented = pendingIntents.find((record) => record.id === presentedId);
+  if (!presented) {
+    console.log(`intent blocked: presented runtime intent is no longer pending: ${presentedId}`);
+    console.log("inspect: /agent intents");
+    return false;
+  }
+  const confirmable = !runtimeIntentConfirmBlocker(projectRoot, presented) ? presented : undefined;
+  if (!confirmable) {
+    const blocker = runtimeIntentConfirmBlocker(projectRoot, presented) ?? "no confirmable runtime intent";
+    console.log(`intent blocked: ${blocker}`);
+    console.log("inspect: /agent intents");
+    return false;
+  }
+  recordRuntimeSessionEvent(projectRoot, sessionId, {
+    kind: "command",
+    message: `plain confirm: /agent confirm-intent ${confirmable.id}`,
+    ok: true
+  });
+  console.log(`plain confirm: /agent confirm-intent ${confirmable.id}`);
+  return confirmAndRunRuntimeIntent(projectRoot, confirmable.id, {
+    confirmedBy
+  });
+}
+
+function rememberPresentedIntent(
+  projectRoot: string,
+  sessionId: string,
+  _plan: RuntimeActionPlan,
+  intent: RuntimeIntentRecord
+): void {
+  updateRuntimeSession(projectRoot, sessionId, {
+    lastPresentedIntentId: intent.id,
+    note: `runtime intent presented: ${intent.id}`
+  });
+}
+
+function rememberPresentedProposalIntent(
+  projectRoot: string,
+  sessionId: string,
+  _proposal: { command: string; safeToAutoRun: boolean; reason?: string },
+  intent: RuntimeIntentRecord
+): void {
+  updateRuntimeSession(projectRoot, sessionId, {
+    lastPresentedIntentId: intent.id,
+    note: `runtime intent presented: ${intent.id}`
+  });
+}
+
+function presentedIntentId(session: RuntimeSessionManifest | null): string | undefined {
+  if (session?.lastPresentedIntentId) {
+    return session.lastPresentedIntentId;
+  }
+  const reason = session?.pendingAction?.reason;
+  return reason?.match(/(?:^|;\s*)intent=(intent_[A-Za-z0-9_-]+)/)?.[1];
+}
+
+function shouldSkipConfirmQuestionForPendingIntent(projectRoot: string, sessionId: string, userInput: string): boolean {
+  if (!/[?？]/.test(userInput) || !isRuntimeProjectInitialized(projectRoot)) {
+    return false;
+  }
+  const withoutQuestion = userInput.replace(/[?？]+/g, "").trim();
+  if (naturalRuntimeIntent(withoutQuestion) !== "approve") {
+    return false;
+  }
+  return loadRuntimeIntents(projectRoot).some((record) => record.status === "pending" && record.sessionId === sessionId);
+}
+
+type RuntimeActionPlan = ReturnType<typeof createRuntimePlan>;
+
+function recordRuntimePlanIntent(
+  projectRoot: string,
+  sessionId: string,
+  plan: RuntimeActionPlan
+): RuntimeIntentRecord | null {
+  if (!plan.command) {
+    return null;
+  }
+  const readOnly = isReadOnlyAgentCommand(plan.command);
+  const localMutation = isLocalAgentCommand(plan.command);
+  const mutableExternalAction = classifyMutableAgentCommand(plan.command);
+  const userApprovalAction = isUserApprovalAgentCommand(plan.command);
+  return recordRuntimeIntent(projectRoot, {
+    sessionId,
+    command: plan.command,
+    risk: runtimeIntentRisk(readOnly, localMutation, Boolean(mutableExternalAction), userApprovalAction),
+    safeToAutoRun: plan.safeToAutoRun,
+    ...createRuntimeIntentContext(projectRoot, sessionId),
+    reason: plan.reason,
+    message: "runtime plan created from plain chat"
+  });
+}
+
+function printExecutionPlanCard(
+  userInput: string,
+  plan: RuntimeActionPlan,
+  options: {
+    confirmCommand?: string;
+    dismissCommand?: string;
+  } = {}
+): void {
+  console.log("Execution plan");
+  console.log(`goal: ${executionPlanGoal(userInput, plan)}`);
+  if (plan.workflowTarget) {
+    console.log(`workflow: ${plan.workflowTarget}`);
+  }
+  console.log(`confidence: ${Math.round(plan.confidence * 100)}%`);
+  console.log("steps:");
+  plan.steps.forEach((step, index) => {
+    console.log(`${index + 1}. ${step}`);
+  });
+  if (plan.command) {
+    console.log(`next safe step: ${plan.command}`);
+  }
+  console.log(`approvals: ${executionPlanApprovalNote(plan.command)}`);
+  if (options.confirmCommand) {
+    console.log(`confirm: ${options.confirmCommand}`);
+  }
+  if (options.dismissCommand) {
+    console.log(`dismiss: ${options.dismissCommand}`);
+  }
+}
+
+function printAgentProposalPlanCard(
+  proposal: { command: string; safeToAutoRun: boolean; reason?: string },
+  intent: RuntimeIntentRecord
+): void {
+  console.log("Execution plan");
+  console.log(`goal: Review and run the agent's suggested control only after confirmation.`);
+  console.log("steps:");
+  console.log(`1. Review suggested command: ${proposal.command}`);
+  console.log("2. Confirm the saved runtime intent if this is the intended next action.");
+  if (intent.risk === "external_live_write") {
+    console.log("3. Complete the separate external action approval before any live write runs.");
+  }
+  console.log(`next safe step: ${proposal.command}`);
+  console.log(`approvals: ${executionPlanApprovalNote(proposal.command, intent.risk)}`);
+  console.log(`confirm: /agent confirm-intent ${intent.id}`);
+  console.log(`dismiss: /agent dismiss-intent ${intent.id}`);
+}
+
+function executionPlanGoal(userInput: string, plan: RuntimeActionPlan): string {
+  if (plan.workflowTarget === "productize") {
+    return `Create a reviewable product execution package for: ${extractProductIdea(userInput)}`;
+  }
+  if (plan.workflowTarget === "setup") {
+    return "Connect AI and MCP providers until the harness can prove readiness.";
+  }
+  if (plan.command) {
+    return `Prepare the next explicit control: ${plan.command}`;
+  }
+  return plan.reason;
+}
+
+function executionPlanApprovalNote(command: string | undefined, knownRisk?: RuntimeIntentRecord["risk"]): string {
+  if (!command) {
+    return "none yet";
+  }
+  const risk = knownRisk ?? runtimeIntentRisk(
+    isReadOnlyAgentCommand(command),
+    isLocalAgentCommand(command),
+    Boolean(classifyMutableAgentCommand(command)),
+    isUserApprovalAgentCommand(command)
+  );
+  switch (risk) {
+    case "read_only":
+      return "none; read-only inspection";
+    case "local_mutation":
+      return "no external write; confirmation runs one local workflow step";
+    case "external_live_write":
+      return "external live write remains gated by /agent approve-action";
+    case "user_approval":
+      return "requires direct user approval command; plain confirm will not bypass it";
+    case "unsupported":
+      return "unsupported command; must be run explicitly";
   }
 }
 
@@ -5393,6 +5677,8 @@ async function runAgentCommandProposal(
       })
     : null;
   if (runtimeIntent) {
+    rememberPresentedProposalIntent(projectRoot, runtimeIntentSessionId, proposal, runtimeIntent);
+    printAgentProposalPlanCard(proposal, runtimeIntent);
     console.log(`intent saved: ${runtimeIntent.id}`);
     console.log(`confirm: /agent confirm-intent ${runtimeIntent.id}`);
     console.log(`dismiss: /agent dismiss-intent ${runtimeIntent.id}`);

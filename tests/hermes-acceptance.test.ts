@@ -913,6 +913,88 @@ describe("Hermes-like runtime acceptance", () => {
     expect(approvals.find((record) => record.id === "action-recovery")?.status).toBe("pending");
   }, 10000);
 
+  it("routes exact confirm phrasing through the runtime intent confirmation path", async () => {
+    writeOpenAiEnv(root, "https://example.invalid/v1");
+
+    const proposed = await runCli(["shell"], {
+      cwd: root,
+      stdinChunks: [
+        { text: "상태를 확인해줘\n", delayMs: 0 },
+        { text: "/exit\n", delayMs: 50 }
+      ],
+      preloadFetchCommandProposal: true
+    });
+
+    expect(proposed.exitCode).toBe(0);
+    const intentPath = path.join(root, ".rph", "runtime", "intents.json");
+    const intents = JSON.parse(fs.readFileSync(intentPath, "utf8")) as Array<{
+      id: string;
+      status: string;
+      command: string;
+    }>;
+    expect(intents).toHaveLength(1);
+    expect(intents[0]).toMatchObject({
+      status: "pending",
+      command: "/status"
+    });
+    const session = JSON.parse(fs.readFileSync(path.join(root, ".rph", "runtime", "current-session.json"), "utf8")) as {
+      lastPresentedIntentId?: string | null;
+    };
+    expect(session.lastPresentedIntentId).toBe(intents[0].id);
+
+    const confirmed = await runCli(["ask", "--execute", "confirm"], {
+      cwd: root,
+      env: withoutProviderEnv()
+    });
+
+    expect(confirmed.exitCode).toBe(0);
+    expect(confirmed.stdout).toContain(`intent confirmed: ${intents[0].id}`);
+    expect(confirmed.stdout).toContain("agent action: /status");
+    expect(confirmed.stdout).toContain("RPH status");
+    const updated = JSON.parse(fs.readFileSync(intentPath, "utf8")) as Array<{
+      status: string;
+      confirmedBy?: string;
+    }>;
+    expect(updated[0].status).toBe("confirmed");
+    expect(updated[0].confirmedBy).toBe("user");
+    const state = JSON.parse(fs.readFileSync(path.join(root, ".rph", "state.json"), "utf8")) as {
+      currentStage: string;
+    };
+    expect(state.currentStage).toBe("SETUP");
+  }, 10000);
+
+  it("does not treat question-shaped confirm text as runtime intent confirmation", async () => {
+    writeOpenAiEnv(root, "https://example.invalid/v1");
+
+    const proposed = await runCli(["shell"], {
+      cwd: root,
+      stdinChunks: [
+        { text: "상태를 확인해줘\n", delayMs: 0 },
+        { text: "/exit\n", delayMs: 50 }
+      ],
+      preloadFetchCommandProposal: true
+    });
+
+    expect(proposed.exitCode).toBe(0);
+    const intentPath = path.join(root, ".rph", "runtime", "intents.json");
+    const intents = JSON.parse(fs.readFileSync(intentPath, "utf8")) as Array<{
+      id: string;
+      status: string;
+    }>;
+    expect(intents[0].status).toBe("pending");
+
+    const result = await runCli(["ask", "--execute", "confirm?"], {
+      cwd: root,
+      env: withoutProviderEnv()
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).not.toContain(`intent confirmed: ${intents[0].id}`);
+    expect(result.stdout).not.toContain("agent action: /status");
+    const updated = JSON.parse(fs.readFileSync(intentPath, "utf8")) as Array<{ status: string }>;
+    expect(updated[0].status).toBe("pending");
+  }, 10000);
+
   it("does not treat negated approval text as external action approval", async () => {
     writeRecoveryBriefFixture(root);
 
@@ -1060,7 +1142,8 @@ describe("Hermes-like runtime acceptance", () => {
 
     const result = await runCli(["ask", "--execute", "승인해"], { cwd: root, env: withoutProviderEnv() });
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("AI agent is not connected yet.");
+    expect(result.stdout).toContain("external action requires explicit approval: /agent approve-action action-recovery");
+    expect(result.stdout).toContain("plain confirm did not approve a live external write.");
     expect(result.stdout).not.toContain("external action approved");
 
     const approvals = JSON.parse(fs.readFileSync(path.join(root, ".rph", "runtime", "action-approvals.json"), "utf8")) as Array<{ id: string; status: string }>;
@@ -4513,10 +4596,78 @@ describe("Hermes-like CLI contracts", () => {
     const result = await runCli(["ask", "이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: AI 회의록 액션아이템 SaaS"], { cwd: root });
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("suggested control: /productize");
-    expect(result.stdout).toContain("run explicitly: type the suggested control or pass --execute.");
+    expect(result.stdout).toContain("Execution plan");
+    expect(result.stdout).toMatch(/goal:/i);
+    expect(result.stdout).toMatch(/steps?:/i);
+    expect(result.stdout).toMatch(/approvals?:/i);
+    expect(result.stdout).toContain("confirm:");
+    expect(result.stdout).not.toContain("agent action: /productize");
+    expect(result.stdout).not.toContain("Productize golden path complete");
+    const intentPath = path.join(root, ".rph", "runtime", "intents.json");
+    expect(fs.existsSync(intentPath)).toBe(true);
+    const intents = JSON.parse(fs.readFileSync(intentPath, "utf8")) as Array<{
+      id: string;
+      status: string;
+      command: string;
+    }>;
+    expect(intents).toHaveLength(1);
+    expect(intents[0]).toMatchObject({
+      status: "pending"
+    });
+    expect(intents[0].command).toContain("/productize");
+    expect(result.stdout).toContain(`confirm: /agent confirm-intent ${intents[0].id}`);
     expect(fs.existsSync(path.join(root, ".rph", "golden-path", "latest.json"))).toBe(false);
   });
+
+  it("keeps plain runtime chat productize requests at the execution-plan gate", async () => {
+    writeOpenAiEnv(root, "https://example.invalid/v1");
+
+    const result = await runCli(["shell"], {
+      cwd: root,
+      stdinChunks: [
+        { text: "이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: AI 회의록 액션아이템 SaaS\n", delayMs: 0 },
+        { text: "/exit\n", delayMs: 50 }
+      ]
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("Execution plan");
+    expect(result.stdout).toMatch(/goal:/i);
+    expect(result.stdout).toMatch(/steps?:/i);
+    expect(result.stdout).toMatch(/approvals?:/i);
+    expect(result.stdout).toContain("confirm:");
+    expect(result.stdout).not.toContain("agent action: /productize");
+    expect(result.stdout).not.toContain("Productize golden path complete");
+    expect(fs.existsSync(path.join(root, ".rph", "golden-path", "latest.json"))).toBe(false);
+  }, 10000);
+
+  it("runs the pending productization plan after exact plain runtime confirmation", async () => {
+    const result = await runCli(["shell"], {
+      cwd: root,
+      stdinChunks: [
+        { text: "이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: AI 회의록 액션아이템 SaaS\n", delayMs: 0 },
+        { text: "이 계획 실행해줘\n", delayMs: 50 },
+        { text: "/exit\n", delayMs: 50 }
+      ]
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("Execution plan");
+    expect(result.stdout).toContain("plain confirm: /agent confirm-intent");
+    expect(result.stdout).toContain("intent confirmed: intent_");
+    expect(result.stdout).toContain("agent action: /productize");
+    expect(result.stdout).toContain("Productize golden path complete");
+    expect(fs.existsSync(path.join(root, ".rph", "golden-path", "latest.json"))).toBe(true);
+    const intents = JSON.parse(fs.readFileSync(path.join(root, ".rph", "runtime", "intents.json"), "utf8")) as Array<{
+      status: string;
+      confirmedBy?: string;
+    }>;
+    expect(intents).toHaveLength(1);
+    expect(intents[0]).toMatchObject({
+      status: "confirmed",
+      confirmedBy: "runtime-chat"
+    });
+  }, 10000);
 
   it("treats bare multi-word natural language as one-shot chat", async () => {
     const captureFile = path.join(root, "bare-chat-capture.json");

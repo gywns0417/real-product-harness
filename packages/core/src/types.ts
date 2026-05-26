@@ -900,6 +900,7 @@ export interface RuntimeSessionManifest {
   stage: RuntimeSessionStage;
   ownerAgent: AgentRole;
   pendingAction: AgentActionPlan | null;
+  lastPresentedIntentId?: string | null;
   checkpoint: string | null;
   blocker: string | null;
   retryCount: number;

@@ -73,6 +73,7 @@ export interface RuntimeSessionUpdateInput {
   status?: RuntimeSessionManifest["status"];
   stage?: RuntimeSessionStage;
   pendingAction?: AgentActionPlan | null;
+  lastPresentedIntentId?: string | null;
   pendingInput?: string;
   checkpoint?: string | null;
   blocker?: string | null;
@@ -108,6 +109,7 @@ export function createRuntimeSessionManifest(
     stage,
     ownerAgent: stageOwner(stage),
     pendingAction,
+    lastPresentedIntentId: null,
     checkpoint: stage === "UNINITIALIZED" ? "uninitialized" : `started at ${stage}`,
     blocker: null,
     retryCount: 0,
@@ -441,6 +443,9 @@ export function updateRuntimeSession(
     stage,
     ownerAgent: stageOwner(stage),
     pendingAction,
+    lastPresentedIntentId: input.lastPresentedIntentId !== undefined
+      ? input.lastPresentedIntentId
+      : current.lastPresentedIntentId ?? null,
     checkpoint: input.checkpoint !== undefined ? input.checkpoint : current.checkpoint,
     blocker,
     retryCount,
@@ -473,6 +478,7 @@ export function recordRuntimeSessionEvent(
     stage: state?.currentStage ?? current.stage,
     ownerAgent: stageOwner(state?.currentStage ?? current.stage),
     pendingAction: event.plan ?? current.pendingAction,
+    lastPresentedIntentId: current.lastPresentedIntentId ?? null,
     checkpoint: event.kind === "checkpoint" ? event.message : current.checkpoint,
     blocker: event.kind === "blocker" ? event.message : event.ok === false ? event.message : current.blocker,
     retryCount: event.ok === false ? current.retryCount + 1 : current.retryCount,
@@ -1525,6 +1531,7 @@ function normalizeRuntimeSession(
     handoffPacket,
     activeTurn: manifest.activeTurn ?? null,
     toolTrace: manifest.toolTrace ?? [],
+    lastPresentedIntentId: manifest.lastPresentedIntentId ?? null,
     pendingExternalActionId: manifest.pendingExternalActionId ?? null
   };
 }
