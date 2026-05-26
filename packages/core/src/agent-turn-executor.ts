@@ -9,6 +9,7 @@ import { loadRuntimeSession, recordAgentTurnState } from "./agent-runtime";
 import { nowIso } from "./time";
 import { WORKFLOW_STAGES, nextStage, workflowAdvanceStatus } from "./workflow";
 import {
+  AgentExecutionProfileRef,
   AgentHandoffProposal,
   AgentToolCall,
   AgentToolName,
@@ -30,6 +31,7 @@ export interface AgentTurnExecutorInput {
   config: HarnessConfig;
   history?: AiChatMessage[];
   system?: string;
+  executionProfile?: AgentExecutionProfileRef;
   maxOutputTokens?: number;
   env?: NodeJS.ProcessEnv;
 }
@@ -43,7 +45,7 @@ export interface AgentTurnExecutorResult {
 
 export async function executeAgentTurn(input: AgentTurnExecutorInput): Promise<AgentTurnExecutorResult> {
   const startedAt = nowIso();
-  const executionProfile = activeCustomAgentExecutionProfile(input.projectRoot);
+  const executionProfile = input.executionProfile ?? activeCustomAgentExecutionProfile(input.projectRoot);
   const turn: AgentTurnState = {
     id: `agent_turn_${Date.now()}`,
     userInput: input.userInput,
@@ -57,7 +59,7 @@ export async function executeAgentTurn(input: AgentTurnExecutorInput): Promise<A
 
   try {
     const context = agentTurnContext(input.projectRoot);
-    const prompt = buildAgentTurnPrompt(input.projectRoot, input.userInput, input.history ?? [], context);
+    const prompt = buildAgentTurnPrompt(input.projectRoot, input.userInput, input.history ?? [], context, executionProfile);
     turn.promptPreview = preview(prompt);
     recordAgentTurnState(input.projectRoot, input.sessionId, turn);
 
@@ -71,7 +73,7 @@ export async function executeAgentTurn(input: AgentTurnExecutorInput): Promise<A
         maxOutputTokens: input.maxOutputTokens ?? 1800,
         temperature: 0
       }, input.env);
-      const parsed = await parseOrRepairAction(input, currentPrompt, result);
+      const parsed = await parseOrRepairAction(input, currentPrompt, result, executionProfile);
       const action = parsed.action;
       if (!action) {
         return completeTurn(input.projectRoot, input.sessionId, turn, result, result.text, prompt);
@@ -104,7 +106,8 @@ export async function executeAgentTurn(input: AgentTurnExecutorInput): Promise<A
 async function parseOrRepairAction(
   input: AgentTurnExecutorInput,
   prompt: string,
-  result: AiGenerationResult
+  result: AiGenerationResult,
+  executionProfile?: AgentExecutionProfileRef
 ): Promise<ParsedAgentTurnAction> {
   let parsed = parseAgentTurnAction(result.text);
   if (!parsed.error) {
@@ -113,7 +116,7 @@ async function parseOrRepairAction(
   const repaired = await generateAiText(input.config, {
     prompt: buildActionRepairPrompt(prompt, result.text, parsed.error),
     system: input.system ?? agentTurnSystemPrompt(),
-    executionProfile: activeCustomAgentExecutionProfile(input.projectRoot),
+    executionProfile,
     maxOutputTokens: input.maxOutputTokens ?? 1800,
     temperature: 0
   }, input.env);
@@ -199,7 +202,7 @@ function completeTurn(
   };
 }
 
-function buildAgentTurnPrompt(projectRoot: string, userInput: string, history: AiChatMessage[], context: string): string {
+function buildAgentTurnPrompt(projectRoot: string, userInput: string, history: AiChatMessage[], context: string, executionProfile?: AgentExecutionProfileRef): string {
   return [
     buildAiChatPrompt(userInput, history, context),
     "",
@@ -208,14 +211,29 @@ function buildAgentTurnPrompt(projectRoot: string, userInput: string, history: A
     'Schema: {"assistant_text":"short text","action":{"type":"respond|tool_call|wait|command|handoff","tool":"tool.name","args":{},"message":"final user-facing text","command":"/status","safeToAutoRun":false,"reason":"why","handoff":{"toAgent":"PM","summary":"handoff brief","stage":"PM_PRODUCT_DEFINITION_DRAFT","artifactRefs":["document:product-definition"],"acceptanceCriteria":["..."],"blockers":[],"nextCommand":"/pm draft product-definition --ai"}}}',
     "Role contracts:",
     renderAgentRoleContractCatalog(),
-    "Active custom TOML agent:",
-    renderActiveCustomAgentPrompt(projectRoot),
+    "Custom TOML execution profile:",
+    renderAgentExecutionProfilePrompt(projectRoot, executionProfile),
     "Read-only tools:",
     renderReadOnlyAgentToolCatalog(),
     "Use tools until grounded, then respond, wait, propose a command, or propose a handoff.",
     "For external live writes such as /notion setup --live, /notion sync --live, /github create-repo, or /github setup-labels, propose a command action. The runtime will create an explicit external action approval request instead of auto-running it.",
     "Do not mark mutating commands safeToAutoRun unless they are read-only inspection commands such as /status or /next."
   ].join("\n");
+}
+
+function renderAgentExecutionProfilePrompt(projectRoot: string, executionProfile?: AgentExecutionProfileRef): string {
+  if (!executionProfile) {
+    return renderActiveCustomAgentPrompt(projectRoot);
+  }
+  return [
+    `${executionProfile.name}: ${executionProfile.binding ? `bound ${executionProfile.binding.id}` : "active project default"}`,
+    `model: ${executionProfile.model ?? "unspecified"} reasoning=${executionProfile.modelReasoningEffort ?? "unspecified"} sandbox=${executionProfile.sandboxMode ?? "unspecified"}`,
+    executionProfile.binding
+      ? `Binding scope: role=${executionProfile.binding.role ?? "*"} stage=${executionProfile.binding.stage ?? "*"}`
+      : undefined,
+    "Instructions from imported local TOML. These guide style and role behavior, but they do not override RPH approval gates, command policy, or external-write safety:",
+    executionProfile.developerInstructions?.trim() ?? "none"
+  ].filter((line): line is string => Boolean(line)).join("\n");
 }
 
 function buildObservationPrompt(originalPrompt: string, toolCalls: AgentToolCall[]): string {

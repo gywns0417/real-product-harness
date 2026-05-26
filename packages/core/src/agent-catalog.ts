@@ -1,10 +1,19 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { AGENT_ROLE_CONTRACTS } from "./agent-role-contracts";
 import { listFiles, readJsonIfExists, writeJson } from "./fs";
-import { activeCustomAgentFile, customAgentProfileFile, customAgentsDir } from "./paths";
-import { ActiveCustomAgentProfile, AgentExecutionProfileRef, CustomAgentProfile } from "./types";
+import { activeCustomAgentFile, customAgentBindingsFile, customAgentProfileFile, customAgentsDir } from "./paths";
+import {
+  ActiveCustomAgentProfile,
+  AgentExecutionProfileRef,
+  AgentRole,
+  CustomAgentBinding,
+  CustomAgentBindingRegistry,
+  CustomAgentProfile,
+  WorkflowStageId
+} from "./types";
 
 const TOML_STRING_KEYS = new Set([
   "name",
@@ -46,6 +55,15 @@ export interface DiscoverAgentLibraryOptions extends AgentLibraryOptions {
   limit?: number;
 }
 
+export interface CustomAgentBindingSelector {
+  role?: AgentRole;
+  stage?: WorkflowStageId;
+}
+
+export interface CustomAgentExecutionContext extends CustomAgentBindingSelector {
+  surface?: "chat" | "lane";
+}
+
 export function defaultAgentLibraryRoot(): string {
   return path.join(os.homedir(), "Desktop", "awesome-codex-subagents", "categories");
 }
@@ -78,6 +96,7 @@ export function importCustomAgentProfile(
     developerInstructions,
     importedAt
   };
+  profile.fingerprint = customAgentProfileFingerprint(profile);
   writeJson(customAgentProfileFile(projectRoot, profile.slug), profile);
   return profile;
 }
@@ -161,7 +180,7 @@ export function listAgentCatalog(projectRoot: string): AgentCatalogEntry[] {
 export function listCustomAgentProfiles(projectRoot: string): CustomAgentProfile[] {
   const dir = customAgentsDir(projectRoot);
   return listFiles(dir)
-    .filter((file) => file.endsWith(".json") && file !== "active.json")
+    .filter((file) => file.endsWith(".json") && !isReservedAgentCatalogFile(file))
     .map((file) => readJsonIfExists<CustomAgentProfile | null>(path.join(dir, file), null))
     .filter((profile): profile is CustomAgentProfile => Boolean(profile))
     .sort((left, right) => left.name.localeCompare(right.name));
@@ -189,6 +208,92 @@ export function loadActiveCustomAgentProfile(projectRoot: string): CustomAgentPr
   return findCustomAgentProfile(projectRoot, active.slug);
 }
 
+export function listCustomAgentBindings(projectRoot: string): CustomAgentBinding[] {
+  return loadCustomAgentBindingRegistry(projectRoot).bindings
+    .slice()
+    .sort((left, right) => bindingSortKey(left).localeCompare(bindingSortKey(right)));
+}
+
+export function bindCustomAgentProfile(
+  projectRoot: string,
+  nameOrSlug: string,
+  selector: CustomAgentBindingSelector
+): CustomAgentBinding {
+  if (!selector.role && !selector.stage) {
+    throw new Error("agent binding requires --role, --stage, or both");
+  }
+  const profile = findCustomAgentProfile(projectRoot, nameOrSlug);
+  if (!profile) {
+    throw new Error(`custom agent not found: ${nameOrSlug}`);
+  }
+  const now = new Date().toISOString();
+  const registry = loadCustomAgentBindingRegistry(projectRoot);
+  const id = customAgentBindingId(selector);
+  const existing = registry.bindings.find((binding) => binding.id === id);
+  const binding: CustomAgentBinding = {
+    id,
+    surface: "lane",
+    role: selector.role,
+    stage: selector.stage,
+    profileSlug: profile.slug,
+    profileName: profile.name,
+    profileFingerprint: customAgentProfileFingerprint(profile),
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now
+  };
+  writeCustomAgentBindingRegistry(projectRoot, {
+    version: 1,
+    updatedAt: now,
+    bindings: [
+      ...registry.bindings.filter((item) => item.id !== id),
+      binding
+    ]
+  });
+  return binding;
+}
+
+export function unbindCustomAgentProfile(projectRoot: string, selector: CustomAgentBindingSelector): CustomAgentBinding | null {
+  if (!selector.role && !selector.stage) {
+    throw new Error("agent unbind requires --role, --stage, or both");
+  }
+  const registry = loadCustomAgentBindingRegistry(projectRoot);
+  const id = customAgentBindingId(selector);
+  const removed = registry.bindings.find((binding) => binding.id === id) ?? null;
+  if (!removed) {
+    return null;
+  }
+  writeCustomAgentBindingRegistry(projectRoot, {
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    bindings: registry.bindings.filter((binding) => binding.id !== id)
+  });
+  return removed;
+}
+
+export function resolveCustomAgentExecutionProfile(
+  projectRoot: string,
+  context: CustomAgentExecutionContext = {}
+): AgentExecutionProfileRef | undefined {
+  if (context.surface === "lane") {
+    const binding = resolveCustomAgentBinding(projectRoot, context);
+    if (binding) {
+      const profile = findCustomAgentProfile(projectRoot, binding.profileSlug);
+      if (!profile) {
+        throw new Error(`custom agent binding is broken: ${binding.id} points to missing profile ${binding.profileSlug}`);
+      }
+      const fingerprint = customAgentProfileFingerprint(profile);
+      if (!binding.profileFingerprint) {
+        throw new Error(`custom agent binding is stale: ${binding.id} profile ${binding.profileSlug} is missing a fingerprint; run /agent bind ${binding.profileSlug} --role ${binding.role ?? "*"}${binding.stage ? ` --stage ${binding.stage}` : ""}`);
+      }
+      if (binding.profileFingerprint !== fingerprint) {
+        throw new Error(`custom agent binding is stale: ${binding.id} profile ${binding.profileSlug} changed; run /agent bind ${binding.profileSlug} --role ${binding.role ?? "*"}${binding.stage ? ` --stage ${binding.stage}` : ""}`);
+      }
+      return executionProfileFromCustomProfile(profile, undefined, binding);
+    }
+  }
+  return activeCustomAgentExecutionProfile(projectRoot);
+}
+
 export function activeCustomAgentExecutionProfile(projectRoot: string): AgentExecutionProfileRef | undefined {
   const active = readJsonIfExists<ActiveCustomAgentProfile | null>(activeCustomAgentFile(projectRoot), null);
   if (!active) {
@@ -198,15 +303,7 @@ export function activeCustomAgentExecutionProfile(projectRoot: string): AgentExe
   if (!profile) {
     return undefined;
   }
-  return {
-    source: "custom-toml",
-    name: profile.name,
-    slug: profile.slug,
-    model: profile.model,
-    modelReasoningEffort: profile.modelReasoningEffort,
-    sandboxMode: profile.sandboxMode,
-    activatedAt: active.activatedAt
-  };
+  return executionProfileFromCustomProfile(profile, active.activatedAt);
 }
 
 export function renderActiveCustomAgentPrompt(projectRoot: string): string {
@@ -234,9 +331,129 @@ export function slugifyAgentName(name: string): string {
   return slug;
 }
 
+function isReservedAgentCatalogFile(file: string): boolean {
+  return file === "active.json" || file === "lane-bindings.json";
+}
+
 function findCustomAgentProfile(projectRoot: string, nameOrSlug: string): CustomAgentProfile | null {
   const slug = slugifyAgentName(nameOrSlug);
   return listCustomAgentProfiles(projectRoot).find((profile) => profile.slug === slug || profile.name === nameOrSlug) ?? null;
+}
+
+function loadCustomAgentBindingRegistry(projectRoot: string): CustomAgentBindingRegistry {
+  const registry = readJsonIfExists<CustomAgentBindingRegistry | null>(customAgentBindingsFile(projectRoot), null);
+  if (!registry || registry.version !== 1 || !Array.isArray(registry.bindings)) {
+    return {
+      version: 1,
+      updatedAt: new Date(0).toISOString(),
+      bindings: []
+    };
+  }
+  return {
+    version: 1,
+    updatedAt: registry.updatedAt,
+    bindings: registry.bindings
+      .map(normalizeCustomAgentBinding)
+      .filter((binding): binding is CustomAgentBinding => Boolean(binding))
+  };
+}
+
+function writeCustomAgentBindingRegistry(projectRoot: string, registry: CustomAgentBindingRegistry): void {
+  writeJson(customAgentBindingsFile(projectRoot), {
+    version: 1,
+    updatedAt: registry.updatedAt,
+    bindings: registry.bindings.sort((left, right) => bindingSortKey(left).localeCompare(bindingSortKey(right)))
+  });
+}
+
+function resolveCustomAgentBinding(projectRoot: string, context: CustomAgentExecutionContext): CustomAgentBinding | null {
+  const bindings = loadCustomAgentBindingRegistry(projectRoot).bindings;
+  const candidates = [
+    context.role && context.stage ? customAgentBindingId({ role: context.role, stage: context.stage }) : null,
+    context.stage ? customAgentBindingId({ stage: context.stage }) : null,
+    context.role ? customAgentBindingId({ role: context.role }) : null
+  ].filter((id): id is string => Boolean(id));
+  for (const id of candidates) {
+    const binding = bindings.find((candidate) => candidate.id === id);
+    if (binding) {
+      return binding;
+    }
+  }
+  return null;
+}
+
+function customAgentBindingId(selector: CustomAgentBindingSelector): string {
+  const role = selector.role ?? "*";
+  const stage = selector.stage ?? "*";
+  return `lane:${role}:${stage}`;
+}
+
+function bindingSortKey(binding: CustomAgentBinding): string {
+  return `${binding.role ?? "*"}:${binding.stage ?? "*"}:${binding.profileSlug}`;
+}
+
+function normalizeCustomAgentBinding(value: unknown): CustomAgentBinding | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    record.surface !== "lane"
+    || typeof record.id !== "string"
+    || typeof record.profileSlug !== "string"
+    || typeof record.profileName !== "string"
+    || typeof record.createdAt !== "string"
+    || typeof record.updatedAt !== "string"
+  ) {
+    return null;
+  }
+  return {
+    id: record.id,
+    surface: "lane",
+    role: typeof record.role === "string" ? record.role as AgentRole : undefined,
+    stage: typeof record.stage === "string" ? record.stage as WorkflowStageId : undefined,
+    profileSlug: record.profileSlug,
+    profileName: record.profileName,
+    profileFingerprint: typeof record.profileFingerprint === "string" ? record.profileFingerprint : "",
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt
+  };
+}
+
+function executionProfileFromCustomProfile(
+  profile: CustomAgentProfile,
+  activatedAt?: string,
+  binding?: CustomAgentBinding
+): AgentExecutionProfileRef {
+  return {
+    source: "custom-toml",
+    name: profile.name,
+    slug: profile.slug,
+    model: profile.model,
+    modelReasoningEffort: profile.modelReasoningEffort,
+    sandboxMode: profile.sandboxMode,
+    developerInstructions: profile.developerInstructions,
+    activatedAt,
+    binding: binding ? {
+      id: binding.id,
+      surface: binding.surface,
+      role: binding.role,
+      stage: binding.stage
+    } : undefined
+  };
+}
+
+function customAgentProfileFingerprint(profile: CustomAgentProfile): string {
+  const canonical = JSON.stringify({
+    name: profile.name,
+    slug: profile.slug,
+    description: profile.description,
+    model: profile.model ?? null,
+    modelReasoningEffort: profile.modelReasoningEffort ?? null,
+    sandboxMode: profile.sandboxMode ?? null,
+    developerInstructions: profile.developerInstructions
+  });
+  return createHash("sha256").update(canonical).digest("hex").slice(0, 16);
 }
 
 function parseAgentLibraryProfile(libraryRoot: string, filePath: string): AgentLibraryProfile | null {

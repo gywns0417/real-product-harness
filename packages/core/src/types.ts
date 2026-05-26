@@ -43,6 +43,7 @@ export interface CustomAgentProfile {
   modelReasoningEffort?: string;
   sandboxMode?: string;
   developerInstructions: string;
+  fingerprint?: string;
   sourcePath?: string;
   importedAt: string;
 }
@@ -53,6 +54,26 @@ export interface ActiveCustomAgentProfile {
   activatedAt: string;
 }
 
+export type CustomAgentBindingSurface = "lane";
+
+export interface CustomAgentBinding {
+  id: string;
+  surface: CustomAgentBindingSurface;
+  role?: AgentRole;
+  stage?: WorkflowStageId;
+  profileSlug: string;
+  profileName: string;
+  profileFingerprint: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CustomAgentBindingRegistry {
+  version: 1;
+  updatedAt: string;
+  bindings: CustomAgentBinding[];
+}
+
 export interface AgentExecutionProfileRef {
   source: "custom-toml";
   name: string;
@@ -60,7 +81,14 @@ export interface AgentExecutionProfileRef {
   model?: string;
   modelReasoningEffort?: string;
   sandboxMode?: string;
+  developerInstructions?: string;
   activatedAt?: string;
+  binding?: {
+    id: string;
+    surface: CustomAgentBindingSurface;
+    role?: AgentRole;
+    stage?: WorkflowStageId;
+  };
 }
 
 export type DocumentStatus = "draft" | "review" | "revised" | "approved";

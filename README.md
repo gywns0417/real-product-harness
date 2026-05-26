@@ -296,15 +296,18 @@ by the agent; the user must type the approval slash command directly.
 ### Imported Role Profiles
 
 RPH can import curated TOML agent profiles from Awesome Codex Subagents into the project-local
-`.rph/agents` catalog and activate one as the current custom role profile. That keeps one top-level
-conversation while swapping in specialist behavior such as documentation or product framing without
-leaving the same handoff, memory, and tool-budget loop.
+`.rph/agents` catalog, activate one as the default custom role profile, and bind imported profiles
+to lane roles or workflow stages. That keeps one top-level conversation while letting specialist
+behavior such as product framing, QA, MCP diagnostics, or CLI work run in the matching handoff,
+memory, and tool-budget loop.
 
-Active profiles are execution-active, not just prompt notes: their `model` and
-`model_reasoning_effort` are passed into provider-backed runtime turns and autonomous worker lanes
-when compatible with the selected provider, and `sandbox_mode=read-only` blocks automatic mutating
-command execution while still allowing read-only inspection commands. RPH approval gates and
-external-write readback requirements still win over imported profile instructions.
+Active and bound profiles are execution-active, not just prompt notes: their `model`,
+`model_reasoning_effort`, `developer_instructions`, and `sandbox_mode` are passed into
+provider-backed runtime turns or autonomous worker lanes when compatible with the selected provider.
+Lane binding precedence is `role+stage > stage > role > active default`; a stale or broken binding
+fails closed instead of silently falling back to a weaker profile. `sandbox_mode=read-only` blocks
+automatic mutating command execution while still allowing read-only inspection commands. RPH approval
+gates and external-write readback requirements still win over imported profile instructions.
 
 Examples:
 
@@ -315,6 +318,10 @@ Examples:
 /agent discover documentation
 /agent import documentation-engineer
 /agent use documentation-engineer
+/agent bind product-manager --role PM
+/agent bind qa-expert --role QA --stage QA_REVIEW
+/agent bindings
+/agent unbind --role QA --stage QA_REVIEW
 /agent handoffs
 /agent lanes
 /agent pool start

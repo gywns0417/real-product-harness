@@ -112,6 +112,10 @@ export function activeCustomAgentFile(projectRoot: string): string {
   return path.join(customAgentsDir(projectRoot), "active.json");
 }
 
+export function customAgentBindingsFile(projectRoot: string): string {
+  return path.join(customAgentsDir(projectRoot), "lane-bindings.json");
+}
+
 export function proofLedgerDir(projectRoot: string): string {
   return path.join(rphDir(projectRoot), "proofs");
 }

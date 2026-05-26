@@ -197,7 +197,7 @@ if [ -n "\${BASH_VERSION:-}" ]; then
       case "\$command" in
         setup) subcommands="auto repair detect apply check ai mcp custom" ;;
         doctor) subcommands="status install shell" ;;
-        agent) subcommands="status roles catalog discover search import install use activate session journal replay handoffs actions action-approvals intents confirm-intent dismiss-intent lanes run continue recover pool worker claim heartbeat ack complete dead-letter approve-action reject-action clear reset" ;;
+        agent) subcommands="status roles catalog discover search import install use activate bind bindings unbind session journal replay handoffs actions action-approvals intents confirm-intent dismiss-intent lanes run continue recover pool worker claim heartbeat ack complete dead-letter approve-action reject-action clear reset" ;;
         ai) subcommands="status test enable disable run" ;;
         mcp) subcommands="status tools call test enable disable" ;;
         pm) subcommands="start interview draft revise approve diff rollback finalize" ;;
@@ -232,7 +232,7 @@ _rph() {
   )
   setup_cmds=(auto repair detect apply check ai mcp custom)
   doctor_cmds=(status install shell)
-  agent_cmds=(status roles catalog discover search import install use activate session journal replay handoffs actions action-approvals intents confirm-intent dismiss-intent lanes run continue recover pool worker claim heartbeat ack complete dead-letter approve-action reject-action clear reset)
+  agent_cmds=(status roles catalog discover search import install use activate bind bindings unbind session journal replay handoffs actions action-approvals intents confirm-intent dismiss-intent lanes run continue recover pool worker claim heartbeat ack complete dead-letter approve-action reject-action clear reset)
   ai_cmds=(status test enable disable run)
   mcp_cmds=(status tools call test enable disable)
   pm_cmds=(start interview draft revise approve diff rollback finalize)

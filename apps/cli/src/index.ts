@@ -79,6 +79,7 @@ import {
   approveAndStartRuntimeAction,
   activateCustomAgentProfile,
   activeCustomAgentExecutionProfile,
+  bindCustomAgentProfile,
   appendText,
   classifyMutableAgentCommand,
   confirmRuntimeIntent,
@@ -116,6 +117,7 @@ import {
   RuntimeExecutionGraph,
   RuntimeHandoffRecord,
   AgentLaneRunRecord,
+  AgentExecutionProfileRef,
   listDocumentIndexes,
   listDesignArtifactIndexes,
   listPullRequests,
@@ -127,6 +129,7 @@ import {
   loadAgentLaneRuns,
   loadAgentLaneRunReadIssues,
   listAgentCatalog,
+  listCustomAgentBindings,
   loadEnvFile,
   loadProject,
   loadRuntimeExecutionGraph,
@@ -239,6 +242,7 @@ import {
   transitionState,
   failRuntimeAction,
   suggestCommand,
+  unbindCustomAgentProfile,
   updateRuntimeSession,
   workflowAdvanceStatus,
   AI_PROVIDER_DEFINITIONS,
@@ -368,7 +372,7 @@ const HELP_TOPIC_LINES: Record<string, string[]> = {
     "  /pause | /resume | /cancel",
     "  /project <path> | /pwd",
     "  /chat status | clear",
-    "  /agent status | roles | pack | import <toml> | use <name> | session | replay [session-id] | graph | handoffs | actions | intents | confirm-intent <id> | dismiss-intent <id> | lanes | workers | pool | run | recover [--steps N] | reduce <stage> | clear",
+    "  /agent status | roles | pack | import <toml> | use <name> | bind <name> --role <role> [--stage <stage>] | bindings | unbind --role <role> [--stage <stage>] | session | replay [session-id] | graph | handoffs | actions | intents | confirm-intent <id> | dismiss-intent <id> | lanes | workers | pool | run | recover [--steps N] | reduce <stage> | clear",
     "  /agent pool service install | status | uninstall | plist",
     "  /agent claim <handoff-id> | heartbeat <handoff-id> | dead-letter <handoff-id>",
     "  /agent approve-action <action-id> | reject-action <action-id>",
@@ -384,12 +388,18 @@ const HELP_TOPIC_LINES: Record<string, string[]> = {
     "  rph agent import cli-developer",
     "  rph agent import /path/to/agent.toml",
     "  rph agent use cli-developer",
+    "  rph agent bind product-manager --role PM",
+    "  rph agent bind qa-expert --role QA --stage QA_REVIEW",
+    "  rph agent bindings",
     "  /agent status",
     "  /agent roles",
     "  /agent pack",
     "  /agent discover cli",
     "  /agent import cli-developer",
     "  /agent use cli-developer",
+    "  /agent bind product-manager --role PM",
+    "  /agent bind qa-expert --role QA --stage QA_REVIEW",
+    "  /agent bindings",
     "  /agent session [session-id] [--limit N]",
     "  /agent replay [session-id]",
     "  /agent graph [status|refresh|json] [--verbose]",
@@ -398,7 +408,7 @@ const HELP_TOPIC_LINES: Record<string, string[]> = {
     "  /agent dismiss-intent <id>",
     "  /agent handoffs | actions | intents | confirm-intent <id> | dismiss-intent <id> | lanes | workers | pool status | pool start | pool service install | pool service status | pool run | pool stop | run | recover [--steps N] | reduce <stage>",
     "",
-    "Discovers Awesome Codex Subagents from ~/Desktop/awesome-codex-subagents/categories and imports selected TOML agents into the project-local .rph/agents catalog. `agent pack` installs a recommended Hermes-operator set in one command. The active custom agent guides chat and role behavior, but RPH approval gates and external-write policy still win."
+    "Discovers Awesome Codex Subagents from ~/Desktop/awesome-codex-subagents/categories and imports selected TOML agents into the project-local .rph/agents catalog. `agent pack` installs a recommended Hermes-operator set in one command. The active custom agent guides chat by default; `agent bind` pins imported TOML agents to lane roles/stages. RPH approval gates and external-write policy still win."
   ],
   workspace: [
     "Workspace commands",
@@ -925,6 +935,7 @@ async function handleAgentControlCommand(
     case "status":
       console.log(`AI agent: ${config.activeAiProvider}`);
       printActiveCustomAgent(projectRoot);
+      printCustomAgentBindings(projectRoot);
       printAiStatus(config, projectRoot);
       if (printRuntimeHandoffsReadIssue(projectRoot)) {
         return {};
@@ -976,6 +987,48 @@ async function handleAgentControlCommand(
       console.log(`active custom agent: ${profile.name}`);
       console.log("scope: current project .rph/agents");
       console.log("policy: imported instructions guide chat, but RPH approval gates still win");
+      return {};
+    }
+    case "bindings":
+    case "bound":
+      printCustomAgentBindings(projectRoot, { always: true });
+      return {};
+    case "bind": {
+      const positional = runtimeAgentPositionalArgs(args);
+      const name = positional[0] ?? optionString(options, "name") ?? optionString(options, "agent");
+      if (!name) {
+        console.log("usage: /agent bind <agent-name> --role <role> [--stage <stage>]");
+        process.exitCode = 2;
+        return {};
+      }
+      const selector = parseAgentBindingSelector(options);
+      if (!selector.ok) {
+        console.log(selector.error);
+        console.log("usage: /agent bind <agent-name> --role <role> [--stage <stage>]");
+        process.exitCode = 2;
+        return {};
+      }
+      ensureProjectForAgentCatalog(projectRoot);
+      const binding = bindCustomAgentProfile(projectRoot, name, selector.selector);
+      console.log(`agent binding saved: ${formatAgentBinding(binding)}`);
+      console.log("scope: lane execution profile resolution");
+      console.log("precedence: role+stage > stage > role > active custom agent");
+      return {};
+    }
+    case "unbind": {
+      const selector = parseAgentBindingSelector(options);
+      if (!selector.ok) {
+        console.log(selector.error);
+        console.log("usage: /agent unbind --role <role> [--stage <stage>]");
+        process.exitCode = 2;
+        return {};
+      }
+      const removed = unbindCustomAgentProfile(projectRoot, selector.selector);
+      if (!removed) {
+        console.log(`agent binding not found: ${formatAgentBindingSelector(selector.selector)}`);
+        return {};
+      }
+      console.log(`agent binding removed: ${formatAgentBinding(removed)}`);
       return {};
     }
     case "session":
@@ -1166,7 +1219,7 @@ async function handleAgentControlCommand(
       console.log("AI chat context cleared");
       return { clearChat: true };
     default:
-      console.log("Agent 명령어: /agent status | /agent roles | /agent pack [--activate name] | /agent discover [query] | /agent import <name|toml> | /agent use <name> | /agent session [id] | /agent replay [id] | /agent graph [status|refresh|json] [--verbose] | /agent handoffs | /agent actions | /agent intents | /agent confirm-intent <id> | /agent dismiss-intent <id> | /agent lanes | /agent workers | /agent pool <status|start|run|stop|logs|service> | /agent run [--steps N] | /agent recover [--steps N] | /agent reduce <stage> | /agent worker run <id> | /agent claim <id> | /agent heartbeat <id> | /agent ack <id> | /agent complete <id> | /agent dead-letter <id> | /agent approve-action <id> | /agent reject-action <id> | /agent clear");
+      console.log("Agent 명령어: /agent status | /agent roles | /agent pack [--activate name] | /agent discover [query] | /agent import <name|toml> | /agent use <name> | /agent bind <name> --role <role> [--stage <stage>] | /agent bindings | /agent unbind --role <role> [--stage <stage>] | /agent session [id] | /agent replay [id] | /agent graph [status|refresh|json] [--verbose] | /agent handoffs | /agent actions | /agent intents | /agent confirm-intent <id> | /agent dismiss-intent <id> | /agent lanes | /agent workers | /agent pool <status|start|run|stop|logs|service> | /agent run [--steps N] | /agent recover [--steps N] | /agent reduce <stage> | /agent worker run <id> | /agent claim <id> | /agent heartbeat <id> | /agent ack <id> | /agent complete <id> | /agent dead-letter <id> | /agent approve-action <id> | /agent reject-action <id> | /agent clear");
       return {};
   }
 }
@@ -1218,6 +1271,66 @@ function importAgentPack(
 function printActiveCustomAgent(projectRoot: string): void {
   const active = loadActiveCustomAgentProfile(projectRoot);
   console.log(`active custom agent: ${active ? active.name : "none"}`);
+}
+
+function printCustomAgentBindings(projectRoot: string, options: { always?: boolean } = {}): void {
+  const bindings = listCustomAgentBindings(projectRoot);
+  if (bindings.length === 0) {
+    if (options.always) {
+      console.log("Custom agent lane bindings");
+      console.log("- none");
+      console.log("next: /agent bind workflow-orchestrator --role Orchestrator");
+    }
+    return;
+  }
+  console.log("Custom agent lane bindings");
+  for (const binding of bindings) {
+    console.log(`- ${formatAgentBinding(binding)}`);
+  }
+}
+
+function formatAgentBinding(binding: {
+  role?: AgentRole;
+  stage?: WorkflowStageId;
+  profileName: string;
+  profileSlug: string;
+}): string {
+  const role = binding.role ?? "*";
+  const stage = binding.stage ?? "*";
+  return `lane role=${role} stage=${stage} profile=${binding.profileSlug} (${binding.profileName})`;
+}
+
+function formatAgentBindingSelector(selector: { role?: AgentRole; stage?: WorkflowStageId }): string {
+  return `lane role=${selector.role ?? "*"} stage=${selector.stage ?? "*"}`;
+}
+
+type AgentBindingSelectorParseResult =
+  | { ok: true; selector: { role?: AgentRole; stage?: WorkflowStageId } }
+  | { ok: false; error: string };
+
+function parseAgentBindingSelector(options: Record<string, string | boolean>): AgentBindingSelectorParseResult {
+  const roleValue = optionString(options, "role");
+  const stageValue = optionString(options, "stage");
+  const role = parseAgentRole(roleValue);
+  const stage = parseWorkflowStageId(stageValue?.toUpperCase());
+  if (roleValue && !role) {
+    return { ok: false, error: `unknown agent role: ${roleValue}` };
+  }
+  if (stageValue && !stage) {
+    return { ok: false, error: `unknown workflow stage: ${stageValue}` };
+  }
+  if (!role && !stage) {
+    return { ok: false, error: "agent binding requires --role, --stage, or both" };
+  }
+  return { ok: true, selector: { role: role ?? undefined, stage: stage ?? undefined } };
+}
+
+function parseAgentRole(value: string | undefined): AgentRole | null {
+  if (!value) {
+    return null;
+  }
+  const roles: AgentRole[] = ["Orchestrator", "PM", "PD", "FE", "BE", "QA"];
+  return roles.find((role) => role.toLowerCase() === value.toLowerCase()) ?? null;
 }
 
 function printAgentRoleCatalog(projectRoot: string): void {
@@ -1919,6 +2032,18 @@ function parseRuntimeAgentOptions(args: string[]): Record<string, string | boole
         options.use = value;
         index += 1;
       }
+    } else if (token === "--role") {
+      const value = args[index + 1];
+      if (value) {
+        options.role = value;
+        index += 1;
+      }
+    } else if (token === "--stage") {
+      const value = args[index + 1];
+      if (value) {
+        options.stage = value;
+        index += 1;
+      }
     } else if (token === "--limit") {
       const value = args[index + 1];
       if (value) {
@@ -1983,6 +2108,8 @@ function runtimeAgentPositionalArgs(args: string[]): string[] {
     "--library",
     "--activate",
     "--use",
+    "--role",
+    "--stage",
     "--limit",
     "--by",
     "--session"
@@ -4888,7 +5015,10 @@ async function runHandoffWorker(
       if (autonomous.attempted) {
         ok = autonomous.ok;
       } else {
-        budgetError = consumeLaneBudget(projectRoot, lane.id, `local command ${fallbackCommand}`);
+        const sandboxBlocker = executionProfileSandboxCommandBlocker(lane.executionProfile, fallbackCommand);
+        budgetError = sandboxBlocker
+          ? `lane command rejected by active TOML sandbox: ${sandboxBlocker}`
+          : consumeLaneBudget(projectRoot, lane.id, `local command ${fallbackCommand}`);
         ok = budgetError ? false : await runParsedCommand(projectRoot, parseCli(parseCommandLine(fallbackCommand)), false);
       }
       if (ok) {
@@ -4899,8 +5029,8 @@ async function runHandoffWorker(
         error: ok ? undefined : autonomous.error ?? budgetError ?? `command failed: ${fallbackCommand}`,
         executionMode: autonomous.attempted ? "autonomous" : "command",
         autonomousTurnId: autonomous.turnId,
-        proposedCommand: autonomous.proposedCommand,
-        executedCommand: autonomous.attempted ? autonomous.executedCommand : fallbackCommand
+        proposedCommand: autonomous.proposedCommand ?? (!autonomous.attempted ? fallbackCommand : undefined),
+        executedCommand: autonomous.attempted ? autonomous.executedCommand : ok ? fallbackCommand : undefined
       });
       if (ok) {
         completeRuntimeHandoffAttempt(projectRoot, handoffId, workToken, `completed by ${workerId}`);
@@ -5045,6 +5175,7 @@ async function runAutonomousLaneWorker(
       history: loadRuntimeChatHistory(projectRoot, workerSessionId),
       config,
       system: renderLaneWorkerSystem(lane),
+      executionProfile: lane.executionProfile,
       maxOutputTokens: lane.toolBudget.maxOutputTokens
     });
     writeAiChatTurnRecord(projectRoot, createAiChatTurnRecord(
@@ -5072,13 +5203,14 @@ async function runAutonomousLaneWorker(
   if (proposed.reason) {
     console.log(`reason: ${proposed.reason}`);
   }
-  if (lane.executionProfile?.sandboxMode === "read-only" && !isReadOnlyAgentCommand(proposed.command)) {
+  const sandboxBlocker = executionProfileSandboxCommandBlocker(lane.executionProfile, proposed.command);
+  if (sandboxBlocker) {
     return {
       attempted: true,
       ok: false,
       turnId: turnResult.turn.id,
       proposedCommand: proposed.command,
-      error: `lane command rejected by active TOML sandbox: ${lane.executionProfile.name} sandbox_mode=read-only allows read-only commands only`
+      error: `lane command rejected by active TOML sandbox: ${sandboxBlocker}`
     };
   }
   const validation = validateHandoffContract({
@@ -5383,6 +5515,14 @@ function createRuntimeIntentContext(projectRoot: string, sessionId: string): Pic
 
 function activeProfileSandboxCommandBlocker(projectRoot: string, command: string, readOnly = isReadOnlyAgentCommand(command)): string | undefined {
   const profile = activeCustomAgentExecutionProfile(projectRoot);
+  return executionProfileSandboxCommandBlocker(profile, command, readOnly);
+}
+
+export function executionProfileSandboxCommandBlocker(
+  profile: AgentExecutionProfileRef | undefined,
+  command: string,
+  readOnly = isReadOnlyAgentCommand(command)
+): string | undefined {
   if (profile?.sandboxMode !== "read-only") {
     return undefined;
   }
@@ -10480,6 +10620,7 @@ function renderGeneralHelp(): string {
     "  /setup auto --live",
     "  /pm start",
     "  /agent run --steps 5",
+    "  /agent bind qa-expert --role QA",
     "  /mcp tools stitch",
     "  /workspace",
     "",

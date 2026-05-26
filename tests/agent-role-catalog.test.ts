@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { runParsedCommand } from "../apps/cli/src/index";
+import { executionProfileSandboxCommandBlocker, runParsedCommand } from "../apps/cli/src/index";
 import {
   createHarnessConfig,
   discoverAgentLibraryProfiles,
@@ -17,6 +17,7 @@ import {
 
 const SAMPLE_AGENT_TOML = "/Users/king/Desktop/awesome-codex-subagents/categories/04-quality-security/test-automator.toml";
 const CLI_DEVELOPER_TOML = "/Users/king/Desktop/awesome-codex-subagents/categories/06-developer-experience/cli-developer.toml";
+const QA_EXPERT_TOML = "/Users/king/Desktop/awesome-codex-subagents/categories/04-quality-security/qa-expert.toml";
 const HERMES_OPERATOR_PACK = [
   "workflow-orchestrator",
   "multi-agent-coordinator",
@@ -61,6 +62,16 @@ describe("agent role catalog contracts", () => {
       command: "agent",
       subcommand: "use",
       args: ["test-automator"]
+    });
+
+    expect(parseCli(parseCommandLine("/agent bind qa-expert --role QA --stage QA_REVIEW"))).toMatchObject({
+      command: "agent",
+      subcommand: "bind",
+      args: ["qa-expert"],
+      options: {
+        role: "QA",
+        stage: "QA_REVIEW"
+      }
     });
 
     expect(parseCli(parseCommandLine("/agent discover cli"))).toMatchObject({
@@ -110,6 +121,17 @@ describe("agent role catalog contracts", () => {
     expect(output).toContain("PM");
     expect(output).toContain("test-automator");
     expect(output).toMatch(/custom|imported/i);
+  });
+
+  it("documents role and stage binding commands in agent help", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    expect(await runParsedCommand(root, parseCli(["help", "agent"]))).toBe(true);
+
+    const output = logSpy.mock.calls.flat().join("\n");
+    expect(output).toContain("rph agent bind product-manager --role PM");
+    expect(output).toContain("/agent bind qa-expert --role QA --stage QA_REVIEW");
+    expect(output).toContain("/agent bindings");
   });
 
   it("stores an imported TOML agent as a project-local secretless JSON catalog entry", async () => {
@@ -313,8 +335,8 @@ describe("agent role catalog contracts", () => {
       };
       expect(payload.model).toBe("gpt-5.3-codex-spark");
       expect(payload.reasoning?.effort).toBe("medium");
-      expect(payload.input).toContain("Active custom TOML agent:");
-      expect(payload.input).toContain("test-automator:");
+      expect(payload.input).toContain("Custom TOML execution profile:");
+      expect(payload.input).toContain("test-automator: active project default");
       expect(payload.input).toContain("do not override RPH approval gates");
       return new Response(JSON.stringify({
         output: [{
@@ -376,6 +398,228 @@ describe("agent role catalog contracts", () => {
     expect(run.executionProfile?.model).toBeTruthy();
     expect(run.systemPrompt).toContain("Active custom TOML agent: test-automator");
     expect(run.systemPrompt).toContain("sandbox=");
+  });
+
+  it("binds imported TOML agents to lane roles and stages with active fallback", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    expect(await runParsedCommand(root, parseCli(["agent", "import", CLI_DEVELOPER_TOML]))).toBe(true);
+    expect(await runParsedCommand(root, parseCli(["agent", "import", QA_EXPERT_TOML]))).toBe(true);
+    expect(await runParsedCommand(root, parseCli(["agent", "import", SAMPLE_AGENT_TOML]))).toBe(true);
+    expect(await runParsedCommand(root, parseCli(["agent", "use", "cli-developer"]))).toBe(true);
+    expect(await runParsedCommand(root, parseCli(parseCommandLine("/agent bind qa-expert --role QA")), false)).toBe(true);
+    expect(await runParsedCommand(root, parseCli(parseCommandLine("/agent bind test-automator --stage QA_REVIEW")), false)).toBe(true);
+    expect(await runParsedCommand(root, parseCli(["agent", "bindings"]))).toBe(true);
+
+    const bindingFile = path.join(root, ".rph", "agents", "lane-bindings.json");
+    const bindingText = fs.readFileSync(bindingFile, "utf8");
+    expect(bindingText).toContain("\"profileSlug\": \"qa-expert\"");
+    expect(bindingText).toContain("\"profileSlug\": \"test-automator\"");
+    expect(bindingText).toContain("\"profileFingerprint\"");
+    expect(bindingText).not.toContain("/Users/king/Desktop/awesome-codex-subagents");
+
+    const stageRun = startAgentLaneRun(root, {
+      sessionId: "session-bound-stage",
+      handoffId: "handoff-bound-stage",
+      packet: {
+        fromAgent: "Orchestrator",
+        toAgent: "QA",
+        stage: "QA_REVIEW",
+        summary: "Stage binding should win over role binding.",
+        acceptanceCriteria: ["stage binding wins"],
+        artifactRefs: [],
+        createdAt: "2026-01-01T00:00:00.000Z"
+      },
+      command: "/qa review"
+    });
+    expect(stageRun.executionProfile).toMatchObject({
+      name: "test-automator",
+      slug: "test-automator",
+      binding: {
+        id: "lane:*:QA_REVIEW",
+        stage: "QA_REVIEW"
+      }
+    });
+    expect(stageRun.systemPrompt).toContain("Own test automation engineering work");
+    expect(stageRun.systemPrompt).not.toContain("Own quality assurance planning work");
+
+    const roleRun = startAgentLaneRun(root, {
+      sessionId: "session-bound-role",
+      handoffId: "handoff-bound-role",
+      packet: {
+        fromAgent: "Orchestrator",
+        toAgent: "QA",
+        stage: "RELEASE_REVIEW",
+        summary: "Role binding should win when no stage binding exists.",
+        acceptanceCriteria: ["role binding wins"],
+        artifactRefs: [],
+        createdAt: "2026-01-01T00:00:00.000Z"
+      },
+      command: "/qa review"
+    });
+    expect(roleRun.executionProfile).toMatchObject({
+      name: "qa-expert",
+      slug: "qa-expert",
+      sandboxMode: "read-only",
+      binding: {
+        id: "lane:QA:*",
+        role: "QA"
+      }
+    });
+    expect(roleRun.systemPrompt).toContain("Own quality assurance planning work");
+
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const payload = JSON.parse(String(init?.body ?? "{}")) as { input?: string; model?: string; reasoning?: { effort?: string } };
+      expect(payload.model).toBe("gpt-5.4");
+      expect(payload.reasoning?.effort).toBe("high");
+      expect(payload.input).toContain("Custom TOML execution profile:");
+      expect(payload.input).toContain("bound lane:QA:*");
+      expect(payload.input).toContain("Own quality assurance planning work");
+      return new Response(JSON.stringify({
+        output: [{
+          type: "message",
+          content: [{ type: "output_text", text: JSON.stringify({ action: { type: "respond", message: "qa lane ready" } }) }]
+        }]
+      }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const turnResult = await executeAgentTurn({
+      projectRoot: root,
+      sessionId: "session-bound-role-turn",
+      userInput: "Run this QA lane as the bound profile.",
+      config: createHarnessConfig({ OPENAI_API_KEY: "test-openai" } as NodeJS.ProcessEnv),
+      executionProfile: roleRun.executionProfile,
+      env: { OPENAI_API_KEY: "test-openai" } as NodeJS.ProcessEnv
+    });
+    expect(turnResult.text).toBe("qa lane ready");
+    expect(turnResult.result.executionProfile).toMatchObject({
+      name: "qa-expert",
+      slug: "qa-expert",
+      model: "gpt-5.4",
+      modelReasoningEffort: "high",
+      binding: {
+        id: "lane:QA:*"
+      }
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const fallbackRun = startAgentLaneRun(root, {
+      sessionId: "session-bound-fallback",
+      handoffId: "handoff-bound-fallback",
+      packet: {
+        fromAgent: "Orchestrator",
+        toAgent: "FE",
+        stage: "FE_SPEC",
+        summary: "Unbound lanes should use active project default.",
+        acceptanceCriteria: ["active fallback"],
+        artifactRefs: [],
+        createdAt: "2026-01-01T00:00:00.000Z"
+      },
+      command: "/fe spec"
+    });
+    expect(fallbackRun.executionProfile).toMatchObject({
+      name: "cli-developer",
+      slug: "cli-developer"
+    });
+    expect(fallbackRun.executionProfile?.binding).toBeUndefined();
+
+    const output = logSpy.mock.calls.flat().join("\n");
+    expect(output).toContain("agent binding saved: lane role=QA stage=* profile=qa-expert");
+    expect(output).toContain("agent binding saved: lane role=* stage=QA_REVIEW profile=test-automator");
+    expect(output).toContain("Custom agent lane bindings");
+  });
+
+  it("fails closed when a lane binding points at a missing or changed profile", async () => {
+    expect(await runParsedCommand(root, parseCli(["agent", "import", QA_EXPERT_TOML]))).toBe(true);
+    expect(await runParsedCommand(root, parseCli(parseCommandLine("/agent bind qa-expert --role QA")), false)).toBe(true);
+
+    const bindingFile = path.join(root, ".rph", "agents", "lane-bindings.json");
+    const registry = JSON.parse(fs.readFileSync(bindingFile, "utf8")) as { bindings: Array<Record<string, unknown>> };
+    delete registry.bindings[0].profileFingerprint;
+    fs.writeFileSync(bindingFile, `${JSON.stringify(registry, null, 2)}\n`);
+    expect(() => startAgentLaneRun(root, {
+      sessionId: "session-missing-fingerprint",
+      handoffId: "handoff-missing-fingerprint",
+      packet: {
+        fromAgent: "Orchestrator",
+        toAgent: "QA",
+        stage: "QA_REVIEW",
+        summary: "Missing binding fingerprint must not silently run.",
+        acceptanceCriteria: ["fail closed"],
+        artifactRefs: [],
+        createdAt: "2026-01-01T00:00:00.000Z"
+      },
+      command: "/qa review"
+    })).toThrow(/missing a fingerprint/);
+
+    expect(await runParsedCommand(root, parseCli(parseCommandLine("/agent bind qa-expert --role QA")), false)).toBe(true);
+    const qaProfileFile = path.join(root, ".rph", "agents", "qa-expert.json");
+    const stored = JSON.parse(fs.readFileSync(qaProfileFile, "utf8")) as { developerInstructions: string };
+    stored.developerInstructions = `${stored.developerInstructions}\nChanged after binding.`;
+    fs.writeFileSync(qaProfileFile, `${JSON.stringify(stored, null, 2)}\n`);
+    expect(() => startAgentLaneRun(root, {
+      sessionId: "session-stale-binding",
+      handoffId: "handoff-stale-binding",
+      packet: {
+        fromAgent: "Orchestrator",
+        toAgent: "QA",
+        stage: "QA_REVIEW",
+        summary: "Changed binding target must not silently run.",
+        acceptanceCriteria: ["fail closed"],
+        artifactRefs: [],
+        createdAt: "2026-01-01T00:00:00.000Z"
+      },
+      command: "/qa review"
+    })).toThrow(/binding is stale/);
+
+    fs.unlinkSync(qaProfileFile);
+    expect(() => startAgentLaneRun(root, {
+      sessionId: "session-broken-binding",
+      handoffId: "handoff-broken-binding",
+      packet: {
+        fromAgent: "Orchestrator",
+        toAgent: "QA",
+        stage: "QA_REVIEW",
+        summary: "Broken binding must not silently fall back.",
+        acceptanceCriteria: ["fail closed"],
+        artifactRefs: [],
+        createdAt: "2026-01-01T00:00:00.000Z"
+      },
+      command: "/qa review"
+    })).toThrow(/binding is broken/);
+  });
+
+  it("blocks bound read-only lane fallback commands with the same sandbox gate", async () => {
+    expect(await runParsedCommand(root, parseCli(["agent", "import", QA_EXPERT_TOML]))).toBe(true);
+    expect(await runParsedCommand(root, parseCli(parseCommandLine("/agent bind qa-expert --role QA")), false)).toBe(true);
+
+    const run = startAgentLaneRun(root, {
+      sessionId: "session-bound-read-only-fallback",
+      handoffId: "handoff-bound-read-only-fallback",
+      packet: {
+        fromAgent: "Orchestrator",
+        toAgent: "QA",
+        stage: "SETUP",
+        summary: "Providerless fallback must still obey bound QA sandbox.",
+        acceptanceCriteria: ["read-only bound profile blocks mutating fallback"],
+        blockers: [],
+        artifactRefs: [],
+        nextCommand: "/qa review",
+        createdAt: "2026-01-01T00:00:00.000Z"
+      },
+      command: "/qa review"
+    });
+    expect(run.executionProfile).toMatchObject({
+      slug: "qa-expert",
+      sandboxMode: "read-only",
+      binding: {
+        id: "lane:QA:*"
+      }
+    });
+    expect(executionProfileSandboxCommandBlocker(run.executionProfile, "/qa review")).toBe(
+      "qa-expert sandbox_mode=read-only allows read-only commands only; proposed command was /qa review"
+    );
+    expect(executionProfileSandboxCommandBlocker(run.executionProfile, "/status")).toBeUndefined();
   });
 
   it("fails safely for missing files and malformed TOML imports", async () => {

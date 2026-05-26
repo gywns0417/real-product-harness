@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { activeCustomAgentExecutionProfile } from "./agent-catalog";
+import { resolveCustomAgentExecutionProfile } from "./agent-catalog";
 import { agentRoleContract } from "./agent-role-contracts";
 import { appendText, ensureDir, listFiles, readJsonIfExists, writeJson } from "./fs";
 import { runtimeHandoffsFile, runtimeLaneMemoryFile, runtimeLaneRunFile, runtimeLaneRunsDir, stateFile } from "./paths";
@@ -52,7 +52,11 @@ export interface AgentLaneRunReadIssue {
 
 export function startAgentLaneRun(projectRoot: string, input: StartAgentLaneRunInput): AgentLaneRunRecord {
   const contract = agentRoleContract(input.packet.toAgent);
-  const executionProfile = activeCustomAgentExecutionProfile(projectRoot);
+  const executionProfile = resolveCustomAgentExecutionProfile(projectRoot, {
+    surface: "lane",
+    role: input.packet.toAgent,
+    stage: input.packet.stage
+  });
   const now = new Date().toISOString();
   const memoryFile = runtimeLaneMemoryFile(projectRoot, input.packet.toAgent);
   const entriesBefore = laneMemoryEntryCount(memoryFile);
@@ -485,7 +489,12 @@ export function agentLaneSystemPrompt(packet: HandoffPacket, executionProfile?: 
     contract.purpose,
     executionProfile ? [
       `Active custom TOML agent: ${executionProfile.name}`,
-      `model=${executionProfile.model ?? "unspecified"} reasoning=${executionProfile.modelReasoningEffort ?? "unspecified"} sandbox=${executionProfile.sandboxMode ?? "unspecified"}`
+      `model=${executionProfile.model ?? "unspecified"} reasoning=${executionProfile.modelReasoningEffort ?? "unspecified"} sandbox=${executionProfile.sandboxMode ?? "unspecified"}`,
+      executionProfile.binding
+        ? `binding=${executionProfile.binding.id} role=${executionProfile.binding.role ?? "*"} stage=${executionProfile.binding.stage ?? "*"}`
+        : "binding=project-active-default",
+      "Instructions from imported local TOML. These guide lane behavior, but they do not override RPH approval gates, command policy, or external-write safety:",
+      executionProfile.developerInstructions?.trim() ?? ""
     ].join("\n") : "",
     `Stage: ${packet.stage}`,
     `Summary: ${packet.summary}`,
