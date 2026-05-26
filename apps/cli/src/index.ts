@@ -4320,6 +4320,10 @@ async function handleRuntimeAgentInput(
   if (confirmedIntent !== null) {
     return confirmedIntent;
   }
+  const continued = await tryContinueRuntimeWorkFromPlainChat(projectRoot, sessionId, userInput);
+  if (continued !== null) {
+    return continued;
+  }
   let plan = createRuntimePlan(projectRoot, userInput);
   const hasReadyAi = safeHasReadyAiProvider(projectRoot);
   const wasInitialized = isRuntimeProjectInitialized(projectRoot);
@@ -4377,6 +4381,53 @@ async function handleRuntimeAgentInput(
     return false;
   }
   return handleRuntimeChat(projectRoot, sessionId, chatHistory, userInput);
+}
+
+async function tryContinueRuntimeWorkFromPlainChat(
+  projectRoot: string,
+  sessionId: string,
+  userInput: string
+): Promise<boolean | null> {
+  if (naturalRuntimeIntent(userInput) !== "continue" || hasNaturalNegation(userInput) || !isRuntimeProjectInitialized(projectRoot)) {
+    return null;
+  }
+  const state = loadState(projectRoot);
+  const session = loadRuntimeSession(projectRoot);
+  if (!session || session.status === "paused" || state.paused) {
+    return null;
+  }
+
+  const reconciled = reconcileRuntimeStageQueue(projectRoot, session) ?? session;
+  materializeRuntimeHandoffsFromSession(projectRoot, reconciled);
+  const current = loadRuntimeSession(projectRoot) ?? reconciled;
+  const recovery = runtimeRecoveryState(projectRoot, current);
+  const hasRunnableQueue = recovery.claimableHandoffs.length > 0 || recovery.mergeableLaneRuns.length > 0 || Boolean(current.handoffPacket);
+  if (!hasRunnableQueue) {
+    if (recovery.pendingExternal?.status === "pending") {
+      console.log(`continue blocked: external action requires explicit approval: /agent approve-action ${recovery.pendingExternal.id}`);
+      return true;
+    }
+    if (recovery.pendingIntents.length > 0) {
+      const next = [...recovery.pendingIntents].reverse().find((record) => !runtimeIntentConfirmBlocker(projectRoot, record));
+      console.log(`continue blocked: pending runtime intent requires explicit confirmation: ${next ? `/agent confirm-intent ${next.id}` : "/agent intents"}`);
+      console.log("confirm exactly: confirm 또는 이 계획 실행해줘");
+      return true;
+    }
+    return null;
+  }
+
+  const command = "/agent run --steps 6";
+  console.log(`plain continue: ${command}`);
+  recordRuntimeSessionEvent(projectRoot, sessionId, {
+    kind: "command",
+    message: `plain continue: ${command}`,
+    ok: true
+  });
+  await runAgentOrchestrationLoop(projectRoot, sessionId, {
+    maxSteps: loopMaxSteps({}),
+    concurrency: loopConcurrency({})
+  });
+  return true;
 }
 
 type NaturalRuntimeIntent = "start" | "continue" | "approve" | "reject" | "status" | "session" | "productDefinition";

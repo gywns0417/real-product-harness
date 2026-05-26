@@ -1447,6 +1447,53 @@ describe("Hermes-like runtime acceptance", () => {
     expect(debugLanes.stdout).toContain(`worker-pid: ${lane.workerPid}`);
   }, 10000);
 
+  it("routes plain runtime continue to queued handoff work instead of provider chat", async () => {
+    const handoffPath = path.join(root, ".rph", "runtime", "handoffs.json");
+    fs.mkdirSync(path.dirname(handoffPath), { recursive: true });
+    fs.writeFileSync(handoffPath, JSON.stringify([
+      {
+        id: "handoff-plain-continue",
+        sessionId: "session-test",
+        status: "pending",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        packet: {
+          fromAgent: "Orchestrator",
+          toAgent: "PM",
+          stage: "SETUP",
+          summary: "Start PM lane from setup.",
+          artifactRefs: [],
+          acceptanceCriteria: ["PM lane starts"],
+          blockers: [],
+          nextCommand: "/pm start",
+          resumeCursor: "stage:SETUP",
+          createdAt: "2026-01-01T00:00:00.000Z"
+        }
+      }
+    ], null, 2));
+
+    const result = await runCli(["shell"], {
+      cwd: root,
+      stdinChunks: [
+        { text: "계속해줘\n", delayMs: 0 },
+        { text: "/exit\n", delayMs: 50 }
+      ]
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("plain continue: /agent run --steps 6");
+    expect(result.stdout).toContain("orchestration loop: max_steps=6 concurrency=3");
+    expect(result.stdout).toContain("orchestrator step 1: /pm start");
+    expect(result.stdout).toContain("orchestration blocked: user approval required: /pm approve product-definition");
+    expect(result.stdout).not.toContain("AI agent is not connected yet.");
+    const state = JSON.parse(fs.readFileSync(path.join(root, ".rph", "state.json"), "utf8")) as {
+      currentStage: string;
+    };
+    const handoffs = JSON.parse(fs.readFileSync(handoffPath, "utf8")) as Array<{ status: string }>;
+    expect(state.currentStage).toBe("PM_PRODUCT_DEFINITION_REVIEW");
+    expect(handoffs[0].status).toBe("completed");
+  }, 10000);
+
   it("reaps a dead worker lease and requeues the handoff before orchestration", async () => {
     const handoff = recordRuntimeHandoff(root, "session-dead-worker", {
       fromAgent: "Orchestrator",
@@ -4781,6 +4828,29 @@ describe("Hermes-like CLI contracts", () => {
       status: "confirmed",
       confirmedBy: "runtime-chat"
     });
+  }, 10000);
+
+  it("does not consume a pending runtime intent from plain continue text", async () => {
+    const result = await runCli(["shell"], {
+      cwd: root,
+      stdinChunks: [
+        { text: "이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: AI 회의록 액션아이템 SaaS\n", delayMs: 0 },
+        { text: "계속해줘\n", delayMs: 50 },
+        { text: "/exit\n", delayMs: 50 }
+      ]
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("Execution plan");
+    expect(result.stdout).toContain("continue blocked: pending runtime intent requires explicit confirmation: /agent confirm-intent");
+    expect(result.stdout).toContain("confirm exactly: confirm 또는 이 계획 실행해줘");
+    expect(result.stdout).not.toContain("Productize golden path complete");
+    expect(fs.existsSync(path.join(root, ".rph", "golden-path", "latest.json"))).toBe(false);
+    const intents = JSON.parse(fs.readFileSync(path.join(root, ".rph", "runtime", "intents.json"), "utf8")) as Array<{
+      status: string;
+    }>;
+    expect(intents).toHaveLength(1);
+    expect(intents[0].status).toBe("pending");
   }, 10000);
 
   it("continues safely after exact plain runtime confirm-and-continue phrasing", async () => {
