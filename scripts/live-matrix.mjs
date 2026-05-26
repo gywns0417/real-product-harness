@@ -11,8 +11,12 @@ const settingsEntry = path.join(repoRoot, "dist", "packages", "core", "src", "se
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rph-live-matrix-"));
 const env = { ...process.env, ...readDotEnv(path.join(repoRoot, ".env")) };
 const configuredOnly = process.argv.includes("--configured-only");
+const auditMode = process.argv.includes("--audit");
+const strictAudit = process.argv.includes("--strict");
 const validateReportIndex = process.argv.indexOf("--validate-report");
 const validateReportPath = validateReportIndex >= 0 ? process.argv[validateReportIndex + 1] : null;
+const outputIndex = process.argv.indexOf("--output");
+const outputPath = outputIndex >= 0 ? process.argv[outputIndex + 1] : null;
 
 if (!validateReportPath && !fs.existsSync(cliEntry)) {
   fail(`CLI dist entry not found: ${cliEntry}. Run pnpm run build first.`);
@@ -130,11 +134,30 @@ for (const check of checks) {
 console.log(`tmp: ${tmpRoot}`);
 console.log(`report: ${reportPath}`);
 
-if (failures.length > 0) {
+if (auditMode) {
+  const audit = buildAuditReport({
+    configuredOnly,
+    reportPath,
+    report,
+    checks,
+    onboardingProof,
+    failures,
+    result
+  });
+  const artifacts = writeAuditArtifacts(audit, outputPath);
+  console.log(`audit: ${artifacts.jsonPath}`);
+  console.log(`audit_markdown: ${artifacts.markdownPath}`);
+}
+
+if (failures.length > 0 && (!auditMode || strictAudit)) {
   fail(`live matrix failed:\n${failures.map((item) => `- ${item}`).join("\n")}`);
 }
 
-console.log("live matrix passed");
+if (failures.length > 0) {
+  console.log("live matrix audit complete");
+} else {
+  console.log("live matrix passed");
+}
 
 function buildRequiredMatrix(aiDefinitions, mcpDefinitions) {
   return [
@@ -248,6 +271,127 @@ function stageCovers(actual, required) {
   return (rank[actual] ?? 0) >= (rank[required] ?? 0);
 }
 
+function buildAuditReport(input) {
+  const counts = { passed: 0, failed: 0, skipped: 0 };
+  for (const check of input.checks) {
+    if (check.status === "passed" || check.status === "failed" || check.status === "skipped") {
+      counts[check.status] += 1;
+    }
+  }
+  const checks = input.checks.map((check) => {
+    const proof = input.onboardingProof.find((item) => item.kind === check.kind && item.id === check.id);
+    const failedStage = check.readiness?.stages?.find((stage) => stage.status === "failed");
+    return sanitizeJson({
+      kind: check.kind,
+      id: check.id,
+      status: check.status,
+      trust: proof?.trustCategory ?? check.readiness?.mode ?? "unverified",
+      provenStage: check.readiness?.provenStage ?? "none",
+      message: check.message,
+      cause: check.missingEnv?.length > 0
+        ? `missing ${check.missingEnv.join(", ")}`
+        : failedStage
+          ? `${failedStage.stage} failed: ${failedStage.message}`
+          : check.message,
+      missingEnv: check.missingEnv ?? [],
+      identity: check.identity ?? null,
+      firstActionProof: check.firstActionProof ?? null,
+      policy: check.policy ?? null
+    });
+  });
+  return sanitizeJson({
+    schema: "rph-live-audit-v0",
+    generatedAt: new Date().toISOString(),
+    configuredOnly: input.configuredOnly,
+    strict: !auditMode || strictAudit,
+    setupExitStatus: input.result.status,
+    sourceReport: input.reportPath,
+    provenance: input.report.provenance ?? null,
+    summary: {
+      total: input.checks.length,
+      passed: counts.passed,
+      failed: counts.failed,
+      skipped: counts.skipped,
+      releaseReady: input.failures.length === 0
+    },
+    failedTargets: checks.filter((check) => check.status === "failed").map((check) => `${check.kind}:${check.id}`),
+    skippedTargets: checks.filter((check) => check.status === "skipped").map((check) => `${check.kind}:${check.id}`),
+    checks,
+    failures: input.failures.map(redactSecretText)
+  });
+}
+
+function writeAuditArtifacts(audit, requestedOutputPath) {
+  const jsonPath = resolveAuditJsonPath(requestedOutputPath);
+  const markdownPath = jsonPath.endsWith(".json")
+    ? `${jsonPath.slice(0, -5)}.md`
+    : `${jsonPath}.md`;
+  fs.mkdirSync(path.dirname(jsonPath), { recursive: true });
+  fs.writeFileSync(jsonPath, `${JSON.stringify(audit, null, 2)}\n`);
+  fs.writeFileSync(markdownPath, renderAuditMarkdown(audit));
+  return { jsonPath, markdownPath };
+}
+
+function resolveAuditJsonPath(requestedOutputPath) {
+  if (!requestedOutputPath) {
+    return path.join(repoRoot, ".rph", "live-audit", "latest.json");
+  }
+  const resolved = path.resolve(requestedOutputPath);
+  if (resolved.endsWith(".json")) {
+    return resolved;
+  }
+  return path.join(resolved, "latest.json");
+}
+
+function renderAuditMarkdown(audit) {
+  const lines = [
+    "# RPH Live Credential Audit",
+    "",
+    `- generated_at: ${audit.generatedAt}`,
+    `- release_ready: ${audit.summary.releaseReady ? "yes" : "no"}`,
+    `- summary: passed=${audit.summary.passed} failed=${audit.summary.failed} skipped=${audit.summary.skipped} total=${audit.summary.total}`,
+    "",
+    "## Checks",
+    ""
+  ];
+  for (const check of audit.checks) {
+    lines.push(`- ${check.kind}:${check.id} status=${check.status} trust=${check.trust}:${check.provenStage}`);
+    if (check.cause) {
+      lines.push(`  - cause: ${check.cause}`);
+    }
+    if (check.missingEnv.length > 0) {
+      lines.push(`  - missing_env: ${check.missingEnv.join(", ")}`);
+    }
+  }
+  if (audit.failures.length > 0) {
+    lines.push("", "## Release Blockers", "");
+    for (const failure of audit.failures) {
+      lines.push(`- ${failure}`);
+    }
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+function sanitizeJson(value) {
+  if (Array.isArray(value)) {
+    return value.map(sanitizeJson);
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, sanitizeJson(item)]));
+  }
+  if (typeof value === "string") {
+    return redactSecretText(value);
+  }
+  return value;
+}
+
+function redactSecretText(value) {
+  return value
+    .replace(/\b(?:sk|ghp|github_pat|xoxb|figd|ntn)_[A-Za-z0-9_-]{8,}\b/g, "[redacted]")
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}\b/gi, "Bearer [redacted]")
+    .replace(/\b(api[_-]?key|token|secret|authorization)(=|:)\s*["']?[^,\s"}]+/gi, "$1$2<redacted>");
+}
+
 function readDotEnv(filePath) {
   if (!fs.existsSync(filePath)) {
     return {};
@@ -286,6 +430,6 @@ function removeTempSecretFiles(projectRoot) {
 }
 
 function fail(message) {
-  console.error(message);
+  console.error(redactSecretText(message));
   process.exit(1);
 }

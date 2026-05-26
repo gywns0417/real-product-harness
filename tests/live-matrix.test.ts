@@ -134,6 +134,91 @@ describe("live matrix report integrity", () => {
     }
   });
 
+  it("writes a sanitized audit report for invalid configured credentials without passing release readiness", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rph-live-matrix-audit-"));
+    try {
+      const reportPath = path.join(root, "latest.json");
+      const auditPath = path.join(root, "audit", "latest.json");
+      const secretLike = "sk_test_secret_value_1234567890";
+      const report = createMatrixReport();
+      report.checks[0] = failedAiCheck("openai", "2026-01-01T00:00:00.000Z");
+      report.checks[0].message = `credential: token=${secretLike} rejected (401); generation: skipped`;
+      report.onboardingProof[0] = proofFromCheck(report.checks[0]);
+      fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
+
+      const result = spawnSync(process.execPath, [
+        path.resolve(__dirname, "..", "scripts", "live-matrix.mjs"),
+        "--configured-only",
+        "--audit",
+        "--output",
+        auditPath,
+        "--validate-report",
+        reportPath
+      ], {
+        cwd: path.resolve(__dirname, ".."),
+        encoding: "utf8"
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("configured live matrix summary");
+      expect(result.stdout).toContain("ai:openai status=failed");
+      expect(result.stdout).toContain("audit:");
+      expect(result.stdout).toContain("live matrix audit complete");
+      expect(result.stdout).not.toContain(secretLike);
+      const rawAudit = fs.readFileSync(auditPath, "utf8");
+      const rawMarkdown = fs.readFileSync(auditPath.replace(/\.json$/, ".md"), "utf8");
+      expect(rawAudit).toContain("\"schema\": \"rph-live-audit-v0\"");
+      expect(rawAudit).toContain("\"releaseReady\": false");
+      expect(rawAudit).toContain("ai:openai");
+      expect(rawAudit).toContain("<redacted>");
+      expect(rawAudit).not.toContain(secretLike);
+      expect(rawMarkdown).toContain("release_ready: no");
+      expect(rawMarkdown).toContain("ai:openai status=failed");
+      expect(rawMarkdown).not.toContain(secretLike);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails strict audit validation when an invalid configured credential is present", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rph-live-matrix-audit-strict-"));
+    try {
+      const reportPath = path.join(root, "latest.json");
+      const auditPath = path.join(root, "audit", "latest.json");
+      const secretLike = "sk_test_secret_value_0987654321";
+      const report = createMatrixReport();
+      report.checks[0] = failedAiCheck("openai", "2026-01-01T00:00:00.000Z");
+      report.checks[0].message = `credential: token=${secretLike} rejected (401); generation: skipped`;
+      report.onboardingProof[0] = proofFromCheck(report.checks[0]);
+      fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
+
+      const result = spawnSync(process.execPath, [
+        path.resolve(__dirname, "..", "scripts", "live-matrix.mjs"),
+        "--configured-only",
+        "--audit",
+        "--strict",
+        "--output",
+        auditPath,
+        "--validate-report",
+        reportPath
+      ], {
+        cwd: path.resolve(__dirname, ".."),
+        encoding: "utf8"
+      });
+
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain("audit:");
+      expect(result.stderr).toContain("live matrix failed");
+      expect(result.stderr).toContain("ai:openai status=failed");
+      expect(result.stderr).toContain("<redacted>");
+      expect(result.stderr).not.toContain(secretLike);
+      expect(fs.existsSync(auditPath)).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("fails when onboarding proof trust metadata drifts from checks", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rph-live-matrix-trust-"));
     try {

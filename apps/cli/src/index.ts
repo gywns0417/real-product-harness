@@ -511,12 +511,14 @@ const HELP_TOPIC_LINES: Record<string, string[]> = {
     "  rph live ai:gemini",
     "  rph live mcp:stitch",
     "  rph live target mcp:github",
+    "  pnpm run live:audit",
     "",
     "Runtime slash form:",
     "  /live ai:openai",
     "  /live mcp:stitch",
     "",
-    "Runs one selected provider or connector through live setup/test, writes .rph/connections/latest.json, and exits non-zero when the target is not verified."
+    "Runs one selected provider or connector through live setup/test, writes .rph/connections/latest.json, and exits non-zero when the target is not verified.",
+    "live:audit writes .rph/live-audit/latest.json and .md while preserving release-gate failure semantics in strict mode."
   ],
   proofs: [
     "Proof ledger commands",
@@ -797,6 +799,10 @@ async function runRuntimeShell(initialRoot: string): Promise<void> {
   printRuntimeBanner(projectRoot, sessionId);
   if (isRuntimeProjectInitialized(projectRoot)) {
     const manifest = ensureRuntimeSession(projectRoot, sessionId);
+    printRuntimeHomeCard(projectRoot, {
+      reason: runtimeHomeReasonFromManifest(manifest),
+      commandSurface: "slash"
+    });
     printRuntimeDigest(projectRoot, manifest);
     if (manifest.status === "paused") {
       console.log("이전 runtime session이 일시정지 상태입니다. 계속하려면 /resume 을 입력하세요.");
@@ -810,6 +816,10 @@ async function runRuntimeShell(initialRoot: string): Promise<void> {
     }
     printRuntimeRecoveryBrief(projectRoot, manifest, { onlyWhenActionable: true });
   } else {
+    printRuntimeHomeCard(projectRoot, {
+      reason: "setup required before agent chat can run",
+      commandSurface: "slash"
+    });
     console.log("Fresh workspace.");
     console.log("next: /setup auto --live");
     console.log("fallback: /pm start");
@@ -6794,6 +6804,12 @@ function printRuntimeRecoveryCard(
   const commandSurface = options.commandSurface ?? "rph";
   console.log(renderRuntimeHero(projectRoot, resolveRuntimeSessionId(projectRoot), guidanceHarnessConfig(projectRoot)));
   console.log("");
+  printRuntimeHomeCard(projectRoot, {
+    reason: options.reason,
+    proposedCommand: options.proposedCommand,
+    commandSurface
+  });
+  console.log("");
   console.log(options.title);
   console.log(`- current: ${options.reason}`);
   if (options.proposedCommand) {
@@ -6805,6 +6821,64 @@ function printRuntimeRecoveryCard(
   console.log(`- ${runtimeSurfaceCommand(commandSurface, "setup auto --live")}`);
   console.log(`- ${runtimeSurfaceCommand(commandSurface, "setup auto --from-env --live")}`);
   console.log(`- ${runtimeSurfaceCommand(commandSurface, "help setup")}`);
+}
+
+function printRuntimeHomeCard(
+  projectRoot: string,
+  options: {
+    reason: string;
+    proposedCommand?: string;
+    commandSurface?: CommandSurface;
+  }
+): void {
+  const commandSurface = options.commandSurface ?? "rph";
+  const config = guidanceHarnessConfig(projectRoot);
+  const initialized = isRuntimeProjectInitialized(projectRoot);
+  const checks = initialized ? readLatestConnectionChecks(projectRoot) : [];
+  const passedAi = checks.filter((check) => check.kind === "ai" && check.status === "passed").map((check) => check.id);
+  const passedMcp = checks.filter((check) => check.kind === "mcp" && check.status === "passed").map((check) => check.id);
+  const configuredAi = configuredAiProviders(config).map((provider) => provider.id);
+  const configuredMcp = configuredMcpServers(config).map((server) => server.id);
+  const failed = checks.filter((check) => check.status === "failed");
+  const connectedAi = passedAi.length > 0
+    ? `verified:${passedAi.join(",")}`
+    : configuredAi.length > 0
+      ? `configured:${configuredAi.join(",")}`
+      : "none";
+  const connectedMcp = passedMcp.length > 0
+    ? `verified:${passedMcp.join(",")}`
+    : configuredMcp.length > 0
+      ? `configured:${configuredMcp.join(",")}`
+      : "none";
+  const primaryNext = options.proposedCommand
+    ? runtimeSurfaceCommand(commandSurface, options.proposedCommand.replace(/^\//, ""))
+    : failed.length > 0
+      ? runtimeSurfaceCommand(commandSurface, "doctor --live")
+      : configuredAi.length > 0
+        ? (commandSurface === "rph" ? `rph "다음에 뭐 하면 돼?"` : "일반 텍스트로 AI agent와 대화")
+        : runtimeSurfaceCommand(commandSurface, "setup auto --live");
+  const chatEntry = configuredAi.length > 0
+    ? "plain text goes to the connected AI agent"
+    : "connect an AI provider, then type plain text here";
+  console.log("RPH home");
+  console.log(`- connected AI: ${connectedAi}`);
+  console.log(`- connected MCP: ${connectedMcp}`);
+  console.log(`- current blocker: ${options.reason}`);
+  console.log(`- primary next action: ${primaryNext}`);
+  console.log(`- chat entry: ${chatEntry}`);
+}
+
+function runtimeHomeReasonFromManifest(manifest: RuntimeSessionManifest): string {
+  if (manifest.status === "paused") {
+    return "runtime paused";
+  }
+  if (manifest.status === "blocked") {
+    return manifest.blocker ?? "runtime blocked";
+  }
+  if (manifest.pendingAction?.command) {
+    return `pending action ${manifest.pendingAction.command}`;
+  }
+  return "none";
 }
 
 function printFreshProjectStatus(projectRoot: string, commandSurface: CommandSurface = "rph"): void {
@@ -7875,11 +7949,11 @@ async function finishLiveConnectionOnboarding(
     return;
   }
   await bindVerifiedMcpReadOnlyContracts(projectRoot, checks, options);
-  assertLiveSetupSucceeded(checks, options);
+  assertLiveSetupSucceeded(projectRoot, checks, options);
   await printSetupFirstSuccessExperience(projectRoot, checks, options);
 }
 
-function assertLiveSetupSucceeded(checks: ConnectionCheck[], options: Record<string, string | boolean>): void {
+function assertLiveSetupSucceeded(projectRoot: string, checks: ConnectionCheck[], options: Record<string, string | boolean>): void {
   if (!optionBool(options, "live")) {
     return;
   }
@@ -7891,7 +7965,7 @@ function assertLiveSetupSucceeded(checks: ConnectionCheck[], options: Record<str
     throw new Error(`setup live check failed: ${failures.map((check) => `${check.kind}:${check.id} ${check.status} (${check.message})`).join("; ")}`);
   }
   console.log("setup live check passed");
-  printSetupConnectedHandoff(checks, options);
+  printSetupConnectedHandoff(projectRoot, checks, options);
   if (checks.some((check) => check.kind === "ai" && check.status === "passed")) {
     console.log("이제 일반 텍스트를 입력하면 연결된 AI agent와 대화합니다.");
   } else {
@@ -7901,7 +7975,7 @@ function assertLiveSetupSucceeded(checks: ConnectionCheck[], options: Record<str
   console.log(`next: ${runtimeSurfaceCommand(commandSurfaceFromOptions(options), "pm start")}`);
 }
 
-function printSetupConnectedHandoff(checks: ConnectionCheck[], options: Record<string, string | boolean>): void {
+function printSetupConnectedHandoff(projectRoot: string, checks: ConnectionCheck[], options: Record<string, string | boolean>): void {
   const passed = checks.filter((check) => check.status === "passed");
   const ai = passed.filter((check) => check.kind === "ai").map((check) => check.id).join(", ") || "none";
   const mcp = passed.filter((check) => check.kind === "mcp").map((check) => check.id).join(", ") || "none";
@@ -7917,6 +7991,11 @@ function printSetupConnectedHandoff(checks: ConnectionCheck[], options: Record<s
   }
   console.log(`- start product work: ${runtimeSurfaceCommand(commandSurface, "pm start")}`);
   console.log(`- inspect setup: ${runtimeSurfaceCommand(commandSurface, "status")} | ${runtimeSurfaceCommand(commandSurface, "setup auto --from-env --live")}`);
+  console.log("");
+  printRuntimeHomeCard(projectRoot, {
+    reason: "none",
+    commandSurface
+  });
 }
 
 async function printSetupFirstSuccessExperience(
@@ -11483,6 +11562,8 @@ function renderGeneralHelp(): string {
     "    Connect AI/MCP credentials, apply config, and verify live connections.",
     "  rph live ai:openai",
     "    Verify one provider or MCP target without running the full live matrix.",
+    "  pnpm run live:audit",
+    "    Write a sanitized current credential audit to .rph/live-audit/latest.json and .md.",
     "  rph status",
     "    Show the active workflow, runtime graph digest, blockers, and next safe command.",
     "  rph workspace",

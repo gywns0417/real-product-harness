@@ -6579,11 +6579,18 @@ describe("Hermes-like CLI contracts", () => {
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toContain("Real Product Harness");
       expect(result.stdout).toContain("shell ready");
+      expect(result.stdout).toContain("RPH home");
+      expect(result.stdout).toContain("- connected AI: none");
+      expect(result.stdout).toContain("- connected MCP: none");
+      expect(result.stdout).toContain("- current blocker: setup required before agent chat can run");
+      expect(result.stdout).toContain("- primary next action: rph setup auto --live");
+      expect(result.stdout).toContain("- chat entry: connect an AI provider, then type plain text here");
       expect(result.stdout).toContain("RPH start");
       expect(result.stdout).toContain("setup required before agent chat can run");
       expect(result.stdout).toContain("next:");
       expect(result.stdout).toContain("- rph setup auto --live");
       expect(result.stdout).toContain("- rph help setup");
+      expect(result.stdout).not.toContain("RPH Setup Auto");
       expect(fs.existsSync(path.join(uninitializedRoot, ".rph"))).toBe(false);
     } finally {
       fs.rmSync(uninitializedRoot, { recursive: true, force: true });

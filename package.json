@@ -28,6 +28,7 @@
     "smoke:top-level-golden-path": "node scripts/top-level-golden-path-smoke.mjs",
     "smoke:install-e2e": "node scripts/install-e2e-smoke.mjs",
     "live:matrix": "node scripts/live-matrix.mjs",
+    "live:audit": "node scripts/live-matrix.mjs --configured-only --audit",
     "live:target": "node scripts/live-target.mjs",
     "live:configured": "node scripts/live-matrix.mjs --configured-only",
     "release:check": "pnpm run lint && pnpm run build && pnpm test && pnpm run smoke:productize && pnpm run smoke:hermes-e2e && pnpm run smoke:setup-chat && pnpm run smoke:provider-onboarding && pnpm run smoke:mcp-runtime && pnpm run smoke:notion-readback && pnpm run smoke:github-readback && pnpm run smoke:mutable-action && pnpm run smoke:handoff-worker-race && pnpm run smoke:top-level-golden-path && pnpm run smoke:github-onboarding && pnpm run check:install && pnpm run smoke:install-e2e",
