@@ -72,13 +72,14 @@ assertIncludes(init, "function /setup() { command rph /setup \"$@\"; }", "init.s
 assertIncludes(init, "function /home() { command rph /home \"$@\"; }", "init.sh");
 assertIncludes(init, "function /workspace() { command rph /workspace \"$@\"; }", "init.sh");
 assertIncludes(init, "function /live() { command rph /live \"$@\"; }", "init.sh");
-assertIncludes(init, "_rph_slash_helpers=\"/shell /chat /pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /daemon /productize /doctor /help\"", "init.sh");
+assertIncludes(init, "function /go() { command rph /go \"$@\"; }", "init.sh");
+assertIncludes(init, "_rph_slash_helpers=\"/shell /chat /go /pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /daemon /productize /doctor /help\"", "init.sh");
 assertIncludes(init, 'if [ "${RPH_ENABLE_SLASH_COMMANDS:-1}" = "1" ]; then', "init.sh");
 assertIncludes(init, 'complete -F _rph_bash_complete "$helper" 2>/dev/null || true', "init.sh");
-assertIncludes(completion, "#compdef rph /shell /chat /pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /daemon /productize /doctor /help", "completion.zsh");
+assertIncludes(completion, "#compdef rph /shell /chat /go /pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /daemon /productize /doctor /help", "completion.zsh");
 assertIncludes(completion, "help version update home go shell runtime init status workspace next pause resume cancel setup settings", "completion.zsh");
 assertIncludes(completion, "_rph_subcommands()", "completion.zsh");
-assertIncludes(completion, "compdef _rph rph /shell /chat /pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /daemon /productize /doctor /help", "completion.zsh");
+assertIncludes(completion, "compdef _rph rph /shell /chat /go /pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /daemon /productize /doctor /help", "completion.zsh");
 assertIncludes(completion, "setup_cmds=(auto repair detect apply check ai provider mcp custom)", "completion.zsh");
 assertIncludes(completion, "doctor_cmds=(status install shell)", "completion.zsh");
 assertIncludes(completion, "agent_cmds=(status roles catalog discover search import install use activate bind bindings unbind session journal replay graph handoffs actions action-approvals intents confirm-intent dismiss-intent lanes workers run continue recover pool worker claim heartbeat ack complete dead-letter approve-action reject-action clear reset)", "completion.zsh");

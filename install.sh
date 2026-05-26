@@ -159,7 +159,7 @@ cat > "$init_file" <<EOF
 # Real Product Harness shell bootstrap.
 # Source this file from ~/.zshrc or ~/.bashrc for the installed rph command.
 export PATH="$RPH_BIN_DIR:\$PATH"
-_rph_slash_helpers="/shell /chat /pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /daemon /productize /doctor /help"
+_rph_slash_helpers="/shell /chat /go /pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /daemon /productize /doctor /help"
 
 rph_enable_slash_commands() {
   if [ -z "\${BASH_VERSION:-}" ] && [ -z "\${ZSH_VERSION:-}" ]; then
@@ -171,6 +171,7 @@ rph_enable_slash_commands() {
 function /pm() { command rph /pm "\$@"; }
 function /shell() { command rph shell "\$@"; }
 function /chat() { command rph /chat "\$@"; }
+function /go() { command rph /go "\$@"; }
 function /pd() { command rph /pd "\$@"; }
 function /setup() { command rph /setup "\$@"; }
 function /status() { command rph /status "\$@"; }
@@ -195,7 +196,7 @@ function /help() { command rph /help "\$@"; }
 }
 
 rph_disable_slash_commands() {
-  unset -f /shell /chat /pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /daemon /productize /doctor /help 2>/dev/null || true
+  unset -f /shell /chat /go /pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /daemon /productize /doctor /help 2>/dev/null || true
 }
 
 if [ "\${RPH_ENABLE_SLASH_COMMANDS:-1}" = "1" ]; then
@@ -258,7 +259,7 @@ fi
 EOF
 
 cat > "$completion_file" <<'EOF'
-#compdef rph /shell /chat /pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /daemon /productize /doctor /help
+#compdef rph /shell /chat /go /pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /daemon /productize /doctor /help
 _rph_subcommands() {
   case "$1" in
     setup) print -r -- "auto repair detect apply check ai provider mcp custom" ;;
@@ -342,7 +343,7 @@ _rph() {
     _describe 'rph command' commands
   fi
 }
-compdef _rph rph /shell /chat /pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /daemon /productize /doctor /help
+compdef _rph rph /shell /chat /go /pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /daemon /productize /doctor /help
 EOF
 
 install_shell_profile_hook() {

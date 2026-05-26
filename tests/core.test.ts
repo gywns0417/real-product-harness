@@ -574,6 +574,9 @@ describe("productize golden path", () => {
     expect(result.issues).toHaveLength(2);
     expect(result.pullRequests).toHaveLength(2);
     expect(result.qaReports).toHaveLength(2);
+    expect(result.traceability.confirmedFacts).toContain(`사용자가 제공한 원문 제품 아이디어: ${idea}`);
+    expect(result.traceability.assumptions.length).toBeGreaterThan(0);
+    expect(result.traceability.openQuestions.length).toBeGreaterThan(0);
     expect(result.stage).toBe("PM_PRODUCT_DEFINITION_REVIEW");
     expect(fs.existsSync(result.reportPath)).toBe(true);
     expect(fs.existsSync(result.reportMarkdownPath)).toBe(true);
@@ -624,8 +627,15 @@ describe("productize golden path", () => {
 
     const report = fs.readFileSync(result.reportMarkdownPath, "utf8");
     expect(report).toContain("Productize Golden Path Report");
+    expect(report).toContain("## Traceability");
+    expect(report).toContain("### Confirmed Facts");
     expect(report).toContain("/docs approve product-definition --by user");
     expect(report).not.toMatch(/\bTBD\b/);
+
+    const productDefinition = showDocument(root, "product-definition");
+    expect(productDefinition).toContain("## Grounding");
+    expect(productDefinition).toContain("### Assumptions");
+    expect(productDefinition).toContain("### Open Questions");
   });
 
   it("makes productized documents domain-specific instead of generic copies", () => {

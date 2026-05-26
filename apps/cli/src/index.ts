@@ -416,6 +416,8 @@ const HELP_TOPIC_LINES: Record<string, string[]> = {
     "Plain confirm only runs the last intent shown in this session. Use exact execution phrases such as `confirm` or `이 계획 실행해줘`; `이 계획 실행하고 가능한 데까지 계속해줘` confirms it and then runs the bounded safe local loop until the next approval gate. Question-shaped text like `confirm?` does not execute.",
     "",
     "Explicit execution mode:",
+    "  rph go <goal>",
+    "  /go <goal>",
     "  rph ask --execute <message>",
     "  rph ask --execute --loop <message>",
     "  rph agent run --steps 5",
@@ -437,6 +439,16 @@ const HELP_TOPIC_LINES: Record<string, string[]> = {
     "  /agent approve-action <action-id> | reject-action <action-id>",
     "  /live status | audit | repair | ai:openai | mcp:stitch",
     "  /exit"
+  ],
+  go: [
+    "Goal runner",
+    "",
+    "  rph go \"이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: ...\"",
+    "  rph /go \"이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: ...\"",
+    "  /go \"이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: ...\"",
+    "",
+    "`go` is the top-layer execution entrypoint. It treats the text as a goal, runs the safe local plan with `ask --execute --loop`, and stops at the next approval or external-write gate.",
+    "Use `start` when you want to enter the conversation runtime first; use `go` when you want the harness to execute the local goal path now."
   ],
   agent: [
     "Agent commands",
@@ -758,8 +770,10 @@ export async function runParsedCommand(
         handleHome(projectRoot, parsed.options, context);
         break;
       case "start":
+        await handleStart(projectRoot, parsedCommandTextArgs(parsed), parsed.options, context);
+        break;
       case "go":
-        await handleStart(projectRoot, parsed.args, parsed.options, context);
+        await handleGo(projectRoot, parsedCommandTextArgs(parsed), parsed.options, context);
         break;
       case "shell":
       case "runtime":
@@ -867,6 +881,10 @@ export async function runParsedCommand(
     }
     return false;
   }
+}
+
+function parsedCommandTextArgs(parsed: ReturnType<typeof parseCli>): string[] {
+  return [parsed.subcommand, ...parsed.args].filter((item): item is string => Boolean(item));
 }
 
 function shouldStartRuntime(argv: string[]): boolean {
@@ -4430,11 +4448,12 @@ async function handleRuntimeAgentInput(
   userInput: string,
   prompter?: SetupPrompter
 ): Promise<boolean> {
-  const confirmedIntent = await tryConfirmRuntimeIntentFromPlainChat(projectRoot, sessionId, userInput, "runtime-chat", prompter ? { prompter, runtimeShell: true } : undefined);
+  const commandContext = prompter ? { prompter, runtimeShell: true } : { runtimeShell: true };
+  const confirmedIntent = await tryConfirmRuntimeIntentFromPlainChat(projectRoot, sessionId, userInput, "runtime-chat", commandContext);
   if (confirmedIntent !== null) {
     return confirmedIntent;
   }
-  const safeControl = await tryRunSafeRuntimeControlFromPlainChat(projectRoot, sessionId, userInput, prompter ? { prompter, runtimeShell: true } : { runtimeShell: true });
+  const safeControl = await tryRunSafeRuntimeControlFromPlainChat(projectRoot, sessionId, userInput, commandContext);
   if (safeControl !== null) {
     return safeControl;
   }
@@ -4442,6 +4461,7 @@ async function handleRuntimeAgentInput(
   if (continued !== null) {
     return continued;
   }
+  const executionMode = plainRuntimeExecutionMode(userInput);
   let plan = createRuntimePlan(projectRoot, userInput);
   const hasReadyAi = safeHasReadyAiProvider(projectRoot);
   const wasInitialized = isRuntimeProjectInitialized(projectRoot);
@@ -4466,6 +4486,18 @@ async function handleRuntimeAgentInput(
     });
   }
   if (plan.kind === "start-workflow" && plan.command) {
+    if (executionMode && plan.safeToAutoRun && !shouldBlockUnsafeNaturalPlanExecution(userInput, plan.command)) {
+      console.log(`plain execution: ${plan.command}`);
+      const ok = await runParsedCommand(projectRoot, parseCli(parseCommandLine(plan.command)), false, commandContext);
+      if (ok && executionMode === "execute-and-continue" && isRuntimeProjectInitialized(projectRoot)) {
+        console.log("plain execution continue: running safe local orchestration loop");
+        await runAgentOrchestrationLoop(projectRoot, sessionId, {
+          maxSteps: loopMaxSteps({}),
+          concurrency: loopConcurrency({})
+        });
+      }
+      return ok;
+    }
     const intent = isRuntimeProjectInitialized(projectRoot)
       ? recordRuntimePlanIntent(projectRoot, sessionId, plan)
       : null;
@@ -4498,7 +4530,11 @@ async function handleRuntimeAgentInput(
     printMissingAiAgentGuidance(projectRoot, plan.command, "slash");
     return false;
   }
-  return handleRuntimeChat(projectRoot, sessionId, chatHistory, userInput);
+  return handleRuntimeChat(projectRoot, sessionId, chatHistory, userInput, {
+    executeProposedCommand: Boolean(executionMode),
+    continueAfterExecution: executionMode === "execute-and-continue",
+    commandContext
+  });
 }
 
 async function tryRunSafeRuntimeControlFromPlainChat(
@@ -4729,7 +4765,12 @@ async function handleRuntimeChat(
   projectRoot: string,
   sessionId: string,
   chatHistory: AiChatMessage[],
-  userInput: string
+  userInput: string,
+  options: {
+    executeProposedCommand?: boolean;
+    continueAfterExecution?: boolean;
+    commandContext?: CommandContext;
+  } = {}
 ): Promise<boolean> {
   const config = loadRuntimeChatConfig(projectRoot);
   console.log(renderStatusLine("agent thinking", "skipped"));
@@ -4762,11 +4803,21 @@ async function handleRuntimeChat(
   console.log("");
   printAiProviderFallbackNotice(turnResult.result);
   console.log(turnResult.text.trim());
-  await runAgentCommandProposal(projectRoot, turnResult.turn.proposedCommand, {
+  const executed = await runAgentCommandProposal(projectRoot, turnResult.turn.proposedCommand, {
     sessionId,
-    surface: "runtime-chat"
+    executeLocalMutations: options.executeProposedCommand,
+    surface: options.executeProposedCommand ? "execution" : "runtime-chat",
+    commandContext: options.commandContext,
+    policyLabel: options.executeProposedCommand ? "runtime chat explicit execution allowed local command" : undefined
   });
   runAgentHandoffProposal(projectRoot, sessionId, turnResult.turn.proposedHandoff);
+  if (executed && options.continueAfterExecution && isRuntimeProjectInitialized(projectRoot)) {
+    console.log("runtime execution continue: running safe local orchestration loop");
+    await runAgentOrchestrationLoop(projectRoot, sessionId, {
+      maxSteps: loopMaxSteps({}),
+      concurrency: loopConcurrency({})
+    });
+  }
   console.log("");
   return true;
 }
@@ -5004,6 +5055,50 @@ function plainRuntimeConfirmMode(input: string): "confirm" | "confirm-and-contin
     return "confirm-and-continue";
   }
   return naturalRuntimeIntent(input) === "approve" ? "confirm" : null;
+}
+
+function plainRuntimeExecutionMode(input: string): "execute" | "execute-and-continue" | null {
+  if (/[?？]/.test(input) || hasNaturalNegation(input)) {
+    return null;
+  }
+  const text = normalizeNaturalRuntimeText(input);
+  if (!text) {
+    return null;
+  }
+  const confirmMode = plainRuntimeConfirmMode(input);
+  if (confirmMode === "confirm-and-continue") {
+    return "execute-and-continue";
+  }
+  const executeNow = [
+    "실행해",
+    "실행해줘",
+    "바로 실행해",
+    "바로 실행해줘",
+    "진행해",
+    "진행해줘",
+    "바로 진행해",
+    "바로 진행해줘",
+    "돌려",
+    "돌려줘",
+    "시켜",
+    "시켜줘",
+    "execute",
+    "execute now",
+    "run it",
+    "run now",
+    "go ahead",
+    "do it"
+  ];
+  if (executeNow.includes(text)) {
+    return "execute";
+  }
+  if (/(?:실행|바로\s*실행|진행|바로\s*진행|돌려|시켜)/.test(text)) {
+    return "execute";
+  }
+  if (/\b(?:execute|run it|run now|go ahead|do it)\b/i.test(text)) {
+    return "execute";
+  }
+  return null;
 }
 
 function rememberPresentedIntent(
@@ -5260,6 +5355,30 @@ async function handleStart(
     return;
   }
   await handleAsk(projectRoot, ["현재 상태를 보고 다음으로 할 일을 제안해줘"], options);
+}
+
+async function handleGo(
+  projectRoot: string,
+  args: string[],
+  options: Record<string, string | boolean>,
+  context: CommandContext = {}
+): Promise<void> {
+  const message = args.join(" ").trim() || optionString(options, "prompt") || readPipedStdin().trim();
+  if (!message) {
+    await handleStart(projectRoot, [], options, context);
+    return;
+  }
+  console.log("RPH go");
+  console.log(`goal: ${message}`);
+  if (!isRuntimeProjectInitialized(projectRoot) && shouldStartLaunchSetup(options, context)) {
+    console.log("RPH runtime: setup needed before agent chat");
+    console.log("setup assistant: rph setup auto --live");
+    const projectName = optionString(options, "project-name") ?? (path.basename(projectRoot) || "RPH Project");
+    initProject(projectRoot, { projectName });
+    console.log(`RPH project initialized: ${projectName}`);
+    await runAutoSetupWizard(projectRoot, { ...options, live: true }, context);
+  }
+  await handleAsk(projectRoot, [message], { ...options, execute: true, loop: true });
 }
 
 function shouldStartLaunchSetup(options: Record<string, string | boolean>, context: CommandContext): boolean {
@@ -6071,6 +6190,7 @@ async function runAgentCommandProposal(
     sessionId?: string;
     surface?: "runtime-chat" | "execution";
     commandContext?: CommandContext;
+    policyLabel?: string;
   } = {}
 ): Promise<boolean> {
   if (!proposal) {
@@ -6173,9 +6293,9 @@ async function runAgentCommandProposal(
     console.log("run explicitly: type the suggested control when you want to execute it.");
     return false;
   }
-  if (options.executeLocalMutations && localMutation) {
+  if (options.executeLocalMutations && (localMutation || readOnly)) {
     console.log(`agent action: ${proposal.command}`);
-    console.log("execution-policy: ask --execute allowed local workflow command");
+    console.log(`execution-policy: ${options.policyLabel ?? "ask --execute allowed local workflow command"}`);
     const parsed = parseCli(parseCommandLine(proposal.command));
     return runParsedCommand(projectRoot, parsed, false, options.commandContext);
   }
@@ -12915,6 +13035,8 @@ function renderGeneralHelp(): string {
     "Primary controls:",
     "  rph start",
     "    Setup-first entrypoint. In a fresh TTY it opens the runtime and offers live setup before workflow work.",
+    "  rph go <goal>",
+    "    Execute a local product/workflow goal now with the bounded safe loop, then stop at approval or external-write gates.",
     "  rph setup auto --live",
     "    Connect AI/MCP credentials, apply config, and verify live connections.",
     "  rph live ai:openai",
@@ -12975,7 +13097,7 @@ function renderGeneralHelp(): string {
     "  rph help mcp",
     "  rph help pm",
     "",
-    "All topics: shell, status, runtime, productize, setup, agent, daemon, workspace, doctor, ai, mcp, live, proofs, pm, pd, fe, be, qa, notion, docs, github",
+    "All topics: shell, status, runtime, go, productize, setup, agent, daemon, workspace, doctor, ai, mcp, live, proofs, pm, pd, fe, be, qa, notion, docs, github",
     "",
     `Document IDs: ${DOCUMENT_IDS.map((docId) => `${docId}(${DOCUMENT_TITLES[docId]})`).join(", ")}`,
     `Design Artifact IDs: ${DESIGN_ARTIFACT_IDS.map((artifactId) => `${artifactId}(${DESIGN_ARTIFACT_TITLES[artifactId]})`).join(", ")}`

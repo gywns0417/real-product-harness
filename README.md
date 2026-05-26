@@ -73,6 +73,7 @@ Start the product runtime from a product project folder:
 rph
 rph shell
 rph start
+rph go "이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: AI 회의록 SaaS"
 ```
 
 Inside the runtime, type normal messages to chat with the connected AI agent. Use slash commands for control-plane actions, similar to Codex or Claude Code commands:
@@ -190,6 +191,8 @@ rph ask "이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: AI 회
 rph ask "이 계획 실행해줘"
 rph ask --execute "이 계획 실행하고 가능한 데까지 계속해줘"
 rph ask --execute "이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: AI 회의록을 액션아이템과 담당자 추적으로 바꾸는 SaaS"
+rph go "이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: AI 회의록을 액션아이템과 담당자 추적으로 바꾸는 SaaS"
+rph /go "이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: AI 회의록을 액션아이템과 담당자 추적으로 바꾸는 SaaS"
 rph status --json
 rph workspace --json
 rph /agent run --steps 6
@@ -206,9 +209,12 @@ rph pm start
 rph /pm start
 ```
 
-`/productize` creates a review-ready golden path package: PM documents, PD design artifacts,
+`rph go <goal>` is the top-layer execution entrypoint for local goals: it routes the text through
+`ask --execute --loop`, runs safe local workflow steps, and stops at the next approval or external-write
+gate. `/productize` creates a review-ready golden path package: PM documents, PD design artifacts,
 FE/BE/API specs, sprint plans, FE/BE issues, PR drafts, QA reports, a local deployment plan,
-and a `.rph/golden-path/latest.md` summary. Merge, deployment, and credential-gated external
+and a `.rph/golden-path/latest.md` summary with traceability sections for confirmed facts,
+assumptions, and open questions. Merge, deployment, and credential-gated external
 writes still require explicit user approval. If the current folder is not initialized yet,
 `/productize` initializes the local `.rph` project first.
 `rph pm start` also bootstraps an uninitialized folder and moves directly into the PM kickoff stage.

@@ -46,6 +46,13 @@ const report = JSON.parse(fs.readFileSync(reportJsonPath, "utf8"));
 if (report.idea !== idea) {
   fail(`product idea was not extracted cleanly. expected "${idea}", got "${report.idea}"`);
 }
+if (!report.traceability?.confirmedFacts?.some((item) => item.includes(idea))) {
+  fail("golden path report JSON missing traceability confirmed fact for the original idea");
+}
+const reportMarkdown = fs.readFileSync(reportPath, "utf8");
+if (!reportMarkdown.includes("## Traceability") || !reportMarkdown.includes("### Open Questions")) {
+  fail("golden path markdown missing traceability sections");
+}
 
 const generatedRoots = [
   path.join(tmpRoot, ".rph", "documents"),

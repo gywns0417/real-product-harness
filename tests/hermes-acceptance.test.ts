@@ -260,6 +260,31 @@ describe("Hermes-like runtime acceptance", () => {
     expect(manifest.blocker).toBeFalsy();
   }, 10000);
 
+  it("executes local command proposals inside runtime chat when the user explicitly asks to execute", async () => {
+    writeOpenAiEnv(root, "https://example.invalid/v1");
+
+    const result = await runCli(["shell"], {
+      cwd: root,
+      stdinChunks: [
+        { text: "연결된 agent가 제안한 로컬 명령을 실행해줘\n", delayMs: 0 },
+        { text: "/exit\n", delayMs: 80 }
+      ],
+      preloadFetchLocalCommandProposal: true
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("agent proposed command: /pm start");
+    expect(result.stdout).toContain("execution-policy: runtime chat explicit execution allowed local command");
+    expect(result.stdout).toContain("agent action: /pm start");
+    expect(result.stdout).toContain("PM 워크플로우 시작");
+    expect(result.stdout).not.toContain("intent saved:");
+    const state = JSON.parse(fs.readFileSync(path.join(root, ".rph", "state.json"), "utf8")) as {
+      currentStage: string;
+    };
+    expect(state.currentStage).toBe("PM_PRODUCT_DEFINITION_INTERVIEW");
+  }, 10000);
+
   it("auto-runs exact natural-language status requests inside the runtime shell", async () => {
     const result = await runCli(["shell"], {
       cwd: root,
@@ -7238,6 +7263,32 @@ describe("Hermes-like CLI contracts", () => {
       fs.rmSync(uninitializedRoot, { recursive: true, force: true });
     }
   });
+
+  it("uses rph go as a one-shot top-level local goal runner", async () => {
+    const uninitializedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rph-go-entrypoint-"));
+    try {
+      const result = await runCli([
+        "go",
+        "이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: 고 명령 검증 SaaS"
+      ], { cwd: uninitializedRoot });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("RPH go");
+      expect(result.stdout).toContain("goal: 이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: 고 명령 검증 SaaS");
+      expect(result.stdout).toContain("agent action: /productize");
+      expect(result.stdout).toContain("Productize golden path complete");
+      expect(result.stdout).toContain("orchestration loop: max_steps=6");
+      expect(result.stdout).toContain("orchestration blocked: user approval required: /pm approve product-definition");
+      const state = JSON.parse(fs.readFileSync(path.join(uninitializedRoot, ".rph", "state.json"), "utf8")) as {
+        currentStage: string;
+      };
+      expect(state.currentStage).toBe("PM_PRODUCT_DEFINITION_REVIEW");
+      expect(fs.existsSync(path.join(uninitializedRoot, ".rph", "golden-path", "latest.json"))).toBe(true);
+    } finally {
+      fs.rmSync(uninitializedRoot, { recursive: true, force: true });
+    }
+  }, 10000);
 
   it("does not show untrusted connection proof as verified on the operator home", async () => {
     fs.writeFileSync(path.join(root, ".rph", "config.json"), JSON.stringify(createHarnessConfig({

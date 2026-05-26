@@ -25,10 +25,17 @@ export interface ProductizeInput {
   idea: string;
 }
 
+export interface ProductizeTraceability {
+  confirmedFacts: string[];
+  assumptions: string[];
+  openQuestions: string[];
+}
+
 export interface ProductizeResult {
   idea: string;
   createdAt: string;
   stage: ProjectState["currentStage"];
+  traceability: ProductizeTraceability;
   documents: Array<{ docId: DocumentId; version: string; status: string; filePath: string }>;
   designArtifacts: Array<{ artifactId: DesignArtifactId; version: string; status: string; filePath: string }>;
   issues: WorkIssue[];
@@ -48,13 +55,15 @@ export function runProductizeGoldenPath(projectRoot: string, input: ProductizeIn
 
   let state = loadState(projectRoot);
   const createdAt = nowIso();
+  const profile = analyzeIdea(idea);
+  const traceability = createProductizeTraceability(idea, profile);
   const documents: ProductizeResult["documents"] = [];
   for (const docId of DOCUMENT_IDS) {
     const index = createDocumentVersion(projectRoot, docId, {
       ownerAgent: ownerForDocument(docId),
       status: "review",
       changeSummary: `Golden path draft for: ${idea}`,
-      body: documentBody(docId, idea)
+      body: documentBody(docId, idea, profile, traceability)
     });
     state = syncStateDocuments(state, index);
     documents.push(documentSummary(index));
@@ -65,7 +74,7 @@ export function runProductizeGoldenPath(projectRoot: string, input: ProductizeIn
     const index = createDesignArtifactVersion(projectRoot, artifactId, {
       status: "review",
       changeSummary: `Golden path design package for: ${idea}`,
-      body: designArtifactBody(artifactId, idea)
+      body: designArtifactBody(artifactId, idea, profile)
     });
     state = syncStateDesignArtifacts(state, index);
     designArtifacts.push(designArtifactSummary(index));
@@ -136,6 +145,7 @@ export function runProductizeGoldenPath(projectRoot: string, input: ProductizeIn
     idea,
     createdAt,
     stage: state.currentStage,
+    traceability,
     documents,
     designArtifacts,
     issues: [feIssue, beIssue],
@@ -255,6 +265,46 @@ function bullets(items: string[]): string[] {
   return items.map((item) => `- ${item}`);
 }
 
+function createProductizeTraceability(idea: string, profile: IdeaProfile): ProductizeTraceability {
+  return {
+    confirmedFacts: [
+      `사용자가 제공한 원문 제품 아이디어: ${idea}`,
+      `추론된 주요 사용자: ${profile.targetUser}`,
+      `추론된 원천 입력: ${profile.sourceInput}`,
+      `추론된 변환 결과: ${profile.transformedOutput}`,
+      `현재 자동 생성 범위: PM/PD/FE/BE 문서, 디자인 산출물, FE/BE 이슈, PR draft, QA report, dev deployment plan`
+    ],
+    assumptions: [
+      "이 패키지는 사용자가 제공한 짧은 자연어 입력과 로컬 도메인 프로파일 규칙만으로 생성되었습니다.",
+      `도메인 분류와 업무 흐름은 아이디어 문구에서 감지한 키워드를 바탕으로 ${profile.records[0]} 중심 모델을 선택했습니다.`,
+      "외부 고객 데이터, 실제 운영 지표, 결제/권한/규제 요구사항은 아직 연결되거나 검증되지 않았습니다.",
+      "merge, deploy, credential-gated write는 명시 승인 전까지 실행하지 않는 전제로 설계했습니다."
+    ],
+    openQuestions: [
+      "가장 먼저 돈을 낼 핵심 사용자 세그먼트는 누구인가?",
+      `실제로 입력될 ${profile.sourceInput}의 파일 형식, 출처, 보안 등급은 무엇인가?`,
+      `${profile.primaryMetric}의 목표 수치와 측정 주기는 어떻게 정할 것인가?`,
+      "첫 MVP에서 반드시 연결해야 하는 외부 도구와 제외해도 되는 도구는 무엇인가?",
+      "자동 실행을 허용할 로컬 작업과 사용자 승인이 필요한 외부 작업의 경계는 어디인가?"
+    ]
+  };
+}
+
+function groundingSection(traceability: ProductizeTraceability): string[] {
+  return [
+    "## Grounding",
+    "",
+    "### Confirmed Facts",
+    ...bullets(traceability.confirmedFacts),
+    "",
+    "### Assumptions",
+    ...bullets(traceability.assumptions),
+    "",
+    "### Open Questions",
+    ...bullets(traceability.openQuestions)
+  ];
+}
+
 function resourceTitle(resource: string): string {
   return resource
     .split("-")
@@ -315,8 +365,7 @@ function moveToReviewStage(state: ProjectState, reason: string): ProjectState {
   };
 }
 
-function documentBody(docId: DocumentId, idea: string): string {
-  const profile = analyzeIdea(idea);
+function documentBody(docId: DocumentId, idea: string, profile: IdeaProfile, traceability: ProductizeTraceability): string {
   switch (docId) {
     case "product-definition":
       return [
@@ -337,6 +386,8 @@ function documentBody(docId: DocumentId, idea: string): string {
         `- 원천 입력: ${profile.sourceInput}`,
         `- 변환 결과: ${profile.transformedOutput}`,
         `- 핵심 성공 지표: ${profile.primaryMetric}`,
+        "",
+        ...groundingSection(traceability),
         "",
         "## 핵심 업무 흐름",
         ...bullets(profile.workflow),
@@ -429,6 +480,8 @@ function documentBody(docId: DocumentId, idea: string): string {
         "- 생성된 문서, 디자인 산출물, 이슈, PR draft, QA report는 서로 연결되어야 합니다.",
         "- 승인 전 merge, deploy, credential-gated write는 실행되지 않아야 합니다.",
         "",
+        ...groundingSection(traceability),
+        "",
         "## 기능 요구사항",
         ...bullets(profile.workflow.map((step) => `${step} 단계 지원`)),
         "- 제품 정의, 요구사항, 화면 정의, 기능 정의 자동 생성",
@@ -488,6 +541,8 @@ function documentBody(docId: DocumentId, idea: string): string {
         "## 목표",
         `${idea} MVP의 review-ready product workspace를 구현합니다.`,
         "",
+        ...groundingSection(traceability),
+        "",
         "## 주요 컴포넌트",
         "- RuntimeStatusHeader: stage, owner agent, configured provider 상태",
         `- DomainSignalPanel: ${profile.primaryMetric}와 ${profile.records.slice(0, 3).join("/")} 상태`,
@@ -511,6 +566,8 @@ function documentBody(docId: DocumentId, idea: string): string {
         "",
         "## 목표",
         `${idea} MVP의 productize package를 읽고 안전하게 command action을 제안하는 API를 제공합니다.`,
+        "",
+        ...groundingSection(traceability),
         "",
         "## 도메인 모델",
         ...profile.records.map((record) => `- ${record}: ${idea} 도메인의 핵심 업무 객체`),
@@ -536,6 +593,8 @@ function documentBody(docId: DocumentId, idea: string): string {
         "",
         "## Domain Resources",
         ...profile.apiResources.map((resource) => `- ${resourceTitle(resource)}: ${profile.sourceInput}에서 ${profile.transformedOutput}로 이어지는 ${resource} 리소스`),
+        "",
+        ...groundingSection(traceability),
         "",
         "## GET /api/runtime/status",
         "- 설명: 현재 project, stage, owner, paused, configured providers, next action 반환",
@@ -596,8 +655,7 @@ function documentBody(docId: DocumentId, idea: string): string {
   }
 }
 
-function designArtifactBody(artifactId: DesignArtifactId, idea: string): string {
-  const profile = analyzeIdea(idea);
+function designArtifactBody(artifactId: DesignArtifactId, idea: string, profile: IdeaProfile): string {
   switch (artifactId) {
     case "references":
       return [
@@ -715,6 +773,17 @@ function renderProductizeReport(result: ProductizeResult): string {
     `- created_at: ${result.createdAt}`,
     `- current_stage: ${result.stage}`,
     `- deployment_plan: ${result.deployment.filePath}`,
+    "",
+    "## Traceability",
+    "",
+    "### Confirmed Facts",
+    ...result.traceability.confirmedFacts.map((item) => `- ${item}`),
+    "",
+    "### Assumptions",
+    ...result.traceability.assumptions.map((item) => `- ${item}`),
+    "",
+    "### Open Questions",
+    ...result.traceability.openQuestions.map((item) => `- ${item}`),
     "",
     "## Documents",
     ...result.documents.map((doc) => `- ${doc.docId} ${doc.version} ${doc.status}: ${doc.filePath}`),
