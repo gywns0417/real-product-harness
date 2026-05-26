@@ -5871,7 +5871,7 @@ describe("Hermes-like CLI contracts", () => {
       expect(setup.stdout).toContain("mcp:stitch trust=protocol-ready:protocol-tool-call");
       expect(setup.stdout).toContain("First action verified");
 
-      const ask = await runCli(["ask", "protocol MCP echo tool을 호출해서 acceptance-mcp-ok를 확인해줘"], {
+      const ask = await runCli(["ask", "protocol MCP list_projects tool을 호출해서 acceptance-mcp-ok를 확인해줘"], {
         cwd: uninitializedRoot,
         env: withoutProviderEnv(),
         preloadFetchMcpRuntime: true
@@ -5879,7 +5879,7 @@ describe("Hermes-like CLI contracts", () => {
 
       expect(ask.exitCode).toBe(0);
       expect(ask.stderr).toBe("");
-      expect(ask.stdout).toContain("Protocol MCP echo returned acceptance-mcp-ok.");
+      expect(ask.stdout).toContain("Protocol MCP list_projects returned acceptance-mcp-ok.");
       const manifest = JSON.parse(fs.readFileSync(path.join(uninitializedRoot, ".rph", "runtime", "current-session.json"), "utf8")) as {
         activeTurn?: {
           status: string;
@@ -5956,7 +5956,7 @@ describe("Hermes-like CLI contracts", () => {
       expect(status.stdout).toContain("Verified targets");
       expect(status.stdout).toContain("mcp:stitch stitch type=mcp-server target_id=stitch verified_by=protocol-tool-call");
       expect(status.stdout).toContain("First action verified");
-      expect(status.stdout).toContain("mcp:stitch called echo on Stitch MCP server | detail=mcp.tools.call target_id=stitch:echo verified_by=protocol-tool-call");
+      expect(status.stdout).toContain("mcp:stitch called list_projects on Stitch MCP server | detail=mcp.tools.call target_id=stitch:list_projects verified_by=protocol-tool-call");
     } finally {
       fs.rmSync(uninitializedRoot, { recursive: true, force: true });
     }
@@ -7717,8 +7717,8 @@ function createFetchMcpRuntimeStub(projectRoot: string): string {
     "    const text = smoke",
     "      ? 'OK'",
     "      : observed",
-    "        ? JSON.stringify({ action: { type: 'respond', message: 'Protocol MCP echo returned acceptance-mcp-ok.' } })",
-    "        : JSON.stringify({ action: { type: 'tool_call', tool: 'mcp.tools.call', args: { server: 'stitch', toolName: 'echo', readOnly: true, arguments: { text: 'acceptance-mcp-ok' } } } });",
+    "        ? JSON.stringify({ action: { type: 'respond', message: 'Protocol MCP list_projects returned acceptance-mcp-ok.' } })",
+    "        : JSON.stringify({ action: { type: 'tool_call', tool: 'mcp.tools.call', args: { server: 'stitch', toolName: 'list_projects', readOnly: true, arguments: { filter: 'view=owned' } } } });",
     "    return json({ output: [{ type: 'message', content: [{ type: 'output_text', text }] }], usage: { input_tokens: 10, output_tokens: 5 }, responseCallCount });",
     "  }",
     "  if (target.includes('stitch.googleapis.com/mcp') || target.includes('mcp.example.test/echo')) {",
@@ -7729,10 +7729,16 @@ function createFetchMcpRuntimeStub(projectRoot: string): string {
     "      return json({});",
     "    }",
     "    if (body.method === 'tools/list') {",
-    "      return json({ jsonrpc: '2.0', id: body.id, result: { tools: [{ name: 'echo', description: 'Echo a read-only string.', annotations: { readOnlyHint: true }, inputSchema: { type: 'object', properties: { text: { type: 'string' } } } }] } });",
+    "      const tools = target.includes('mcp.example.test/echo')",
+    "        ? [{ name: 'echo', description: 'Echo a read-only string.', annotations: { readOnlyHint: true }, inputSchema: { type: 'object', properties: { text: { type: 'string' } } } }]",
+    "        : [{ name: 'list_projects', description: 'List projects.', annotations: { readOnlyHint: true, destructiveHint: false }, inputSchema: { type: 'object', properties: { filter: { type: 'string' } } } }];",
+    "      return json({ jsonrpc: '2.0', id: body.id, result: { tools } });",
     "    }",
     "    if (body.method === 'tools/call') {",
-    "      return json({ jsonrpc: '2.0', id: body.id, result: { content: [{ type: 'text', text: `echo:${body.params?.arguments?.text ?? ''}` }], structuredContent: { echoed: body.params?.arguments?.text ?? null }, isError: false } });",
+    "      const result = target.includes('mcp.example.test/echo')",
+    "        ? { content: [{ type: 'text', text: `echo:${body.params?.arguments?.text ?? ''}` }], structuredContent: { echoed: body.params?.arguments?.text ?? null }, isError: false }",
+    "        : { content: [{ type: 'text', text: 'projects:acceptance-mcp-ok' }], structuredContent: { projects: [{ id: 'acceptance-mcp-ok', title: 'Acceptance' }], filter: body.params?.arguments?.filter ?? null }, isError: false };",
+    "      return json({ jsonrpc: '2.0', id: body.id, result });",
     "    }",
     "  }",
     "  return json({ error: { message: `unexpected fetch ${target}` } }, {}, 500);",

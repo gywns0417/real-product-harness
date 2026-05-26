@@ -37,8 +37,8 @@ fs.writeFileSync(preloadPath, [
   "    const text = smoke",
   "      ? 'OK'",
   "      : observed",
-  "        ? JSON.stringify({ action: { type: 'respond', message: 'Protocol MCP echo returned runtime-smoke-ok.' } })",
-  "        : JSON.stringify({ action: { type: 'tool_call', tool: 'mcp.tools.call', args: { server: 'stitch', toolName: 'echo', readOnly: true, arguments: { text: 'runtime-smoke-ok' } } } });",
+  "        ? JSON.stringify({ action: { type: 'respond', message: 'Protocol MCP list_projects returned runtime-smoke-ok.' } })",
+  "        : JSON.stringify({ action: { type: 'tool_call', tool: 'mcp.tools.call', args: { server: 'stitch', toolName: 'list_projects', readOnly: true, arguments: { filter: 'view=owned' } } } });",
   "    capture('openai-response', { responseCallCount, smoke, observed, text });",
   "    return json({ output: [{ type: 'message', content: [{ type: 'output_text', text }] }], usage: { input_tokens: 10, output_tokens: 5 } });",
   "  }",
@@ -50,10 +50,10 @@ fs.writeFileSync(preloadPath, [
   "      return json({});",
   "    }",
   "    if (body.method === 'tools/list') {",
-  "      return json({ jsonrpc: '2.0', id: body.id, result: { tools: [{ name: 'echo', description: 'Echo a read-only string.', annotations: { readOnlyHint: true }, inputSchema: { type: 'object', properties: { text: { type: 'string' } } } }] } });",
+  "      return json({ jsonrpc: '2.0', id: body.id, result: { tools: [{ name: 'list_projects', description: 'List projects.', annotations: { readOnlyHint: true, destructiveHint: false }, inputSchema: { type: 'object', properties: { filter: { type: 'string' } } } }] } });",
   "    }",
   "    if (body.method === 'tools/call') {",
-  "      return json({ jsonrpc: '2.0', id: body.id, result: { content: [{ type: 'text', text: `echo:${body.params?.arguments?.text ?? ''}` }], structuredContent: { echoed: body.params?.arguments?.text ?? null }, isError: false } });",
+  "      return json({ jsonrpc: '2.0', id: body.id, result: { content: [{ type: 'text', text: 'projects:runtime-smoke-ok' }], structuredContent: { projects: [{ id: 'runtime-smoke-ok', title: 'Runtime Smoke' }], filter: body.params?.arguments?.filter ?? null }, isError: false } });",
   "    }",
   "  }",
   "  return json({ error: { message: `unexpected URL ${target}` } }, { status: 500 });",
@@ -76,11 +76,11 @@ assertIncludes(setup.stdout, "Capability summary", "setup output");
 assertIncludes(setup.stdout, "First demo turn", "setup output");
 assertIncludes(setup.stdout, "MCP read-only tool contracts bound: stitch", "setup output");
 
-const ask = runCli(["ask", "protocol MCP echo tool을 호출해서 runtime-smoke-ok를 확인해줘"], withoutProviderEnv(process.env));
+const ask = runCli(["ask", "protocol MCP list_projects tool을 호출해서 runtime-smoke-ok를 확인해줘"], withoutProviderEnv(process.env));
 if (ask.status !== 0) {
   fail(`mcp runtime ask failed\nstdout:\n${ask.stdout}\nstderr:\n${ask.stderr}`);
 }
-assertIncludes(ask.stdout, "Protocol MCP echo returned runtime-smoke-ok.", "ask output");
+assertIncludes(ask.stdout, "Protocol MCP list_projects returned runtime-smoke-ok.", "ask output");
 
 const status = runCli(["agent", "status"], withoutProviderEnv(process.env));
 if (status.status !== 0) {
@@ -101,12 +101,12 @@ assertFile(capturePath, "fetch capture");
 const report = JSON.parse(fs.readFileSync(reportPath, "utf8"));
 const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
 const stitchPolicy = config.mcpPolicyRegistry?.servers?.stitch;
-const stitchEchoContract = stitchPolicy?.toolContracts?.echo;
-if (stitchPolicy?.requireReadOnlyToolContracts !== true || !stitchEchoContract?.fingerprint) {
-  fail(`expected stitch echo read-only contract to be bound, got ${JSON.stringify(stitchPolicy)}`);
+const stitchReadContract = stitchPolicy?.toolContracts?.list_projects;
+if (stitchPolicy?.requireReadOnlyToolContracts !== true || !stitchReadContract?.fingerprint) {
+  fail(`expected stitch list_projects read-only contract to be bound, got ${JSON.stringify(stitchPolicy)}`);
 }
-if (!stitchEchoContract.inputSchemaSha256 || !stitchEchoContract.annotationsSha256) {
-  fail(`expected stitch echo contract to include schema and annotation hashes, got ${JSON.stringify(stitchEchoContract)}`);
+if (!stitchReadContract.inputSchemaSha256 || !stitchReadContract.annotationsSha256) {
+  fail(`expected stitch list_projects contract to include schema and annotation hashes, got ${JSON.stringify(stitchReadContract)}`);
 }
 const checkSummary = (Array.isArray(report.checks) ? report.checks : []).map((check) => ({
   kind: check.kind,
@@ -130,8 +130,8 @@ if (toolCalls.length !== 1 || toolCalls[0]?.name !== "mcp.tools.call" || toolCal
 if (!String(toolCalls[0].observation ?? "").includes("runtime-smoke-ok")) {
   fail(`expected tool observation to include runtime-smoke-ok, got ${toolCalls[0].observation ?? "missing"}`);
 }
-if (!String(toolCalls[0].observation ?? "").includes(stitchEchoContract.fingerprint)) {
-  fail(`expected tool observation to include bound contract fingerprint ${stitchEchoContract.fingerprint}, got ${toolCalls[0].observation ?? "missing"}`);
+if (!String(toolCalls[0].observation ?? "").includes(stitchReadContract.fingerprint)) {
+  fail(`expected tool observation to include bound contract fingerprint ${stitchReadContract.fingerprint}, got ${toolCalls[0].observation ?? "missing"}`);
 }
 
 const capturedMethods = fs.readFileSync(capturePath, "utf8")

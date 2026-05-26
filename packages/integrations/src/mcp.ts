@@ -115,12 +115,12 @@ export const MCP_SERVER_CONTRACTS = {
     },
     protocolReadiness: "tools/call",
     protocolToolCallProbe: {
-      toolName: "echo",
+      toolName: "list_projects",
       arguments: {
-        text: "rph-readiness-probe"
+        filter: "view=owned"
       }
     },
-    agentReadOnlyTools: ["echo"],
+    agentReadOnlyTools: ["list_projects"],
     notes: "MCP streamable HTTP endpoint. Readiness proves initialize, tools/list, and a read-only tools/call canary."
   }
 } as const satisfies Record<string, McpServerContract>;

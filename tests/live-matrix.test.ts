@@ -344,8 +344,8 @@ function createMatrixReport() {
     allowToolsList: true,
     allowReadOnlyToolCall: true,
     requireExplicitServerSelection: true,
-    agentReadOnlyTools: ["echo"],
-    requiredTools: ["echo"],
+    agentReadOnlyTools: ["list_projects"],
+    requiredTools: ["list_projects"],
     missingTools: [],
     configFingerprint: "fixture-policy"
   };

@@ -238,7 +238,7 @@ function passedStitchConnectionCheck(checkedAt = new Date().toISOString()): Conn
     id: "stitch",
     kind: "mcp",
     status: "passed",
-    message: "credential: MCP initialize accepted; protocol: tools/list passed (1 tools); tools/call passed (echo)",
+    message: "credential: MCP initialize accepted; protocol: tools/list passed (1 tools); tools/call passed (list_projects)",
     requiredEnv: ["STITCH_API_KEY"],
     missingEnv: [],
     endpoint: "https://stitch.googleapis.com/mcp",
@@ -251,8 +251,8 @@ function passedStitchConnectionCheck(checkedAt = new Date().toISOString()): Conn
     },
     firstActionProof: {
       action: "mcp.tools.call",
-      label: "called echo on Stitch MCP server",
-      targetId: "stitch:echo",
+      label: "called list_projects on Stitch MCP server",
+      targetId: "stitch:list_projects",
       verifiedBy: "protocol-tool-call",
       endpoint: "https://stitch.googleapis.com/mcp"
     },
@@ -263,7 +263,7 @@ function passedStitchConnectionCheck(checkedAt = new Date().toISOString()): Conn
         { stage: "transport", status: "passed", message: "transport reachable", endpoint: "https://stitch.googleapis.com/mcp" },
         { stage: "credential-probe", status: "passed", message: "initialize passed", endpoint: "https://stitch.googleapis.com/mcp" },
         { stage: "protocol-tools-list", status: "passed", message: "tools/list passed", endpoint: "https://stitch.googleapis.com/mcp" },
-        { stage: "protocol-tool-call", status: "passed", message: "tools/call passed (echo)", endpoint: "https://stitch.googleapis.com/mcp" }
+        { stage: "protocol-tool-call", status: "passed", message: "tools/call passed (list_projects)", endpoint: "https://stitch.googleapis.com/mcp" }
       ]
     },
     checkedAt
@@ -1679,7 +1679,7 @@ describe("command parser and env validation", () => {
             jsonrpc: "2.0",
             id: body.id,
             result: {
-              tools: [{ name: "echo", annotations: { readOnlyHint: true } }]
+              tools: [{ name: "list_projects", annotations: { readOnlyHint: true, destructiveHint: false } }]
             }
           }), { status: 200, headers: { "content-type": "application/json" } });
         }
@@ -1688,7 +1688,7 @@ describe("command parser and env validation", () => {
             jsonrpc: "2.0",
             id: body.id,
             result: {
-              content: [{ type: "text", text: "rph-readiness-probe" }],
+              content: [{ type: "text", text: "projects:rph-readiness-probe" }],
               isError: false
             }
           }), { status: 200, headers: { "content-type": "application/json" } });
@@ -1729,7 +1729,7 @@ describe("command parser and env validation", () => {
       expect(output).toContain("release gate: blocked");
       expect(output).toContain("ai:openai status=failed");
       expect(output).toContain("mcp:stitch status=passed trust=protocol-ready:protocol-tool-call");
-      expect(output).toContain("usable_action: mcp.tools.call target=stitch:echo verified_by=protocol-tool-call");
+      expect(output).toContain("usable_action: mcp.tools.call target=stitch:list_projects verified_by=protocol-tool-call");
       expect(output).not.toContain("sk-test-live-audit-secret");
       expect(output).not.toContain("stitch-test-key");
 
@@ -1761,14 +1761,14 @@ describe("command parser and env validation", () => {
       expect(audit.checks.find((check) => check.kind === "mcp" && check.id === "stitch")?.usableAction).toEqual({
         status: "passed",
         action: "mcp.tools.call",
-        targetId: "stitch:echo",
+        targetId: "stitch:list_projects",
         verifiedBy: "protocol-tool-call"
       });
       expect(auditText).not.toContain("sk-test-live-audit-secret");
       expect(auditText).not.toContain("stitch-test-key");
       const markdown = fs.readFileSync(markdownPath, "utf8");
       expect(markdown).toContain("release_readiness: no");
-      expect(markdown).toContain("usable_action: mcp.tools.call target=stitch:echo verified_by=protocol-tool-call");
+      expect(markdown).toContain("usable_action: mcp.tools.call target=stitch:list_projects verified_by=protocol-tool-call");
     });
   });
 
@@ -1902,7 +1902,7 @@ describe("command parser and env validation", () => {
     expect(mcpConfig.mcpServers.stitch.url).toBe("https://stitch.googleapis.com/mcp");
     expect(mcpConfig.mcpPolicyRegistry?.servers.stitch).toMatchObject({
       kind: "read-only-probe",
-      agentReadOnlyTools: ["echo"]
+      agentReadOnlyTools: ["list_projects"]
     });
   });
 
@@ -2219,7 +2219,7 @@ describe("command parser and env validation", () => {
           jsonrpc: "2.0",
           id: body.id,
           result: {
-            tools: [{ name: "echo", annotations: { readOnlyHint: true } }]
+            tools: [{ name: "list_projects", annotations: { readOnlyHint: true, destructiveHint: false } }]
           }
         }), { status: 200, headers: { "content-type": "application/json" } });
       }
@@ -2256,7 +2256,7 @@ describe("command parser and env validation", () => {
     expect(check.readiness?.provenStage).toBe("protocol-tool-call");
     expect(check.firstActionProof).toMatchObject({
       action: "mcp.tools.call",
-      targetId: "stitch:echo",
+      targetId: "stitch:list_projects",
       verifiedBy: "protocol-tool-call"
     });
     expect(methods).toEqual(["initialize", "notifications/initialized", "tools/list", "initialize", "notifications/initialized", "tools/call"]);
@@ -2360,7 +2360,7 @@ describe("command parser and env validation", () => {
       });
       expect(config.mcpPolicyRegistry.servers.stitch).toMatchObject({
         kind: "read-only-probe",
-        agentReadOnlyTools: ["echo"]
+        agentReadOnlyTools: ["list_projects"]
       });
       expect(rewritten.mcpServers["custom-echo"]).toMatchObject({
         kind: "mcp-server",
@@ -3482,7 +3482,7 @@ describe("command parser and env validation", () => {
           jsonrpc: "2.0",
           id: body.id,
           result: {
-            tools: [{ name: "echo", description: "Echo input", annotations: { readOnlyHint: true } }]
+            tools: [{ name: "list_projects", description: "List projects", annotations: { readOnlyHint: true, destructiveHint: false } }]
           }
         }), { status: 200, headers: { "content-type": "application/json" } });
       }
@@ -3493,15 +3493,15 @@ describe("command parser and env validation", () => {
           "X-Goog-Api-Key": "stitch-secret"
         });
         expect(body.params).toEqual({
-          name: "echo",
-          arguments: { text: "hello" }
+          name: "list_projects",
+          arguments: { filter: "view=owned" }
         });
         return new Response(JSON.stringify({
           jsonrpc: "2.0",
           id: body.id,
           result: {
-            content: [{ type: "text", text: "hello" }],
-            structuredContent: { text: "hello" },
+            content: [{ type: "text", text: "projects:hello" }],
+            structuredContent: { projects: [{ id: "hello", title: "Hello" }] },
             isError: false
           }
         }), { status: 200, headers: { "content-type": "application/json" } });
@@ -3514,16 +3514,16 @@ describe("command parser and env validation", () => {
               tool: "mcp.tools.call",
               args: {
                 server: "stitch",
-                toolName: "echo",
+                toolName: "list_projects",
                 readOnly: true,
-                arguments: { text: "hello" }
+                arguments: { filter: "view=owned" }
               }
             }
           })
         : JSON.stringify({
             action: {
               type: "respond",
-              message: "MCP echo returned hello."
+              message: "MCP list_projects returned hello."
             }
           });
       return new Response(JSON.stringify({
@@ -3550,7 +3550,7 @@ describe("command parser and env validation", () => {
     const result = await executeAgentTurn({
       projectRoot: root,
       sessionId: "session-stitch-tool-call",
-      userInput: "Stitch echo tool을 읽기 전용으로 호출해줘",
+      userInput: "Stitch list_projects tool을 읽기 전용으로 호출해줘",
       config,
       env
     });
@@ -4765,8 +4765,8 @@ describe("command parser and env validation", () => {
           id: body.id,
           result: {
             tools: [{
-              name: "echo",
-              description: "Echo read-only text.",
+              name: "list_projects",
+              description: "List projects.",
               inputSchema: { type: "object" }
             }, {
               name: "create_project",
@@ -4802,7 +4802,7 @@ describe("command parser and env validation", () => {
     expect(parsed.servers[0]).toMatchObject({
       server: "stitch",
       kind: "mcp-streamable-http",
-      tools: [expect.objectContaining({ name: "echo" })]
+      tools: [expect.objectContaining({ name: "list_projects" })]
     });
     expect(parsed.servers[0].tools).not.toEqual(expect.arrayContaining([expect.objectContaining({ name: "create_project" })]));
     expect(parsed.servers[0].filteredOutToolCount).toBe(1);
@@ -4951,7 +4951,7 @@ describe("command parser and env validation", () => {
           jsonrpc: "2.0",
           id: body.id,
           result: {
-            tools: [{ name: "echo", description: "Echo input", annotations: { readOnlyHint: true } }]
+            tools: [{ name: "list_projects", description: "List projects.", annotations: { readOnlyHint: true, destructiveHint: false } }]
           }
         }), { status: 200, headers: { "content-type": "application/json" } });
       }
@@ -4963,7 +4963,7 @@ describe("command parser and env validation", () => {
         return new Response(JSON.stringify({
           jsonrpc: "2.0",
           id: body.id,
-          error: { code: -32602, message: "echo rejected" }
+          error: { code: -32602, message: "list_projects rejected" }
         }), { status: 200, headers: { "content-type": "application/json" } });
       }
       return new Response(JSON.stringify({ error: { message: "unexpected request" } }), { status: 500 });
@@ -4979,11 +4979,11 @@ describe("command parser and env validation", () => {
       name: "mcp.tools.call",
       args: {
         server: "stitch",
-        toolName: "echo",
+        toolName: "list_projects",
         readOnly: true,
-        arguments: { text: "hello" }
+        arguments: { filter: "view=owned" }
       }
-    })).rejects.toThrow("stitch MCP tools/call failed at https://stitch.googleapis.com/mcp: MCP tools/call failed: echo rejected");
+    })).rejects.toThrow("stitch MCP tools/call failed at https://stitch.googleapis.com/mcp: MCP tools/call failed: list_projects rejected");
     expect(methods).toEqual([
       "initialize",
       "notifications/initialized",
@@ -5800,7 +5800,7 @@ describe("runtime planner and context bundle", () => {
           kind: "read-only-probe",
           state: "proved-now",
           satisfied: true,
-          agentReadOnlyTools: ["echo"]
+          agentReadOnlyTools: ["list_projects"]
         }),
         readTools: ["mcp.tools.list", "mcp.tools.call"]
       })

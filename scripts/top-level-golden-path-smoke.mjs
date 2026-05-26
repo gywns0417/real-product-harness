@@ -46,9 +46,9 @@ fs.writeFileSync(preloadPath, [
   "    } else if (input.includes('Lane queued command: /pm start')) {",
   "      text = JSON.stringify({ action: { type: 'command', command: '/pm start', safeToAutoRun: true, reason: 'PM lane accepts the queued start command.', message: 'PM lane starts.' } });",
   "    } else if (observed) {",
-  "      text = JSON.stringify({ action: { type: 'respond', message: 'Protocol MCP echo returned top-level-golden-ok.' } });",
+  "      text = JSON.stringify({ action: { type: 'respond', message: 'Protocol MCP list_projects returned top-level-golden-ok.' } });",
   "    } else {",
-  "      text = JSON.stringify({ action: { type: 'tool_call', tool: 'mcp.tools.call', args: { server: 'stitch', toolName: 'echo', readOnly: true, arguments: { text: 'top-level-golden-ok' } } } });",
+  "      text = JSON.stringify({ action: { type: 'tool_call', tool: 'mcp.tools.call', args: { server: 'stitch', toolName: 'list_projects', readOnly: true, arguments: { filter: 'view=owned' } } } });",
   "    }",
   "    capture('openai-response', { responseCallCount, smoke, observed, text });",
   "    return json({ output: [{ type: 'message', content: [{ type: 'output_text', text }] }], usage: { input_tokens: 10, output_tokens: 5 } });",
@@ -61,10 +61,10 @@ fs.writeFileSync(preloadPath, [
   "      return json({});",
   "    }",
   "    if (body.method === 'tools/list') {",
-  "      return json({ jsonrpc: '2.0', id: body.id, result: { tools: [{ name: 'echo', description: 'Echo a read-only string.', annotations: { readOnlyHint: true }, inputSchema: { type: 'object', properties: { text: { type: 'string' } } } }] } });",
+  "      return json({ jsonrpc: '2.0', id: body.id, result: { tools: [{ name: 'list_projects', description: 'List projects.', annotations: { readOnlyHint: true, destructiveHint: false }, inputSchema: { type: 'object', properties: { filter: { type: 'string' } } } }] } });",
   "    }",
   "    if (body.method === 'tools/call') {",
-  "      return json({ jsonrpc: '2.0', id: body.id, result: { content: [{ type: 'text', text: `echo:${body.params?.arguments?.text ?? ''}` }], structuredContent: { echoed: body.params?.arguments?.text ?? null }, isError: false } });",
+  "      return json({ jsonrpc: '2.0', id: body.id, result: { content: [{ type: 'text', text: 'projects:top-level-golden-ok' }], structuredContent: { projects: [{ id: 'top-level-golden-ok', title: 'Top Level Golden' }], filter: body.params?.arguments?.filter ?? null }, isError: false } });",
   "    }",
   "  }",
   "  return json({ error: { message: `unexpected fetch ${target}` } }, { status: 500 });",
@@ -86,14 +86,14 @@ const start = runCli([
   "openai",
   "--mcp",
   "stitch",
-  "protocol MCP echo tool로 top-level-golden-ok 확인해줘"
+  "protocol MCP list_projects tool로 top-level-golden-ok 확인해줘"
 ], env, "start golden path");
 assertIncludes(start.stdout, "RPH runtime: setup needed before agent chat", "start output");
 assertIncludes(start.stdout, "setup assistant: rph setup auto --live", "start output");
 assertIncludes(start.stdout, "setup live check passed", "start output");
 assertIncludes(start.stdout, "next: rph pm start", "start output");
 assertIncludes(start.stdout, "MCP read-only tool contracts bound: stitch", "start output");
-assertIncludes(start.stdout, "Protocol MCP echo returned top-level-golden-ok.", "start output");
+assertIncludes(start.stdout, "Protocol MCP list_projects returned top-level-golden-ok.", "start output");
 
 const sessionAfterStart = readJson(path.join(tmpRoot, ".rph", "runtime", "current-session.json"));
 const toolCall = sessionAfterStart.activeTurn?.toolCalls?.find((call) => call.name === "mcp.tools.call");

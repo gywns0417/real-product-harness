@@ -260,7 +260,7 @@ describe("MCP readiness", () => {
           result: {
             tools: [
               {
-                name: "echo",
+                name: "list_projects",
                 annotations: { readOnlyHint: true }
               }
             ]
@@ -292,7 +292,7 @@ describe("MCP readiness", () => {
 
     expect(result.status).toBe("passed");
     expect(result.message).toContain("credential: MCP initialize accepted");
-    expect(result.message).toContain("protocol: tools/list passed (1 tools); tools/call passed (echo)");
+    expect(result.message).toContain("protocol: tools/list passed (1 tools); tools/call passed (list_projects)");
     expect(result.identity).toMatchObject({
       type: "mcp-server",
       label: "stitch",
@@ -302,7 +302,7 @@ describe("MCP readiness", () => {
     });
     expect(result.firstActionProof).toMatchObject({
       action: "mcp.tools.call",
-      targetId: "stitch:echo",
+      targetId: "stitch:list_projects",
       verifiedBy: "protocol-tool-call",
       endpoint: "https://stitch.googleapis.com/mcp"
     });
@@ -338,9 +338,9 @@ describe("MCP readiness", () => {
         id: "rph-tools-call",
         method: "tools/call",
         params: {
-          name: "echo",
+          name: "list_projects",
           arguments: {
-            text: "rph-readiness-probe"
+            filter: "view=owned"
           }
         }
       })
@@ -354,8 +354,8 @@ describe("MCP readiness", () => {
   });
 
   it.each([
-    ["omits readOnlyHint", undefined, "stitch MCP tool is not explicitly verified read-only by current tools/list metadata: echo"],
-    ["marks destructiveHint", { readOnlyHint: true, destructiveHint: true }, "stitch MCP tool is marked destructive by current tools/list metadata: echo"]
+    ["omits readOnlyHint", undefined, "stitch MCP tool is not explicitly verified read-only by current tools/list metadata: list_projects"],
+    ["marks destructiveHint", { readOnlyHint: true, destructiveHint: true }, "stitch MCP tool is marked destructive by current tools/list metadata: list_projects"]
   ])("fails Stitch read-only canary when probe metadata %s", async (_label, annotations, expectedMessage) => {
     const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body ?? "{}")) as {
@@ -388,7 +388,7 @@ describe("MCP readiness", () => {
           id: body.id,
           result: {
             tools: [{
-              name: "echo",
+              name: "list_projects",
               ...(annotations ? { annotations } : {})
             }]
           }
