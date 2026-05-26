@@ -1483,8 +1483,11 @@ describe("command parser and env validation", () => {
     expect(output).toContain("rph live audit");
     expect(output).toContain("rph status");
     expect(output).toContain("rph \"what should I do next?\"");
+    expect(output).toContain("rph shell");
     expect(output).toContain("Unknown bare text is treated as conversation");
     expect(output).toContain("rph help setup");
+    expect(output).toContain("rph help shell");
+    expect(output).toContain("rph help status");
     expect(output).toContain("rph help live");
     expect(output).not.toContain("One-shot slash commands:");
     expect(output).not.toContain("/github hotfix-plan");
@@ -1577,6 +1580,32 @@ describe("command parser and env validation", () => {
     expect(output).toContain("/status");
     expect(output).toContain("/next");
     expect(output).toContain("/exit");
+  });
+
+  it("prints shell help for the top-layer conversation runtime", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const ok = await runParsedCommand(root, parseCli(["help", "shell"]));
+
+    expect(ok).toBe(true);
+    const output = logSpy.mock.calls.flat().join("\n");
+    expect(output).toContain("Runtime shell");
+    expect(output).toContain("rph shell");
+    expect(output).toContain("Plain text goes to the connected AI agent");
+    expect(output).toContain("/agent confirm-intent <id>");
+  });
+
+  it("prints status help with chat and control guidance", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const ok = await runParsedCommand(root, parseCli(["help", "status"]));
+
+    expect(ok).toBe(true);
+    const output = logSpy.mock.calls.flat().join("\n");
+    expect(output).toContain("Status commands");
+    expect(output).toContain("rph status --verbose");
+    expect(output).toContain("For conversation, enter `rph shell`");
+    expect(output).toContain("Slash commands remain local control-plane actions");
   });
 
   it("prints topic help for live target verification", async () => {

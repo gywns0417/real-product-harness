@@ -2,6 +2,17 @@
 
 AI agent workflow CLI for real product delivery: PM interview, versioned documents, approval gates, GitHub setup, and local sync targets.
 
+## Quick Start
+
+```bash
+rph shell
+/setup auto --live
+다음에 뭐 하면 돼?
+/status
+```
+
+Plain text talks to the connected AI agent. Slash commands stay local control-plane actions, similar to Codex or Claude Code commands.
+
 ## Install
 
 One-command install:
@@ -45,6 +56,7 @@ Start the product runtime from a product project folder:
 
 ```bash
 rph
+rph shell
 rph start
 ```
 
@@ -208,7 +220,7 @@ uses its active node as the stage authority and keeps `stageQueue` as a compatib
 
 For a Hermes-like top shell, the installer exposes the main control-plane domains as shell
 functions that dispatch to `rph`: `/pm`, `/pd`, `/setup`, `/status`, `/workspace`, `/next`, `/qa`, `/fe`,
-`/be`, `/ai`, `/mcp`, `/docs`, `/github`, `/notion`, `/agent`, `/productize`, `/doctor`, and
+`/be`, `/ai`, `/mcp`, `/live`, `/docs`, `/github`, `/notion`, `/agent`, `/productize`, `/doctor`, and
 `/help`.
 
 They are enabled by default when the installed init file is sourced. Enable them in the current
@@ -236,6 +248,7 @@ Examples:
 /next
 /ai status
 /mcp status
+/live audit
 /agent run --steps 5
 /docs list
 /github sync

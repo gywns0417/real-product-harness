@@ -5017,7 +5017,9 @@ describe("Hermes-like CLI contracts", () => {
     expect(statusBefore.stdout).toContain("- current: PM_PRODUCT_DEFINITION_REVIEW");
     expect(statusBefore.stdout).toContain("- next: /docs approve product-definition");
     expect(statusBefore.stdout).toContain("- blocked: required approval missing: product-definition");
-    expect(statusBefore.stdout).toContain("- chat: rph ask \"다음에 뭐 하면 돼?\"");
+    expect(statusBefore.stdout).toContain("- chat: rph shell (plain text goes to the connected AI agent)");
+    expect(statusBefore.stdout).toContain("- one-shot chat: rph ask \"다음에 뭐 하면 돼?\"");
+    expect(statusBefore.stdout).toContain("- control: /status, /next, /agent status");
     expect(statusBefore.stdout).toContain("현재 단계: PM_PRODUCT_DEFINITION_REVIEW");
     expect(statusBefore.stdout).toContain("승인 필요: product-definition");
 
@@ -6580,6 +6582,49 @@ describe("Hermes-like CLI contracts", () => {
     }
   }, 15000);
 
+  it("routes connected runtime slash controls locally without sending them to the AI provider", async () => {
+    const captureFile = path.join(root, "runtime-chat-provider-capture.jsonl");
+    writeOpenAiEnv(root, "https://example.invalid/v1");
+
+    const result = await runCli(["shell"], {
+      cwd: root,
+      stdinChunks: [
+        { text: "첫 질문은 agent chat으로 받아줘\n", delayMs: 0 },
+        { text: "/status\n", delayMs: 50 },
+        { text: "두 번째 질문도 agent chat으로 받아줘\n", delayMs: 50 },
+        { text: "/pm start\n", delayMs: 50 },
+        { text: "/exit\n", delayMs: 50 }
+      ],
+      preloadFetchOpenAiChatCapture: captureFile
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("RPH status");
+    expect(result.stdout).toContain("PM 워크플로우 시작");
+    expect(result.stdout).not.toContain("[error]");
+    const providerPayloads = fs.readFileSync(captureFile, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { input?: string });
+    expect(providerPayloads).toHaveLength(2);
+    const providerText = providerPayloads.map((payload) => payload.input ?? "").join("\n");
+    expect(providerText).toContain("첫 질문은 agent chat으로 받아줘");
+    expect(providerText).toContain("두 번째 질문도 agent chat으로 받아줘");
+    expect(providerText).not.toContain("Current user message:\n/status");
+    expect(providerText).not.toContain("Current user message:\n/pm start");
+    expect(providerText).not.toContain("USER: /status");
+    expect(providerText).not.toContain("USER: /pm start");
+
+    const session = JSON.parse(fs.readFileSync(path.join(root, ".rph", "runtime", "current-session.json"), "utf8")) as { sessionId: string };
+    const chatLog = fs.readFileSync(path.join(root, ".rph", "ai", "chat", `${session.sessionId}.jsonl`), "utf8");
+    expect(chatLog).toContain("첫 질문은 agent chat으로 받아줘");
+    expect(chatLog).toContain("두 번째 질문도 agent chat으로 받아줘");
+    expect(chatLog).not.toContain("/status");
+    expect(chatLog).not.toContain("/pm start");
+    const state = JSON.parse(fs.readFileSync(path.join(root, ".rph", "state.json"), "utf8")) as {
+      currentStage: string;
+    };
+    expect(state.currentStage).toBe("PM_PRODUCT_DEFINITION_INTERVIEW");
+  }, 10000);
+
   it("retries failed setup auto --live credential entry inside the runtime shell", async () => {
     const uninitializedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rph-runtime-setup-auto-retry-"));
     try {
@@ -7172,6 +7217,7 @@ async function runCli(
       reason?: string;
     };
     preloadFetchOpenAiConnectionSuccess?: boolean;
+    preloadFetchOpenAiChatCapture?: string;
     preloadFetchOpenAiDemoFailure?: boolean;
     preloadFetchOpenAiCredentialRetry?: boolean;
     preloadFetchOpenAiGenerationFailure?: boolean;
@@ -7221,6 +7267,8 @@ async function runCli(
                             )
                           : options.preloadFetchOpenAiConnectionSuccess
                             ? createFetchOpenAiConnectionSuccessStub(options.cwd)
+                            : options.preloadFetchOpenAiChatCapture
+                              ? createFetchOpenAiChatCaptureStub(options.cwd, options.preloadFetchOpenAiChatCapture)
                             : options.preloadFetchOpenAiDemoFailure
                               ? createFetchOpenAiDemoFailureStub(options.cwd)
                             : options.preloadFetchOpenAiCredentialRetry
@@ -7454,6 +7502,27 @@ function createFetchOpenAiConnectionSuccessStub(projectRoot: string): string {
     "    if (input.startsWith('RPH setup just verified live connections.')) {",
     "      return new Response(JSON.stringify({ output_text: '한 줄 제품 정리: 아직 아이디어를 받지 않았습니다.\\nMVP 초안: 1) 문제 한 줄 입력 2) 핵심 사용자 정의 3) 첫 워크플로우 생성\\n추천 다음 행동: 제품 아이디어를 한 줄로 입력하거나 /pm start 를 실행하세요.', usage: { input_tokens: 60, output_tokens: 44 } }), { status: 200, headers: { 'content-type': 'application/json' } });",
     "    }",
+    "    return new Response(JSON.stringify({ output_text: 'OK', usage: { input_tokens: 4, output_tokens: 1 } }), { status: 200, headers: { 'content-type': 'application/json' } });",
+    "  }",
+    "  return new Response(JSON.stringify({ error: { message: `unexpected URL ${target}` } }), { status: 500, headers: { 'content-type': 'application/json' } });",
+    "};"
+  ].join("\n"));
+  return preloadPath;
+}
+
+function createFetchOpenAiChatCaptureStub(projectRoot: string, captureFile: string): string {
+  const preloadPath = path.join(projectRoot, "fetch-openai-chat-capture-preload.cjs");
+  fs.writeFileSync(preloadPath, [
+    "const fs = require('node:fs');",
+    `const captureFile = ${JSON.stringify(captureFile)};`,
+    "global.fetch = async (url, init = {}) => {",
+    "  const target = String(url);",
+    "  if (target.endsWith('/models')) {",
+    "    return new Response(JSON.stringify({ data: [{ id: 'gpt-5.4' }] }), { status: 200, headers: { 'content-type': 'application/json' } });",
+    "  }",
+    "  if (target.endsWith('/responses')) {",
+    "    const body = typeof init.body === 'string' ? JSON.parse(init.body) : {};",
+    "    fs.appendFileSync(captureFile, JSON.stringify(body) + '\\n');",
     "    return new Response(JSON.stringify({ output_text: 'OK', usage: { input_tokens: 4, output_tokens: 1 } }), { status: 200, headers: { 'content-type': 'application/json' } });",
     "  }",
     "  return new Response(JSON.stringify({ error: { message: `unexpected URL ${target}` } }), { status: 500, headers: { 'content-type': 'application/json' } });",

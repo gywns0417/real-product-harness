@@ -345,6 +345,37 @@ const HERMES_OPERATOR_AGENT_PACK = [
 ] as const;
 
 const HELP_TOPIC_LINES: Record<string, string[]> = {
+  shell: [
+    "Runtime shell",
+    "",
+    "  rph",
+    "  rph shell",
+    "  rph runtime",
+    "",
+    "Starts the top-layer conversation runtime. Plain text goes to the connected AI agent; slash commands are explicit workflow controls.",
+    "",
+    "Typical flow:",
+    "  /setup auto --live",
+    "  다음에 뭐 하면 돼?",
+    "  /status",
+    "  /agent intents",
+    "  /agent confirm-intent <id>",
+    "  /exit",
+    "",
+    "Use `rph help runtime` for the full control surface."
+  ],
+  status: [
+    "Status commands",
+    "",
+    "  rph status",
+    "  rph status --verbose",
+    "  rph status --json",
+    "  /status",
+    "  /status --verbose",
+    "",
+    "Shows the current workflow stage, next safe command, runtime graph digest, blockers, and connection/readiness proof.",
+    "For conversation, enter `rph shell` and type plain text. Slash commands remain local control-plane actions."
+  ],
   runtime: [
     "Runtime conversation",
     "",
@@ -7278,7 +7309,9 @@ function handleStatus(projectRoot: string, options: { commandSurface?: "rph" | "
   console.log(`- current: ${stage.id} (${stage.name}) owner=${stage.ownerAgent}`);
   console.log(`- next: ${digestCommand ?? "none"}`);
   console.log(`- blocked: ${advance.canAdvance ? "none" : advance.reasons[0] ?? "unknown"}`);
-  console.log(`- chat: rph ask "다음에 뭐 하면 돼?"`);
+  console.log("- chat: rph shell (plain text goes to the connected AI agent)");
+  console.log("- one-shot chat: rph ask \"다음에 뭐 하면 돼?\"");
+  console.log("- control: /status, /next, /agent status");
   for (const line of runtimeDigestLines(projectRoot, session)) {
     console.log(line);
   }
@@ -11834,6 +11867,8 @@ function renderGeneralHelp(): string {
     "Talk to the connected AI agent:",
     "  rph",
     "    Enter the runtime. Plain text chats with the connected AI agent; slash commands control workflow state.",
+    "  rph shell",
+    "    Explicit name for the same conversation runtime.",
     "  rph \"what should I do next?\"",
     "    Send a one-shot chat message to the current runtime session.",
     "  rph 다음에 뭐 하면 돼?",
@@ -11870,10 +11905,13 @@ function renderGeneralHelp(): string {
     "  /agent run --steps 5",
     "  /agent bind qa-expert --role QA",
     "  /mcp tools stitch",
+    "  /live audit",
     "  /workspace",
     "",
     "Topic help:",
     "  rph help setup",
+    "  rph help shell",
+    "  rph help status",
     "  rph help agent",
     "  rph help doctor",
     "  rph help live",
@@ -11881,7 +11919,7 @@ function renderGeneralHelp(): string {
     "  rph help mcp",
     "  rph help pm",
     "",
-    "All topics: runtime, productize, setup, agent, workspace, doctor, ai, mcp, live, proofs, pm, pd, fe, be, qa, notion, docs, github",
+    "All topics: shell, status, runtime, productize, setup, agent, workspace, doctor, ai, mcp, live, proofs, pm, pd, fe, be, qa, notion, docs, github",
     "",
     `Document IDs: ${DOCUMENT_IDS.map((docId) => `${docId}(${DOCUMENT_TITLES[docId]})`).join(", ")}`,
     `Design Artifact IDs: ${DESIGN_ARTIFACT_IDS.map((artifactId) => `${artifactId}(${DESIGN_ARTIFACT_TITLES[artifactId]})`).join(", ")}`
