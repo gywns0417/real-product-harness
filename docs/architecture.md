@@ -13,13 +13,13 @@ The repo is a TypeScript workspace with a top-level product runtime and focused 
 
 ## Runtime Layer
 
-`rph` is the control-plane entrypoint. Running it without arguments opens a long-lived runtime shell where normal text chats with the connected AI agent and slash commands such as `/pm start`, `/pd references`, `/fe spec`, and `/qa review --pr 1` control workflow state. Connected chat proposals can suggest the next control, but plain chat does not execute read-only commands, queue external actions, or advance local workflow state by itself. User-authored non-slash text remains conversation, even when it looks command-like: `시작해`, `현재 상태 보여줘`, `계속 진행해`, `승인해`, and `continue` are sent to chat rather than silently promoted into local workflow execution. Workflow control requires a slash/control command (`/status`, `/agent run --steps 6`, `/agent recover`, `/agent approve-action <id>`, `/pm start`) or an explicit automation surface such as `rph ask --execute`.
+`rph` is the control-plane entrypoint. Running it without arguments opens a long-lived runtime shell where normal text chats with the connected AI agent and slash commands such as `/pm start`, `/pd references`, `/fe spec`, and `/qa review --pr 1` control workflow state. Connected chat proposals can suggest the next control, but plain chat does not execute read-only commands, queue external actions, or advance local workflow state by itself. Suggested controls are saved as runtime intents and require `/agent confirm-intent <id>` or `/agent dismiss-intent <id>`; each intent captures the stage, graph digest, and active TOML profile at creation time so stale confirmations can be blocked. User-authored non-slash text remains conversation, even when it looks command-like: `시작해`, `현재 상태 보여줘`, `계속 진행해`, `승인해`, and `continue` are sent to chat rather than silently promoted into local workflow execution. Workflow control requires a slash/control command (`/status`, `/agent run --steps 6`, `/agent recover`, `/agent intents`, `/agent confirm-intent <id>`, `/agent approve-action <id>`, `/pm start`) or an explicit automation surface such as `rph ask --execute`.
 
 The design mirrors a Hermes-style separation:
 
 - Runtime/control plane: keeps the active project, prompt, session, and command envelope.
 - Execution lanes: PM, PD, FE, BE, QA, GitHub, Notion, and Docs handlers execute bounded workflow actions.
-- Records: product state remains in `.rph/`; runtime command history is appended under `.rph/runtime/`, and `/agent replay` renders journal-backed session history as a user-facing timeline before showing raw snapshot tail data.
+- Records: product state remains in `.rph/`; runtime command history is appended under `.rph/runtime/`, durable AI-suggested controls are stored in `.rph/runtime/intents.json`, and `/agent replay` renders journal-backed session history as a user-facing timeline before showing raw snapshot tail data.
 - Chat: runtime conversation turns are appended under `.rph/ai/chat/` so the agent feels like a top-level conversational layer, not a command-only CLI.
 - AI run records: provider/model metadata and prompt/output previews are stored under `.rph/ai/runs/`; secrets stay in `.env`.
 - Settings: non-secret provider state lives in `.rph/config.json`; secrets stay in `.env`.
@@ -55,6 +55,7 @@ Project state lives under `.rph/` in the target product folder:
 - `.rph/notion/sync-payload.json`
 - `.rph/github/labels.json`
 - `.rph/runtime/session-<timestamp>.jsonl`
+- `.rph/runtime/intents.json`
 
 Secrets stay outside `.rph`.
 

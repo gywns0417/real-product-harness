@@ -71,8 +71,48 @@
 
 남은 작업:
 
-- `pnpm run live:configured`는 현재 external credential/quota 때문에 green이 아니다. OpenAI는 401이고, 반복 검증 후 Gemini generation smoke는 429 quota로 실패했다. Notion, GitHub, Stitch는 latest live report 기준 passed이며 Stitch는 `tools/list` 14개 tool을 확인했다.
+- `pnpm run live:configured`는 현재 OpenAI credential 401 때문에 green이 아니다. 최신 재검증 기준 Gemini, Notion, GitHub, Stitch는 passed이며 Stitch는 `tools/list` 14개 tool을 확인했다. Anthropic/local/Figma는 configured env가 없어 skipped다.
 - 원격 GitHub main에는 아직 현재 작업트리 변경이 push되지 않았다. public repo 설치 사용자를 위해서는 변경분 commit/push가 필요하다.
+
+## 2026-05-26 runtime chat intent update
+
+사용자 피드백 기준으로 다시 보면, 이전 상태의 가장 큰 UX 결함은 "AI agent와 대화는 되지만, agent가 제안한 slash/control이 stdout 안내로만 남고 durable하게 이어지지 않는다"는 점이었다. 명령어는 Codex/Claude Code의 slash command처럼 명시 제어여야 하지만, 대화형 agent가 다음 제어를 제안하면 사용자가 그 제안을 나중에 확인/실행/폐기할 수 있어야 한다.
+
+반영한 변경:
+
+- AI chat이 제안한 control command를 `.rph/runtime/intents.json`에 durable intent로 저장한다.
+- `/agent intents`로 pending/confirmed/dismissed intent를 조회한다.
+- `/agent confirm-intent <id>`가 사용자가 명시 확인한 intent만 실행한다.
+- `/agent dismiss-intent <id>`가 제안을 폐기한다.
+- read-only/local mutation/external live write/user approval command를 risk로 분리해 기록한다.
+- intent 생성 당시 stage, graph digest, active TOML profile slug를 함께 저장하고, confirm 시 drift가 있으면 차단한다.
+- external live write는 confirm 후에도 바로 실행하지 않고 기존 action approval gate로 넘어간다.
+- user approval command는 intent confirm으로 대리 승인하지 못하게 막고, 사용자가 원래 approval slash command를 직접 입력하도록 분리한다.
+- `/status` digest가 현재 세션의 pending intent count와 다음 confirm command를 보여준다.
+- `/setup auto --live` 성공 후 `Connected` handoff block을 출력해 AI/MCP 연결, secret 저장 위치, chat 시작 방식, `/pm start` 시작 명령을 한 번에 보여준다.
+
+검증:
+
+- runtime chat의 `/status` 제안이 실행되지 않고 `read_only` pending intent로 저장되는 acceptance를 추가했다.
+- `/agent confirm-intent <id>`가 read-only intent를 명시 실행하고 runtime session을 잃지 않는 acceptance를 추가했다.
+- workflow stage가 바뀐 stale intent는 confirm되지 않고 pending으로 남는 acceptance를 추가했다.
+- user approval intent는 confirm으로 대리 실행되지 않는 acceptance를 추가했다.
+- 반복 제안은 pending intent가 중복되지 않고 dismiss 가능한 acceptance를 추가했다.
+- external live write 제안이 plain chat에서 action approval을 만들지 않고, confirm 후에만 external action approval로 넘어가는 acceptance를 추가했다.
+- interactive `/setup auto --live` 성공 출력이 `Connected`, AI/MCP 요약, chat handoff, `/pm start` 시작 명령을 포함하는 acceptance를 추가했다.
+
+현재 판정:
+
+- top-level product harness: 8.8/10
+- Hermes-like autonomous multi-agent runtime: 8.7/10
+
+아직 부족한 점:
+
+- provider별 "신규 실계정 credential 입력부터 성공 연결까지" live green은 아직 전체 통과 상태가 아니다. 2026-05-26 최신 `live:configured` 기준 Gemini, Notion, GitHub, Stitch는 통과했고 OpenAI credential 401이 남은 live blocker다. Anthropic/local/Figma는 configured target이 아니라 skipped다.
+- runtime intent가 단일 JSON 배열 파일이라 장기 운영에서는 append-only journal/compaction 구조가 더 낫다.
+- custom TOML agent가 "profile/sandbox/model hint"를 넘어 실제 독립 process worker와 장기 memory lane으로 동작하는 수준은 더 보강해야 한다.
+- MCP setup은 connected proof와 tool contract는 갖췄지만, provider별 repair wizard와 first successful tool-call UX를 더 촘촘히 만들어야 한다.
+- intent lifecycle은 `/agent replay` timeline의 1급 event로 더 올릴 여지가 남아 있다.
 
 ## Continuation update
 

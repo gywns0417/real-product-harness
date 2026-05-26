@@ -9,7 +9,7 @@
 - Phase 1 runs locally without requiring GitHub, Notion, Figma, OAuth, or cloud deploy credentials.
 - External integrations default to dry-run, local file generation, or skeleton adapters.
 - `.rph` is the local source of truth for project state and non-secret workflow records.
-- Runtime UX is conversational first: plain text talks to the connected AI agent, while slash commands control workflow state.
+- Runtime UX is conversational first: plain text talks to the connected AI agent, while slash commands control workflow state. AI-suggested slash commands persist as runtime intents until the user confirms or dismisses them.
 - Obsidian export writes Markdown with frontmatter; Notion can create a live dashboard/databases only through explicit `--live` commands.
 - Final merge, external deploy, OAuth use, and production-side actions remain blocked behind explicit command flags.
 

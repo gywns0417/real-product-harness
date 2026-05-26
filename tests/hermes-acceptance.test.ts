@@ -230,12 +230,159 @@ describe("Hermes-like runtime acceptance", () => {
     expect(result.stdout).not.toContain("agent action: /status");
     expect(result.stdout).not.toContain("execution-policy: runtime chat allowed read-only command");
     expect(result.stdout).not.toContain("- current: SETUP");
+    const intents = JSON.parse(fs.readFileSync(path.join(root, ".rph", "runtime", "intents.json"), "utf8")) as Array<{
+      id: string;
+      status: string;
+      risk: string;
+      command: string;
+      sessionId: string;
+    }>;
+    expect(intents).toHaveLength(1);
+    expect(intents[0]).toMatchObject({
+      status: "pending",
+      risk: "read_only",
+      command: "/status"
+    });
+    expect(result.stdout).toContain(`intent saved: ${intents[0].id}`);
+    expect(result.stdout).toContain(`confirm: /agent confirm-intent ${intents[0].id}`);
+    const listed = await runCli(["agent", "intents"], { cwd: root, env: withoutProviderEnv() });
+    expect(listed.exitCode).toBe(0);
+    expect(listed.stdout).toContain(`${intents[0].id} [pending] read_only`);
+    const status = await runCli(["status"], { cwd: root, env: withoutProviderEnv() });
+    expect(status.exitCode).toBe(0);
+    expect(status.stdout).toContain("- pending intents: 1");
+    expect(status.stdout).toContain(`- next intent: rph agent confirm-intent ${intents[0].id}`);
     const manifest = JSON.parse(fs.readFileSync(path.join(root, ".rph", "runtime", "current-session.json"), "utf8")) as {
       status: string;
       blocker?: string;
     };
     expect(manifest.status).toBe("active");
     expect(manifest.blocker).toBeFalsy();
+  }, 10000);
+
+  it("confirms a durable read-only intent without losing the runtime session", async () => {
+    writeOpenAiEnv(root, "https://example.invalid/v1");
+
+    const proposed = await runCli(["shell"], {
+      cwd: root,
+      stdinChunks: [
+        { text: "상태를 확인해줘\n", delayMs: 0 },
+        { text: "/exit\n", delayMs: 50 }
+      ],
+      preloadFetchCommandProposal: true
+    });
+    expect(proposed.exitCode).toBe(0);
+    const intents = JSON.parse(fs.readFileSync(path.join(root, ".rph", "runtime", "intents.json"), "utf8")) as Array<{
+      id: string;
+      status: string;
+      command: string;
+    }>;
+    expect(intents[0].status).toBe("pending");
+
+    const confirmed = await runCli(["agent", "confirm-intent", intents[0].id, "--by", "tester"], {
+      cwd: root,
+      env: withoutProviderEnv()
+    });
+
+    expect(confirmed.exitCode).toBe(0);
+    expect(confirmed.stdout).toContain(`intent confirmed: ${intents[0].id}`);
+    expect(confirmed.stdout).toContain("agent action: /status");
+    expect(confirmed.stdout).toContain("RPH status");
+    const updated = JSON.parse(fs.readFileSync(path.join(root, ".rph", "runtime", "intents.json"), "utf8")) as Array<{
+      status: string;
+      confirmedBy?: string;
+    }>;
+    expect(updated[0].status).toBe("confirmed");
+    expect(updated[0].confirmedBy).toBe("tester");
+    const manifest = JSON.parse(fs.readFileSync(path.join(root, ".rph", "runtime", "current-session.json"), "utf8")) as {
+      status: string;
+      blocker?: string;
+    };
+    expect(manifest.status).toBe("active");
+    expect(manifest.blocker).toBeFalsy();
+  }, 10000);
+
+  it("blocks stale runtime command intents after workflow stage drift", async () => {
+    writeOpenAiEnv(root, "https://example.invalid/v1");
+
+    const proposed = await runCli(["shell"], {
+      cwd: root,
+      stdinChunks: [
+        { text: "상태를 확인해줘\n", delayMs: 0 },
+        { text: "/exit\n", delayMs: 50 }
+      ],
+      preloadFetchCommandProposal: true
+    });
+    expect(proposed.exitCode).toBe(0);
+    const intentPath = path.join(root, ".rph", "runtime", "intents.json");
+    const intents = JSON.parse(fs.readFileSync(intentPath, "utf8")) as Array<{
+      id: string;
+      status: string;
+      createdStage?: string;
+    }>;
+    expect(intents[0].createdStage).toBe("SETUP");
+
+    saveState(root, {
+      ...loadState(root),
+      currentStage: "PM_PRODUCT_DEFINITION_INTERVIEW"
+    });
+
+    const confirmed = await runCli(["agent", "confirm-intent", intents[0].id, "--by", "tester"], {
+      cwd: root,
+      env: withoutProviderEnv()
+    });
+    expect(confirmed.exitCode).toBe(1);
+    expect(confirmed.stdout).toContain("intent blocked: intent was created at stage SETUP, but current stage is PM_PRODUCT_DEFINITION_INTERVIEW");
+    expect(confirmed.stdout).toContain(`override: /agent confirm-intent ${intents[0].id} --force`);
+    expect(confirmed.stdout).not.toContain("agent action: /status");
+
+    const updated = JSON.parse(fs.readFileSync(intentPath, "utf8")) as Array<{ status: string }>;
+    expect(updated[0].status).toBe("pending");
+  }, 10000);
+
+  it("deduplicates and dismisses repeated runtime command intents", async () => {
+    writeOpenAiEnv(root, "https://example.invalid/v1");
+
+    const proposed = await runCli(["shell"], {
+      cwd: root,
+      stdinChunks: [
+        { text: "상태를 확인해줘\n", delayMs: 0 },
+        { text: "상태 다시 확인해줘\n", delayMs: 50 },
+        { text: "/exit\n", delayMs: 50 }
+      ],
+      preloadFetchCommandProposal: true
+    });
+    expect(proposed.exitCode).toBe(0);
+
+    const intentPath = path.join(root, ".rph", "runtime", "intents.json");
+    const intents = JSON.parse(fs.readFileSync(intentPath, "utf8")) as Array<{
+      id: string;
+      status: string;
+      risk: string;
+      command: string;
+    }>;
+    expect(intents).toHaveLength(1);
+    expect(intents[0]).toMatchObject({
+      status: "pending",
+      risk: "read_only",
+      command: "/status"
+    });
+
+    const dismissed = await runCli(["agent", "dismiss-intent", intents[0].id, "--by", "tester", "--reason", "not now"], {
+      cwd: root,
+      env: withoutProviderEnv()
+    });
+    expect(dismissed.exitCode).toBe(0);
+    expect(dismissed.stdout).toContain(`intent dismissed: ${intents[0].id}`);
+
+    const updated = JSON.parse(fs.readFileSync(intentPath, "utf8")) as Array<{
+      status: string;
+      dismissedBy?: string;
+      dismissReason?: string;
+    }>;
+    expect(updated[0].status).toBe("dismissed");
+    expect(updated[0].dismissedBy).toBe("tester");
+    expect(updated[0].dismissReason).toBe("not now");
   }, 10000);
 
   it("keeps current autonomous local command proposals as explicit controls inside runtime chat", async () => {
@@ -307,6 +454,26 @@ describe("Hermes-like runtime acceptance", () => {
     expect(result.stdout).toContain("run explicitly: type the approval command yourself.");
     expect(result.stdout).not.toContain("auto-run: blocked because user approval command requires explicit user action");
     expect(result.stdout).not.toContain("문서 승인 완료");
+    const intents = JSON.parse(fs.readFileSync(path.join(root, ".rph", "runtime", "intents.json"), "utf8")) as Array<{
+      id: string;
+      status: string;
+      risk: string;
+      command: string;
+    }>;
+    expect(intents).toHaveLength(1);
+    expect(intents[0]).toMatchObject({
+      status: "pending",
+      risk: "user_approval",
+      command: "/docs approve product-definition"
+    });
+    const confirmed = await runCli(["agent", "confirm-intent", intents[0].id, "--by", "tester"], {
+      cwd: root,
+      env: withoutProviderEnv()
+    });
+    expect(confirmed.exitCode).toBe(1);
+    expect(confirmed.stdout).toContain("intent blocked: user approval command requires direct user input: /docs approve product-definition");
+    expect(confirmed.stdout).toContain("run explicitly: /docs approve product-definition");
+    expect(confirmed.stdout).not.toContain("문서 승인 완료");
     const manifest = JSON.parse(fs.readFileSync(path.join(root, ".rph", "runtime", "current-session.json"), "utf8")) as {
       status: string;
       blocker?: string;
@@ -317,6 +484,7 @@ describe("Hermes-like runtime acceptance", () => {
 
   it("does not queue external action approvals from plain runtime chat", async () => {
     writeOpenAiEnv(root, "https://example.invalid/v1");
+    fs.appendFileSync(path.join(root, ".env"), "\nNOTION_TOKEN=test-notion\nNOTION_PARENT_PAGE_ID=123456781234123412341234567890ab\n");
 
     const result = await runCli(["shell"], {
       cwd: root,
@@ -333,6 +501,18 @@ describe("Hermes-like runtime acceptance", () => {
     expect(result.stdout).toContain("run explicitly: use the matching slash command or repeat with rph ask --execute to create an approval request.");
     expect(result.stdout).not.toContain("external action approval required");
     expect(fs.existsSync(path.join(root, ".rph", "runtime", "action-approvals.json"))).toBe(false);
+    const intents = JSON.parse(fs.readFileSync(path.join(root, ".rph", "runtime", "intents.json"), "utf8")) as Array<{
+      id: string;
+      status: string;
+      risk: string;
+      command: string;
+    }>;
+    expect(intents).toHaveLength(1);
+    expect(intents[0]).toMatchObject({
+      status: "pending",
+      risk: "external_live_write"
+    });
+    expect(intents[0].command).toContain("/notion setup --live");
     const manifest = JSON.parse(fs.readFileSync(path.join(root, ".rph", "runtime", "current-session.json"), "utf8")) as {
       status: string;
       blocker?: string;
@@ -341,6 +521,23 @@ describe("Hermes-like runtime acceptance", () => {
     expect(manifest.status).toBe("active");
     expect(manifest.blocker).toBeFalsy();
     expect(manifest.pendingExternalActionId ?? null).toBeNull();
+
+    const confirmed = await runCli(["agent", "confirm-intent", intents[0].id, "--by", "tester"], {
+      cwd: root,
+      env: withoutProviderEnv()
+    });
+    expect(confirmed.exitCode).toBe(0);
+    expect(confirmed.stdout).toContain(`intent confirmed: ${intents[0].id}`);
+    expect(confirmed.stdout).toContain("external action approval required: action_");
+    const approvals = JSON.parse(fs.readFileSync(path.join(root, ".rph", "runtime", "action-approvals.json"), "utf8")) as Array<{
+      status: string;
+      command: string;
+    }>;
+    expect(approvals).toHaveLength(1);
+    expect(approvals[0]).toMatchObject({
+      status: "pending"
+    });
+    expect(approvals[0].command).toContain("/notion setup --live");
   }, 10000);
 
     it("executes local workflow command proposals when ask --execute is explicit", async () => {
@@ -5307,6 +5504,11 @@ describe("Hermes-like CLI contracts", () => {
       expect(result.stdout).toContain(".env 저장 완료");
       expect(result.stdout).toContain("ai:openai");
       expect(result.stdout).toContain("setup live check passed");
+      expect(result.stdout).toContain("Connected");
+      expect(result.stdout).toContain("- AI: openai");
+      expect(result.stdout).toContain("- MCP: none");
+      expect(result.stdout).toContain("- chat: plain text goes to the connected AI agent");
+      expect(result.stdout).toContain("- start product work: /pm start");
       expect(result.stdout).toContain("이제 일반 텍스트를 입력하면 연결된 AI agent와 대화합니다.");
       expect(result.stdout).toContain("handoff: runtime ready");
       expect(result.stdout).toContain("next: /pm start");

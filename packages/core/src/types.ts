@@ -485,6 +485,36 @@ export interface AgentCommandProposal {
   reason?: string;
 }
 
+export type RuntimeIntentStatus = "pending" | "confirmed" | "dismissed";
+
+export type RuntimeIntentRisk = "read_only" | "local_mutation" | "external_live_write" | "user_approval" | "unsupported";
+
+export interface RuntimeIntentRecord {
+  id: string;
+  sessionId: string;
+  command: string;
+  normalizedCommand: string;
+  fingerprint: string;
+  source: "agent-command-proposal";
+  surface: "runtime-chat";
+  risk: RuntimeIntentRisk;
+  safeToAutoRun: boolean;
+  createdStage?: string;
+  graphId?: string;
+  graphDigest?: string;
+  activeProfileSlug?: string;
+  reason?: string;
+  message?: string;
+  status: RuntimeIntentStatus;
+  createdAt: string;
+  updatedAt: string;
+  confirmedAt?: string;
+  confirmedBy?: string;
+  dismissedAt?: string;
+  dismissedBy?: string;
+  dismissReason?: string;
+}
+
 export type RuntimeActionApprovalStatus = "pending" | "approved" | "running" | "completed" | "rejected" | "failed";
 
 export interface RuntimeActionApprovedSnapshot {

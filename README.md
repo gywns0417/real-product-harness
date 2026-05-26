@@ -123,10 +123,12 @@ execution. To control the harness, type the slash/control command explicitly: `/
 `/agent run --steps 6`, `/agent recover`, `/agent approve-action <id>`, `/pm start`, or their
 `rph ...` one-shot forms.
 
-Connected AI chat can suggest the exact control to run next, but plain chat does not execute or queue
-workflow commands by itself. Read-only proposals such as `/status`, local workflow proposals such as
-`/agent run --steps 6`, approval commands, and external live writes all require an explicit slash/control
-command or an explicit execution surface such as `rph ask --execute`.
+Connected AI chat can suggest the exact control to run next, but plain chat does not execute workflow
+commands by itself. Suggested controls are saved as durable runtime intents in
+`.rph/runtime/intents.json`, so they survive shell exits and can be inspected or cleared later.
+Use `/agent intents` to review them, `/agent confirm-intent <intent-id>` to run the suggested control,
+or `/agent dismiss-intent <intent-id>` to discard it. External live writes still become explicit
+action approvals after confirmation; user-approval commands still require the normal approval path.
 
 For one-shot operation, use natural language or a slash command from the shell:
 
@@ -141,6 +143,9 @@ rph status --json
 rph workspace --json
 rph /agent run --steps 6
 rph /agent recover
+rph /agent intents
+rph /agent confirm-intent <intent-id>
+rph /agent dismiss-intent <intent-id>
 rph /agent approve-action <action-id>
 rph /agent reject-action <action-id>
 rph productize "AI 회의록을 액션아이템과 담당자 추적으로 바꾸는 SaaS"
@@ -276,10 +281,11 @@ work carries `poolId`, `slotId`, and `slotIndex` into the handoff and lane recor
 and `/agent lanes` can connect daemon ownership back to the exact execution slot. Pool state also
 stores a process-start fingerprint; mismatched or corrupt pool state is treated as unsafe instead of
 silently acting like no daemon exists.
-Runtime chat command proposals are active, not just advisory: read-only proposals are executed when
-the model marks them safe, and local workflow proposals execute only when they exactly match the
-current autonomous control-plane step. Unsupported local commands, user approval commands, and
-external live writes remain blocked or approval-gated.
+Runtime chat command proposals are durable controls, not hidden auto-runs: read-only proposals,
+local workflow proposals, approval commands, and external live writes are stored as runtime intents
+until the user confirms or dismisses them. Confirming an external live write creates the normal
+action approval request instead of writing externally. User approval commands are never confirmed
+by the agent; the user must type the approval slash command directly.
 
 ### Imported Role Profiles
 

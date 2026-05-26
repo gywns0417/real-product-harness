@@ -3,6 +3,7 @@ export * from "./ai";
 export * from "./agent-turn-executor";
 export * from "./agent-action-approvals";
 export * from "./agent-catalog";
+export * from "./agent-intents";
 export * from "./agent-lane-runner";
 export * from "./agent-role-contracts";
 export * from "./agent-orchestrator";

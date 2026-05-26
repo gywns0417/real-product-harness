@@ -81,6 +81,7 @@ import {
   activeCustomAgentExecutionProfile,
   appendText,
   classifyMutableAgentCommand,
+  confirmRuntimeIntent,
   completeRuntimeAction,
   defaultAgentLibraryRoot,
   discoverAgentLibraryProfiles,
@@ -111,6 +112,7 @@ import {
   RuntimeActionApprovalRecord,
   RuntimeActionApprovedSnapshot,
   RuntimeActionReadbackProof,
+  RuntimeIntentRecord,
   RuntimeExecutionGraph,
   RuntimeHandoffRecord,
   AgentLaneRunRecord,
@@ -130,6 +132,7 @@ import {
   loadRuntimeExecutionGraph,
   loadRuntimeHandoffs,
   loadRuntimeActionApprovals,
+  loadRuntimeIntents,
   loadRuntimeSession,
   loadRuntimeSessionJournal,
   loadActiveCustomAgentProfile,
@@ -140,6 +143,7 @@ import {
   heartbeatAgentLaneRun,
   heartbeatRuntimeHandoff,
   latestRuntimeSessionJournalRecord,
+  dismissRuntimeIntent,
   isRuntimeHandoffClaimable,
   isUserApprovalCommand,
   markIssueInProgress,
@@ -184,6 +188,7 @@ import {
   readTrustedConnectionChecks,
   recordRuntimeHandoff,
   recordRuntimeActionApproval,
+  recordRuntimeIntent,
   recordLiveVerificationEvidence,
   recordRuntimeSessionEvent,
   reconcileRuntimeStageQueue,
@@ -980,6 +985,38 @@ async function handleAgentControlCommand(
     case "action-approvals":
       printRuntimeActionApprovals(projectRoot);
       return {};
+    case "intents":
+      printRuntimeIntents(projectRoot);
+      return {};
+    case "confirm-intent":
+    case "run-intent": {
+      const id = args[0];
+      if (!id) {
+        console.log("usage: /agent confirm-intent <intent-id> [--by <name>] [--force]");
+        return {};
+      }
+      await confirmAndRunRuntimeIntent(projectRoot, id, {
+        confirmedBy: optionString(options, "by") ?? "user",
+        force: optionBool(options, "force")
+      });
+      return {};
+    }
+    case "dismiss-intent": {
+      const id = args[0];
+      if (!id) {
+        console.log("usage: /agent dismiss-intent <intent-id> [--reason <reason>] [--by <name>]");
+        return {};
+      }
+      const record = dismissRuntimeIntent(
+        projectRoot,
+        id,
+        optionString(options, "by") ?? "user",
+        optionString(options, "reason") ?? "dismissed from runtime agent command"
+      );
+      console.log(`intent dismissed: ${record.id}`);
+      console.log(`command: ${record.command}`);
+      return {};
+    }
     case "lanes":
       printRuntimeLaneRuns(projectRoot, optionBool(options, "debug"));
       return {};
@@ -1122,7 +1159,7 @@ async function handleAgentControlCommand(
       console.log("AI chat context cleared");
       return { clearChat: true };
     default:
-      console.log("Agent 명령어: /agent status | /agent roles | /agent pack [--activate name] | /agent discover [query] | /agent import <name|toml> | /agent use <name> | /agent session [id] | /agent replay [id] | /agent graph [status|refresh|json] [--verbose] | /agent handoffs | /agent actions | /agent lanes | /agent workers | /agent pool <status|start|run|stop|logs|service> | /agent run [--steps N] | /agent recover [--steps N] | /agent reduce <stage> | /agent worker run <id> | /agent claim <id> | /agent heartbeat <id> | /agent ack <id> | /agent complete <id> | /agent dead-letter <id> | /agent approve-action <id> | /agent reject-action <id> | /agent clear");
+      console.log("Agent 명령어: /agent status | /agent roles | /agent pack [--activate name] | /agent discover [query] | /agent import <name|toml> | /agent use <name> | /agent session [id] | /agent replay [id] | /agent graph [status|refresh|json] [--verbose] | /agent handoffs | /agent actions | /agent intents | /agent confirm-intent <id> | /agent dismiss-intent <id> | /agent lanes | /agent workers | /agent pool <status|start|run|stop|logs|service> | /agent run [--steps N] | /agent recover [--steps N] | /agent reduce <stage> | /agent worker run <id> | /agent claim <id> | /agent heartbeat <id> | /agent ack <id> | /agent complete <id> | /agent dead-letter <id> | /agent approve-action <id> | /agent reject-action <id> | /agent clear");
       return {};
   }
 }
@@ -2174,11 +2211,17 @@ function runtimeDigestLines(projectRoot: string, session: RuntimeSessionManifest
     if (!graph) {
       return [];
     }
-    return [
+    const pendingIntents = loadRuntimeIntents(projectRoot).filter((record) => record.status === "pending" && record.sessionId === session.sessionId);
+    const lines = [
       `- graph: ${graph.graphId}`,
       `- digest: ${runtimeExecutionGraphDigest(graph)}`,
       "- inspect: rph agent graph status --verbose"
     ];
+    if (pendingIntents.length > 0) {
+      lines.push(`- pending intents: ${pendingIntents.length}`);
+      lines.push(`- next intent: rph agent confirm-intent ${pendingIntents[pendingIntents.length - 1].id}`);
+    }
+    return lines;
   } catch {
     return [];
   }
@@ -2307,6 +2350,116 @@ function printRuntimeActionApprovals(projectRoot: string): void {
       console.log(`  failure: ${record.failureReason}`);
     }
   }
+}
+
+function printRuntimeIntents(projectRoot: string): void {
+  if (!isRuntimeProjectInitialized(projectRoot)) {
+    console.log("intents: project is not initialized");
+    return;
+  }
+  const records = loadRuntimeIntents(projectRoot);
+  if (records.length === 0) {
+    console.log("intents: none");
+    return;
+  }
+  console.log("Runtime intents");
+  for (const record of records.slice(-20)) {
+    console.log(`${record.id} [${record.status}] ${record.risk}`);
+    console.log(`  command: ${record.command}`);
+    console.log(`  session: ${record.sessionId}`);
+    if (record.createdStage) {
+      const graph = record.graphDigest ? ` graph=${record.graphDigest}` : "";
+      console.log(`  context: stage=${record.createdStage}${graph}`);
+    }
+    if (record.reason) {
+      console.log(`  reason: ${record.reason}`);
+    }
+    if (record.status === "pending") {
+      console.log(`  confirm: /agent confirm-intent ${record.id}`);
+      console.log(`  dismiss: /agent dismiss-intent ${record.id}`);
+    }
+  }
+}
+
+async function confirmAndRunRuntimeIntent(
+  projectRoot: string,
+  id: string,
+  options: { confirmedBy: string; force?: boolean }
+): Promise<boolean> {
+  if (!isRuntimeProjectInitialized(projectRoot)) {
+    console.log("intent blocked: project is not initialized");
+    process.exitCode = 1;
+    return false;
+  }
+  const existing = loadRuntimeIntents(projectRoot).find((record) => record.id === id);
+  if (!existing) {
+    console.log(`intent blocked: runtime intent not found: ${id}`);
+    process.exitCode = 1;
+    return false;
+  }
+  if (existing.status !== "pending") {
+    console.log(`intent blocked: cannot confirm runtime intent ${existing.id} with status ${existing.status}`);
+    process.exitCode = 1;
+    return false;
+  }
+  if (existing.risk === "user_approval" || isUserApprovalAgentCommand(existing.command)) {
+    console.log(`intent blocked: user approval command requires direct user input: ${existing.command}`);
+    console.log(`run explicitly: ${existing.command}`);
+    process.exitCode = 1;
+    return false;
+  }
+  const driftBlocker = runtimeIntentDriftBlocker(projectRoot, existing);
+  if (driftBlocker && !options.force) {
+    console.log(`intent blocked: ${driftBlocker}`);
+    console.log(`inspect: /agent intents`);
+    console.log(`override: /agent confirm-intent ${existing.id} --force`);
+    process.exitCode = 1;
+    return false;
+  }
+  const record = confirmRuntimeIntent(projectRoot, id, options.confirmedBy);
+  console.log(`intent confirmed: ${record.id}`);
+  console.log(`command: ${record.command}`);
+  return runAgentCommandProposal(projectRoot, {
+    command: record.command,
+    safeToAutoRun: record.safeToAutoRun,
+    reason: record.reason
+  }, {
+    sessionId: record.sessionId,
+    executeLocalMutations: true,
+    surface: "execution"
+  });
+}
+
+function runtimeIntentDriftBlocker(projectRoot: string, record: RuntimeIntentRecord): string | undefined {
+  const state = loadState(projectRoot);
+  if (record.createdStage && state.currentStage !== record.createdStage) {
+    return `intent was created at stage ${record.createdStage}, but current stage is ${state.currentStage}`;
+  }
+  const graph = currentRuntimeExecutionGraphForIntent(projectRoot, record.sessionId);
+  const digest = graph ? runtimeExecutionGraphDigest(graph) : undefined;
+  if (record.graphDigest && !digest) {
+    return `intent was created with graph ${record.graphDigest}, but current graph is unavailable`;
+  }
+  if (record.graphDigest && digest && digest !== record.graphDigest) {
+    return `intent graph drifted from ${record.graphDigest} to ${digest}`;
+  }
+  const activeProfileSlug = activeCustomAgentExecutionProfile(projectRoot)?.slug;
+  if (record.activeProfileSlug && activeProfileSlug !== record.activeProfileSlug) {
+    return `intent was created with active profile ${record.activeProfileSlug}, but current profile is ${activeProfileSlug ?? "none"}`;
+  }
+  return undefined;
+}
+
+function currentRuntimeExecutionGraphForIntent(projectRoot: string, sessionId: string): RuntimeExecutionGraph | null {
+  const cached = loadRuntimeExecutionGraph(projectRoot);
+  if (cached?.source === "runtime-execution-graph" && cached.sessionId === sessionId) {
+    return cached;
+  }
+  const session = loadRuntimeSession(projectRoot);
+  if (!session || session.sessionId !== sessionId) {
+    return null;
+  }
+  return materializeRuntimeExecutionGraph(projectRoot, session);
 }
 
 function printRuntimeLaneRuns(projectRoot: string, debug = false): void {
@@ -4986,6 +5139,26 @@ async function runAgentCommandProposal(
   const localMutation = isLocalAgentCommand(proposal.command);
   const mutableExternalAction = classifyMutableAgentCommand(proposal.command);
   const userApprovalAction = isUserApprovalAgentCommand(proposal.command);
+  const runtimeIntentSessionId = options.sessionId ?? resolveRuntimeSessionId(projectRoot);
+  const runtimeIntentContext = conversational && isRuntimeProjectInitialized(projectRoot)
+    ? createRuntimeIntentContext(projectRoot, runtimeIntentSessionId)
+    : {};
+  const runtimeIntent = conversational && isRuntimeProjectInitialized(projectRoot)
+    ? recordRuntimeIntent(projectRoot, {
+        sessionId: runtimeIntentSessionId,
+        command: proposal.command,
+        risk: runtimeIntentRisk(readOnly, localMutation, Boolean(mutableExternalAction), userApprovalAction),
+        safeToAutoRun: proposal.safeToAutoRun,
+        ...runtimeIntentContext,
+        reason: proposal.reason,
+        message: "agent suggested a command from plain chat"
+      })
+    : null;
+  if (runtimeIntent) {
+    console.log(`intent saved: ${runtimeIntent.id}`);
+    console.log(`confirm: /agent confirm-intent ${runtimeIntent.id}`);
+    console.log(`dismiss: /agent dismiss-intent ${runtimeIntent.id}`);
+  }
   const sandboxBlocker = activeProfileSandboxCommandBlocker(projectRoot, proposal.command, readOnly);
   if (sandboxBlocker) {
     if (conversational) {
@@ -5069,6 +5242,39 @@ async function runAgentCommandProposal(
   }
   console.log("auto-run: skipped");
   return false;
+}
+
+function runtimeIntentRisk(
+  readOnly: boolean,
+  localMutation: boolean,
+  mutableExternalAction: boolean,
+  userApprovalAction: boolean
+): RuntimeIntentRecord["risk"] {
+  if (mutableExternalAction) {
+    return "external_live_write";
+  }
+  if (userApprovalAction) {
+    return "user_approval";
+  }
+  if (readOnly) {
+    return "read_only";
+  }
+  if (localMutation) {
+    return "local_mutation";
+  }
+  return "unsupported";
+}
+
+function createRuntimeIntentContext(projectRoot: string, sessionId: string): Pick<RuntimeIntentRecord, "createdStage" | "graphId" | "graphDigest" | "activeProfileSlug"> {
+  const state = loadState(projectRoot);
+  const graph = currentRuntimeExecutionGraphForIntent(projectRoot, sessionId);
+  const activeProfile = activeCustomAgentExecutionProfile(projectRoot);
+  return {
+    createdStage: state.currentStage,
+    graphId: graph?.graphId,
+    graphDigest: graph ? runtimeExecutionGraphDigest(graph) : undefined,
+    activeProfileSlug: activeProfile?.slug
+  };
 }
 
 function activeProfileSandboxCommandBlocker(projectRoot: string, command: string, readOnly = isReadOnlyAgentCommand(command)): string | undefined {
@@ -5948,7 +6154,7 @@ function isReadOnlyAgentCommand(command: string): boolean {
     if (parsed.command === "next") {
       return !optionBool(parsed.options, "execute");
     }
-    if (parsed.command === "agent" && ["status", "handoffs"].includes(parsed.subcommand ?? "status")) {
+    if (parsed.command === "agent" && ["status", "handoffs", "actions", "intents"].includes(parsed.subcommand ?? "status")) {
       return true;
     }
     return false;
@@ -5975,7 +6181,7 @@ function isLocalAgentCommand(command: string): boolean {
       case "qa":
         return true;
       case "agent":
-        return ["run", "continue", "status", "handoffs"].includes(parsed.subcommand ?? "status");
+        return ["run", "continue", "status", "handoffs", "actions", "intents", "confirm-intent", "dismiss-intent"].includes(parsed.subcommand ?? "status");
       case "docs":
         return ["approve", "list", "show", "diff"].includes(parsed.subcommand ?? "");
       default:
@@ -6788,9 +6994,24 @@ function assertLiveSetupSucceeded(checks: ConnectionCheck[], options: Record<str
     throw new Error(`setup live check failed: ${failures.map((check) => `${check.kind}:${check.id} ${check.status} (${check.message})`).join("; ")}`);
   }
   console.log("setup live check passed");
+  printSetupConnectedHandoff(checks, options);
   console.log("이제 일반 텍스트를 입력하면 연결된 AI agent와 대화합니다.");
   console.log("handoff: runtime ready");
   console.log(`next: ${runtimeSurfaceCommand(commandSurfaceFromOptions(options), "pm start")}`);
+}
+
+function printSetupConnectedHandoff(checks: ConnectionCheck[], options: Record<string, string | boolean>): void {
+  const passed = checks.filter((check) => check.status === "passed");
+  const ai = passed.filter((check) => check.kind === "ai").map((check) => check.id).join(", ") || "none";
+  const mcp = passed.filter((check) => check.kind === "mcp").map((check) => check.id).join(", ") || "none";
+  const commandSurface = commandSurfaceFromOptions(options);
+  console.log("Connected");
+  console.log(`- AI: ${ai}`);
+  console.log(`- MCP: ${mcp}`);
+  console.log("- secrets: stored in .env only; .rph/config.json stores redacted connection state");
+  console.log("- chat: plain text goes to the connected AI agent");
+  console.log(`- start product work: ${runtimeSurfaceCommand(commandSurface, "pm start")}`);
+  console.log(`- inspect setup: ${runtimeSurfaceCommand(commandSurface, "status")} | ${runtimeSurfaceCommand(commandSurface, "setup auto --from-env --live")}`);
 }
 
 function liveSetupFailures(checks: ConnectionCheck[], options: Record<string, string | boolean>): ConnectionCheck[] {

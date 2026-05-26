@@ -76,6 +76,10 @@ export function runtimeActionApprovalsFile(projectRoot: string): string {
   return path.join(runtimeDir(projectRoot), "action-approvals.json");
 }
 
+export function runtimeIntentsFile(projectRoot: string): string {
+  return path.join(runtimeDir(projectRoot), "intents.json");
+}
+
 export function runtimeLaneRunsDir(projectRoot: string): string {
   return path.join(runtimeDir(projectRoot), "lanes");
 }
