@@ -6,13 +6,14 @@ import {
   notionMcpToolPlan,
   renderNotionPlan
 } from "../../integrations/src/notion";
-import { notionLiveWorkspaceFile, notionPlanFile, notionPlanMarkdownFile, notionSyncPayloadFile } from "./paths";
+import { notionLiveSyncReadbackFile, notionLiveWorkspaceFile, notionPlanFile, notionPlanMarkdownFile, notionSyncPayloadFile } from "./paths";
 import { readApprovals } from "./approvals";
 import { listDesignArtifactIndexes } from "./design";
 import { listDocumentIndexes } from "./documents";
 import { listPullRequests, listWorkIssues } from "./issues";
 import { loadProject, loadState } from "./project";
 import { validateEnv } from "./env";
+import { attachRuntimeActionReadbackBinding, RuntimeActionReadbackBinding } from "./agent-action-approvals";
 import { readJsonIfExists, writeJson, writeText } from "./fs";
 
 export const NOTION_ENV_KEYS = ["NOTION_TOKEN", "NOTION_PARENT_PAGE_ID"];
@@ -29,12 +30,22 @@ export interface NotionWorkspacePlan {
   executionMode: "dry-run" | "mcp" | "api";
 }
 
-export interface NotionLiveWorkspace {
+export interface NotionLiveWorkspace extends RuntimeActionReadbackBinding {
   dashboardPageId: string;
   dashboardUrl?: string;
+  dashboardReadback: NotionReadbackProof;
   databaseIds: Record<string, string>;
   databaseUrls: Record<string, string | undefined>;
+  databaseReadbacks: Record<string, NotionReadbackProof>;
   appliedAt: string;
+}
+
+export interface NotionReadbackProof extends RuntimeActionReadbackBinding {
+  id: string;
+  object?: string;
+  url?: string;
+  archived?: boolean;
+  readbackAt: string;
 }
 
 export function createNotionWorkspacePlan(projectRoot: string): { plan: NotionWorkspacePlan; files: string[] } {
@@ -86,8 +97,10 @@ export async function applyNotionWorkspacePlan(
   });
   const dashboardPageId = stringField(dashboard, "id");
   const dashboardUrl = optionalStringField(dashboard, "url");
+  const dashboardReadback = notionReadbackProof(await notionGet(`/v1/pages/${encodeURIComponent(dashboardPageId)}`, env));
   const databaseIds: Record<string, string> = {};
   const databaseUrls: Record<string, string | undefined> = {};
+  const databaseReadbacks: Record<string, NotionReadbackProof> = {};
   for (const database of plan.databases) {
     const created = await notionPost("/v1/databases", env, {
       parent: {
@@ -104,16 +117,20 @@ export async function applyNotionWorkspacePlan(
       ],
       properties: notionDatabaseProperties(database.properties)
     });
-    databaseIds[database.name] = stringField(created, "id");
+    const databaseId = stringField(created, "id");
+    databaseIds[database.name] = databaseId;
     databaseUrls[database.name] = optionalStringField(created, "url");
+    databaseReadbacks[database.name] = notionReadbackProof(await notionGet(`/v1/databases/${encodeURIComponent(databaseId)}`, env));
   }
-  const workspace: NotionLiveWorkspace = {
+  const workspace: NotionLiveWorkspace = attachRuntimeActionReadbackBinding({
     dashboardPageId,
     dashboardUrl,
+    dashboardReadback,
     databaseIds,
     databaseUrls,
+    databaseReadbacks,
     appliedAt: new Date().toISOString()
-  };
+  });
   const filePath = notionLiveWorkspaceFile(projectRoot);
   writeJson(filePath, workspace);
   return { filePath, workspace };
@@ -122,7 +139,7 @@ export async function applyNotionWorkspacePlan(
 export async function syncNotionPayloadLive(
   projectRoot: string,
   options: { env?: NodeJS.ProcessEnv } = {}
-): Promise<{ filePath: string; synced: number }> {
+): Promise<{ filePath: string; synced: number; readback: NotionReadbackProof }> {
   const env = options.env ?? process.env;
   const validation = validateEnv(env, NOTION_ENV_KEYS);
   if (!validation.valid) {
@@ -134,7 +151,7 @@ export async function syncNotionPayloadLive(
   }
   const payload = createNotionSyncPayload(projectRoot);
   const project = loadProject(projectRoot);
-  await notionPost("/v1/pages", env, {
+  const created = await notionPost("/v1/pages", env, {
     parent: {
       type: "page_id",
       page_id: workspace.dashboardPageId
@@ -151,9 +168,12 @@ export async function syncNotionPayloadLive(
     },
     children: syncSummaryBlocks(payload.counts)
   });
+  const readback = attachRuntimeActionReadbackBinding(notionReadbackProof(await notionGet(`/v1/pages/${encodeURIComponent(stringField(created, "id"))}`, env)));
+  writeJson(notionLiveSyncReadbackFile(projectRoot), readback);
   return {
     filePath: payload.filePath,
-    synced: Object.values(payload.counts).reduce((sum, count) => sum + count, 0)
+    synced: Object.values(payload.counts).reduce((sum, count) => sum + count, 0),
+    readback
   };
 }
 
@@ -219,15 +239,28 @@ export function renderNotionWorkspacePlan(plan: NotionWorkspacePlan): string {
 }
 
 async function notionPost(path: string, env: NodeJS.ProcessEnv, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+  return notionRequest("POST", path, env, body);
+}
+
+async function notionGet(path: string, env: NodeJS.ProcessEnv): Promise<Record<string, unknown>> {
+  return notionRequest("GET", path, env);
+}
+
+async function notionRequest(
+  method: "GET" | "POST",
+  path: string,
+  env: NodeJS.ProcessEnv,
+  body?: Record<string, unknown>
+): Promise<Record<string, unknown>> {
   const endpoint = `https://api.notion.com${path}`;
   const requestInit = {
-    method: "POST",
+    method,
     headers: {
       Authorization: `Bearer ${env.NOTION_TOKEN ?? ""}`,
-      "Content-Type": "application/json",
+      ...(body ? { "Content-Type": "application/json" } : {}),
       "Notion-Version": NOTION_API_VERSION
     },
-    body: JSON.stringify(body)
+    body: body ? JSON.stringify(body) : undefined
   } satisfies RequestInit;
   let lastError: Error | undefined;
   for (let attempt = 0; attempt <= NOTION_MAX_RETRIES; attempt += 1) {
@@ -269,6 +302,16 @@ async function notionPost(path: string, env: NodeJS.ProcessEnv, body: Record<str
     }
   }
   throw lastError ?? new Error("Notion API request failed after retries");
+}
+
+function notionReadbackProof(record: Record<string, unknown>): NotionReadbackProof {
+  return {
+    id: stringField(record, "id"),
+    object: optionalStringField(record, "object"),
+    url: optionalStringField(record, "url"),
+    archived: typeof record.archived === "boolean" ? record.archived : undefined,
+    readbackAt: new Date().toISOString()
+  };
 }
 
 function dashboardBlocks(plan: NotionWorkspacePlan): Record<string, unknown>[] {

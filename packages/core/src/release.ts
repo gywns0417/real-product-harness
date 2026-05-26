@@ -1,7 +1,10 @@
+import fs from "node:fs";
+import path from "node:path";
 import { releasePlanFile } from "./paths";
-import { writeJson, writeText } from "./fs";
+import { readJson, writeJson, writeText } from "./fs";
 import { ReleasePlanRecord } from "./types";
 import { newId, nowIso } from "./time";
+import { updateWorkflowEvidence } from "./project";
 
 export function createReleasePlan(projectRoot: string, version: string): ReleasePlanRecord {
   return createPlan(projectRoot, {
@@ -12,6 +15,35 @@ export function createReleasePlan(projectRoot: string, version: string): Release
     title: `Release ${version}`,
     rollbackPlan: "Revert release merge commit or promote previous release tag after user approval."
   });
+}
+
+export function listReleasePlans(projectRoot: string): ReleasePlanRecord[] {
+  const dir = path.join(projectRoot, ".rph", "releases");
+  if (!fs.existsSync(dir)) {
+    return [];
+  }
+  return fs.readdirSync(dir)
+    .filter((file) => file.endsWith(".json"))
+    .map((file) => readJson<ReleasePlanRecord>(path.join(dir, file)))
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+export function readReleasePlan(projectRoot: string, id: string): ReleasePlanRecord {
+  return readJson<ReleasePlanRecord>(releasePlanJsonPath(projectRoot, id));
+}
+
+export function approveReleasePlan(projectRoot: string, id: string, approvedBy = "user"): ReleasePlanRecord {
+  const current = readReleasePlan(projectRoot, id);
+  const now = nowIso();
+  const next: ReleasePlanRecord = {
+    ...current,
+    status: "approved",
+    userApproval: "approved",
+    updatedAt: now
+  };
+  writeReleasePlan(projectRoot, next);
+  syncReleaseWorkflowEvidence(projectRoot, next);
+  return next;
 }
 
 export function createHotfixPlan(projectRoot: string, title: string): ReleasePlanRecord {
@@ -46,9 +78,32 @@ function createPlan(
     createdAt: now,
     updatedAt: now
   };
-  writeText(filePath, renderReleasePlan(record));
-  writeJson(filePath.replace(/\.md$/, ".json"), record);
+  writeReleasePlan(projectRoot, record);
+  syncReleaseWorkflowEvidence(projectRoot, record);
   return record;
+}
+
+function writeReleasePlan(projectRoot: string, record: ReleasePlanRecord): void {
+  writeText(record.filePath, renderReleasePlan(record));
+  writeJson(releasePlanJsonPath(projectRoot, record.id), record);
+}
+
+function syncReleaseWorkflowEvidence(projectRoot: string, record: ReleasePlanRecord): void {
+  updateWorkflowEvidence(projectRoot, (evidence) => ({
+    ...evidence,
+    release: {
+      id: record.id,
+      version: record.version,
+      status: record.status,
+      userApproval: record.userApproval,
+      filePath: record.filePath,
+      updatedAt: record.updatedAt
+    }
+  }));
+}
+
+function releasePlanJsonPath(projectRoot: string, id: string): string {
+  return releasePlanFile(projectRoot, id).replace(/\.md$/, ".json");
 }
 
 function renderReleasePlan(record: ReleasePlanRecord): string {

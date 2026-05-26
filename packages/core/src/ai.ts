@@ -1,15 +1,20 @@
 import fs from "node:fs";
-import { aiChatFile, aiRunFile } from "./paths";
-import { ensureDir, writeJson } from "./fs";
+import { aiChatDir, aiChatFile, aiRunFile, aiRunsDir, runtimeSessionFile } from "./paths";
+import { appendText, ensureDir, readJsonIfExists, writeJson } from "./fs";
 import { nowIso } from "./time";
 import {
   AiChatMessage,
   AiChatTurnRecord,
   AiGenerationRequest,
   AiGenerationResult,
+  AiProviderAttempt,
   AiProviderConfig,
+  AiProviderFallback,
+  AiProviderOutcomeSummary,
   AiProviderId,
   AiRunRecord,
+  AgentExecutionProfileRef,
+  RuntimeSessionManifest,
   HarnessConfig
 } from "./types";
 
@@ -20,8 +25,43 @@ export async function generateAiText(
   request: AiGenerationRequest,
   env: NodeJS.ProcessEnv = process.env
 ): Promise<AiGenerationResult> {
-  const provider = resolveGenerationProvider(config, request.providerId);
   const maxOutputTokens = request.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
+  const plan = resolveGenerationProviderPlan(config, request.providerId, request.executionProfile);
+  const attempts: AiProviderAttempt[] = [...plan.skippedAttempts];
+  const failures: AiProviderFallback["failures"] = plan.skippedAttempts.map((attempt) => ({
+    providerId: attempt.providerId,
+    message: attempt.message ?? "provider skipped"
+  }));
+  for (const provider of plan.providers) {
+    try {
+      const result = await generateAiTextWithProvider(
+        applyExecutionProfileToProvider(provider, request.executionProfile),
+        request,
+        maxOutputTokens,
+        env
+      );
+      return withProviderAttemptMetadata({ ...result, executionProfile: request.executionProfile }, [
+        ...attempts,
+        { providerId: provider.id, status: "passed" }
+      ], failures);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (request.providerId || plan.providers.length === 1) {
+        throw error;
+      }
+      attempts.push({ providerId: provider.id, status: "failed", message });
+      failures.push({ providerId: provider.id, message });
+    }
+  }
+  throw new Error(`AI generation failed for configured providers: ${failures.map((failure) => `${failure.providerId}: ${failure.message}`).join("; ") || "none"}`);
+}
+
+async function generateAiTextWithProvider(
+  provider: AiProviderConfig,
+  request: AiGenerationRequest,
+  maxOutputTokens: number,
+  env: NodeJS.ProcessEnv
+): Promise<AiGenerationResult> {
   switch (provider.id) {
     case "openai":
       return generateOpenAiText(provider, request, maxOutputTokens, env);
@@ -36,6 +76,32 @@ export async function generateAiText(
   }
 }
 
+function withProviderAttemptMetadata(
+  result: AiGenerationResult,
+  attempts: AiProviderAttempt[],
+  failures: AiProviderFallback["failures"]
+): AiGenerationResult {
+  if (attempts.length <= 1 && failures.length === 0) {
+    return {
+      ...result,
+      providerAttempts: attempts
+    };
+  }
+  return {
+    ...result,
+    providerAttempts: attempts,
+    providerFallback: failures.length > 0
+      ? {
+          selectedProviderId: result.providerId,
+          attemptedProviderIds: attempts
+            .filter((attempt) => attempt.providerId !== result.providerId || attempt.status !== "passed")
+            .map((attempt) => attempt.providerId),
+          failures
+        }
+      : undefined
+  };
+}
+
 export function writeAiRunRecord(projectRoot: string, record: AiRunRecord): string {
   ensureDir(`${projectRoot}/.rph/ai/runs`);
   const filePath = aiRunFile(projectRoot, record.id);
@@ -45,8 +111,7 @@ export function writeAiRunRecord(projectRoot: string, record: AiRunRecord): stri
 
 export function writeAiChatTurnRecord(projectRoot: string, record: AiChatTurnRecord): string {
   const filePath = aiChatFile(projectRoot, record.sessionId);
-  ensureDir(`${projectRoot}/.rph/ai/chat`);
-  fs.appendFileSync(filePath, `${JSON.stringify(record)}\n`);
+  appendText(filePath, `${JSON.stringify(record)}\n`);
   return filePath;
 }
 
@@ -60,10 +125,13 @@ export function createAiRunRecord(
     id: result.id,
     providerId: result.providerId,
     model: result.model,
+    executionProfile: result.executionProfile,
     command,
     artifact,
     promptPreview: preview(prompt),
     outputPreview: preview(result.text),
+    providerAttempts: result.providerAttempts,
+    providerFallback: result.providerFallback,
     generatedAt: result.generatedAt
   };
 }
@@ -72,14 +140,17 @@ export function createAiChatTurnRecord(
   result: AiGenerationResult,
   sessionId: string,
   userInput: string,
-  prompt: string
+  prompt: string,
+  agentTurnId?: string
 ): AiChatTurnRecord {
   const generatedAt = result.generatedAt;
   return {
     id: result.id,
     sessionId,
+    agentTurnId,
     providerId: result.providerId,
     model: result.model,
+    executionProfile: result.executionProfile,
     user: {
       role: "user",
       content: userInput,
@@ -91,6 +162,8 @@ export function createAiChatTurnRecord(
       at: generatedAt
     },
     promptPreview: preview(prompt),
+    providerAttempts: result.providerAttempts,
+    providerFallback: result.providerFallback,
     generatedAt
   };
 }
@@ -116,20 +189,198 @@ export function buildAiChatPrompt(
   ].join("\n");
 }
 
-function resolveGenerationProvider(config: HarnessConfig, preferred?: AiProviderId): AiProviderConfig {
-  const providerId = preferred ?? (config.activeAiProvider !== "auto" && config.activeAiProvider !== "none" ? config.activeAiProvider : undefined);
-  const provider = providerId ? config.aiProviders[providerId] : firstConfiguredProvider(config);
-  if (!provider) {
+export function formatAiProviderFallback(result: Pick<AiGenerationResult, "providerFallback">): string | undefined {
+  const fallback = result.providerFallback;
+  if (!fallback || fallback.failures.length === 0) {
+    return undefined;
+  }
+  const chain = [...fallback.attemptedProviderIds, fallback.selectedProviderId]
+    .filter((providerId, index, all) => all.indexOf(providerId) === index)
+    .join(" -> ");
+  const reasons = fallback.failures
+    .map((failure) => `${failure.providerId}: ${failure.message}`)
+    .join("; ");
+  return `ai provider fallback: ${chain} (${reasons})`;
+}
+
+export function readLatestAiProviderOutcome(projectRoot: string): AiProviderOutcomeSummary | null {
+  const candidates = [
+    readRuntimeSessionProviderOutcome(projectRoot),
+    readLatestAiRunProviderOutcome(projectRoot),
+    readLatestAiChatProviderOutcome(projectRoot)
+  ].filter((item): item is AiProviderOutcomeSummary => Boolean(item));
+  candidates.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+  return candidates[0] ?? null;
+}
+
+function readRuntimeSessionProviderOutcome(projectRoot: string): AiProviderOutcomeSummary | null {
+  const manifest = readJsonIfExists<RuntimeSessionManifest | null>(runtimeSessionFile(projectRoot), null);
+  const turn = manifest?.activeTurn;
+  if (!manifest || !turn?.providerId) {
+    return null;
+  }
+  return {
+    source: "runtime-session",
+    id: turn.id,
+    sessionId: manifest.sessionId,
+    providerId: turn.providerId,
+    model: turn.model,
+    providerAttempts: turn.providerAttempts,
+    providerFallback: turn.providerFallback,
+    at: turn.updatedAt
+  };
+}
+
+function readLatestAiRunProviderOutcome(projectRoot: string): AiProviderOutcomeSummary | null {
+  const dir = aiRunsDir(projectRoot);
+  const file = latestFile(dir, ".json");
+  if (!file) {
+    return null;
+  }
+  const record = readJsonIfExists<AiRunRecord | null>(file, null);
+  if (!record) {
+    return null;
+  }
+  return {
+    source: "ai-run",
+    id: record.id,
+    providerId: record.providerId,
+    model: record.model,
+    providerAttempts: record.providerAttempts,
+    providerFallback: record.providerFallback,
+    at: record.generatedAt
+  };
+}
+
+function readLatestAiChatProviderOutcome(projectRoot: string): AiProviderOutcomeSummary | null {
+  const file = latestFile(aiChatDir(projectRoot), ".jsonl");
+  if (!file) {
+    return null;
+  }
+  const lastLine = fs.readFileSync(file, "utf8").trim().split("\n").filter(Boolean).at(-1);
+  if (!lastLine) {
+    return null;
+  }
+  const record = JSON.parse(lastLine) as AiChatTurnRecord;
+  return {
+    source: "ai-chat",
+    id: record.id,
+    sessionId: record.sessionId,
+    providerId: record.providerId,
+    model: record.model,
+    providerAttempts: record.providerAttempts,
+    providerFallback: record.providerFallback,
+    at: record.generatedAt
+  };
+}
+
+function latestFile(dir: string, suffix: string): string | null {
+  if (!fs.existsSync(dir)) {
+    return null;
+  }
+  const files = fs.readdirSync(dir)
+    .filter((file) => file.endsWith(suffix))
+    .map((file) => {
+      const filePath = `${dir}/${file}`;
+      return {
+        filePath,
+        mtimeMs: fs.statSync(filePath).mtimeMs
+      };
+    })
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+  return files[0]?.filePath ?? null;
+}
+
+function resolveGenerationProviderPlan(
+  config: HarnessConfig,
+  preferred?: AiProviderId,
+  executionProfile?: AgentExecutionProfileRef
+): { providers: AiProviderConfig[]; skippedAttempts: AiProviderAttempt[] } {
+  if (preferred) {
+    return { providers: [requireReadyProvider(config.aiProviders[preferred])], skippedAttempts: [] };
+  }
+  const profilePreferredProvider = preferredProviderForModel(executionProfile?.model);
+  if (profilePreferredProvider) {
+    return { providers: [requireReadyProvider(config.aiProviders[profilePreferredProvider])], skippedAttempts: [] };
+  }
+  const activeProvider = config.activeAiProvider !== "auto" && config.activeAiProvider !== "none"
+    ? config.aiProviders[config.activeAiProvider]
+    : undefined;
+  const fallbackProviders = configuredProviders(config, activeProvider?.id);
+  if (activeProvider && isReadyProvider(activeProvider)) {
+    return { providers: [activeProvider, ...fallbackProviders], skippedAttempts: [] };
+  }
+  if (fallbackProviders.length === 0) {
+    if (activeProvider) {
+      throw new Error(`AI provider is not ready: ${activeProvider.id}. missing=${activeProvider.missingEnv.join(",") || "none"}. No fallback provider is configured.`);
+    }
     throw new Error("no configured AI provider found. Run /setup auto, then /ai status");
   }
-  if (!provider.enabled || !provider.configured || provider.missingEnv.length > 0) {
+  return {
+    providers: fallbackProviders,
+    skippedAttempts: activeProvider
+      ? [{
+          providerId: activeProvider.id,
+          status: "skipped",
+          message: `AI provider is not ready: missing=${activeProvider.missingEnv.join(",") || "none"}`
+        }]
+      : []
+  };
+}
+
+function requireReadyProvider(provider: AiProviderConfig | undefined): AiProviderConfig {
+  if (!provider) {
+    throw new Error("AI provider is not ready: unknown provider");
+  }
+  if (!isReadyProvider(provider)) {
     throw new Error(`AI provider is not ready: ${provider.id}. missing=${provider.missingEnv.join(",") || "none"}`);
   }
   return provider;
 }
 
-function firstConfiguredProvider(config: HarnessConfig): AiProviderConfig | undefined {
-  return Object.values(config.aiProviders).find((provider) => provider.enabled && provider.configured);
+function configuredProviders(config: HarnessConfig, excludeId?: AiProviderId): AiProviderConfig[] {
+  return Object.values(config.aiProviders).filter((provider) => provider.id !== excludeId && isReadyProvider(provider));
+}
+
+function isReadyProvider(provider: AiProviderConfig): boolean {
+  return provider.enabled && provider.configured && provider.missingEnv.length === 0;
+}
+
+function applyExecutionProfileToProvider(provider: AiProviderConfig, executionProfile?: AgentExecutionProfileRef): AiProviderConfig {
+  const model = executionProfile?.model?.trim();
+  if (!model || !modelCompatibleWithProvider(model, provider.id)) {
+    return provider;
+  }
+  return {
+    ...provider,
+    model
+  };
+}
+
+function preferredProviderForModel(model?: string): AiProviderId | undefined {
+  if (!model) {
+    return undefined;
+  }
+  const normalized = model.toLowerCase();
+  if (normalized.startsWith("claude")) {
+    return "anthropic";
+  }
+  if (normalized.startsWith("gemini")) {
+    return "gemini";
+  }
+  if (
+    normalized.startsWith("gpt-")
+    || normalized.startsWith("o")
+    || normalized.includes("codex")
+  ) {
+    return "openai";
+  }
+  return undefined;
+}
+
+function modelCompatibleWithProvider(model: string, providerId: AiProviderId): boolean {
+  const preferred = preferredProviderForModel(model);
+  return !preferred || preferred === providerId;
 }
 
 async function generateOpenAiText(
@@ -147,7 +398,8 @@ async function generateOpenAiText(
     instructions: request.system,
     input: request.prompt,
     max_output_tokens: maxOutputTokens,
-    temperature: request.temperature
+    temperature: request.temperature,
+    reasoning: openAiReasoningOptions(request.executionProfile?.modelReasoningEffort)
   });
   const text = extractOpenAiText(json);
   return generationResult(provider, endpoint, text, json.usage as Record<string, unknown> | undefined);
@@ -346,6 +598,17 @@ function apiErrorMessage(json: Record<string, unknown>): string | undefined {
 
 function stripUndefined(input: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined));
+}
+
+function openAiReasoningOptions(reasoningEffort?: string): { effort: "low" | "medium" | "high" } | undefined {
+  const normalized = reasoningEffort?.trim().toLowerCase();
+  if (normalized === "low" || normalized === "medium" || normalized === "high") {
+    return { effort: normalized };
+  }
+  if (normalized === "xhigh") {
+    return { effort: "high" };
+  }
+  return undefined;
 }
 
 function trimTrailingSlash(value: string): string {

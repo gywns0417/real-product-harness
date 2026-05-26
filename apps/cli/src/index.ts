@@ -1,21 +1,32 @@
 #!/usr/bin/env node
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import readline from "node:readline/promises";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import packageJson from "../../../package.json";
 import {
   advanceAfterPmApproval,
   advanceAfterPmDraft,
   advanceAfterPdApproval,
+  agentRoleContract,
+  validateHandoffContract,
   applyNotionWorkspacePlan,
   approveDesignArtifact,
   approveDocument,
   approveEngineeringDocument,
-  applyGitHubLabels,
+  applyGitHubLabelsWithReadback,
+  captureGitHubIssueApprovalSnapshot,
+  captureGitHubPullRequestApprovalSnapshot,
+  createGitHubIssueWithReadback,
+  createGitHubPullRequestWithReadback,
+  currentGitHubIssueApprovalSnapshot,
+  currentGitHubPullRequestApprovalSnapshot,
   canFinalizePm,
   canFinalizePd,
+  canTransition,
   createHarnessConfig,
   createDevDeploymentPlan,
   createDocumentVersion,
@@ -25,19 +36,35 @@ import {
   createInterviewSession,
   createLandingPreviewHtml,
   createNotionSyncPayload,
+  consumeAgentLaneToolBudget,
   createNotionWorkspacePlan,
   createObsidianProject,
   createHotfixPlan,
+  completeAgentLaneRun,
+  createWorkExecutionRecord,
   executeAgentTurn,
+  formatAiProviderFallback,
   createAiRunRecord,
   createAiChatTurnRecord,
   createPullRequestDraft,
   createQaReview,
   createReleasePlan,
+  approveReleasePlan,
   createWorkIssue,
   runProductizeGoldenPath,
+  callOperatorMcpTool,
+  captureOperatorMcpToolCallSnapshot,
+  currentOperatorMcpToolCallSnapshot,
+  listOperatorMcpTools,
+  runAgentFabricTool,
   checkQaConflicts,
+  acknowledgeRuntimeHandoff,
+  claimRuntimeHandoff,
+  completeRuntimeHandoff,
+  completeRuntimeHandoffAttempt,
+  deadLetterRuntimeHandoff,
   ensureRuntimeSession,
+  failRuntimeHandoffAttempt,
   DESIGN_ARTIFACT_IDS,
   DESIGN_ARTIFACT_TITLES,
   diffDocumentVersions,
@@ -47,7 +74,16 @@ import {
   DocumentId,
   AiChatMessage,
   AiChatTurnRecord,
+  AgentHandoffProposal,
   aiChatFile,
+  approveAndStartRuntimeAction,
+  activateCustomAgentProfile,
+  activeCustomAgentExecutionProfile,
+  appendText,
+  classifyMutableAgentCommand,
+  completeRuntimeAction,
+  defaultAgentLibraryRoot,
+  discoverAgentLibraryProfiles,
   exportDocumentToObsidian,
   exportDesignArtifactToObsidian,
   extractProductIdea,
@@ -57,42 +93,121 @@ import {
   BE_SPRINT_PLAN_DOC,
   API_CONTRACT_DOC,
   GITHUB_ENV_KEYS,
+  githubLabelsReadbackFile,
+  githubCliBinary,
+  githubIssueLatestReadbackFile,
+  githubIssueReadbackFile,
+  githubPullRequestLatestReadbackFile,
+  githubPullRequestReadbackFile,
+  githubRepoReadbackFile,
   initProject,
+  checkGitHubCliWriteReadiness,
   isKnownTopLevelCommand,
   isDocumentId,
   AiProviderId,
   McpServerId,
+  AgentToolCall,
+  RuntimeSessionManifest,
+  RuntimeActionApprovalRecord,
+  RuntimeActionApprovedSnapshot,
+  RuntimeActionReadbackProof,
+  RuntimeExecutionGraph,
+  RuntimeHandoffRecord,
+  AgentLaneRunRecord,
   listDocumentIndexes,
   listDesignArtifactIndexes,
   listPullRequests,
   listWorkIssues,
   loadHarnessConfig,
+  latestAgentLaneRun,
+  integrateAgentLaneBatch,
+  importCustomAgentProfile,
+  loadAgentLaneRuns,
+  loadAgentLaneRunReadIssues,
+  listAgentCatalog,
   loadEnvFile,
   loadProject,
+  loadRuntimeExecutionGraph,
+  loadRuntimeHandoffs,
+  loadRuntimeActionApprovals,
   loadRuntimeSession,
+  loadRuntimeSessionJournal,
+  loadActiveCustomAgentProfile,
   loadState,
+  mcpToolCallReadbackFile,
+  notionLiveSyncReadbackFile,
+  notionLiveWorkspaceFile,
+  heartbeatAgentLaneRun,
+  heartbeatRuntimeHandoff,
+  latestRuntimeSessionJournalRecord,
+  isRuntimeHandoffClaimable,
+  isUserApprovalCommand,
   markIssueInProgress,
+  linkPullRequestToGitHub,
+  linkWorkIssueToGitHub,
+  mergeAgentLaneRun,
+  materializeRuntimeExecutionGraph,
+  materializeRuntimeHandoffsFromSession,
+  buildOperatorWorkspace,
   nextStage,
   optionBool,
   optionString,
+  isAutonomousLocalCommand,
+  OrchestrationAction,
+  planOrchestrationAction,
   planAgentAction,
   parseCli,
   parseCommandLine,
+  normalizeNotionPageId,
+  normalizeGitHubRepoTarget,
+  addCustomProtocolMcpServer,
+  bindMcpReadOnlyToolContracts,
   configuredAiProviders,
   configuredMcpServers,
+  commandForWorkflowStage,
+  connectionReportFile,
   prepareEngineeringDocumentState,
   preparePdArtifactState,
   preparePmDraftState,
   ProjectState,
+  ProofLedgerEvent,
   readDocumentIndex,
   readDesignArtifactIndex,
+  readPullRequest,
+  readWorkIssue,
+  readConnectionReport,
+  readConnectionReportTrust,
+  readHarnessConfigSnapshot,
+  readLatestAiProviderOutcome,
+  readProofLedgerEvents,
+  readProofLedgerLatest,
+  readTrustedConnectionChecks,
+  recordRuntimeHandoff,
+  recordRuntimeActionApproval,
+  recordLiveVerificationEvidence,
   recordRuntimeSessionEvent,
+  reconcileRuntimeStageQueue,
+  rejectRuntimeAction,
+  replayRuntimeSession,
+  runtimeActionReadbackBindingError,
+  runtimeExecutionGraphFile,
+  runtimeHandoffsFile,
+  runtimeHandoffsReadIssue,
+  runtimeHandoffExecutionToken,
   renderRuntimeHero,
+  renderOperatorWorkspace,
   renderSetupGuide,
   renderStatusLine,
   renderInterview,
   runQaTests,
+  runQaSecurityScan,
+  runQaAccessibilityScan,
   finalizeQaReport,
+  recordQaAccessibilityReview,
+  recordQaSecurityReview,
+  startAgentLaneRun,
+  startRuntimeAction,
+  startRuntimeHandoffWork,
   generateAiText,
   requireInitialized,
   rollbackDocument,
@@ -104,6 +219,7 @@ import {
   showDocument,
   showDesignArtifact,
   stripFrontmatter,
+  summarizeMcpPolicyForServer,
   syncStateDesignArtifacts,
   syncStateDocuments,
   syncHarnessConfigFromEnv,
@@ -113,17 +229,28 @@ import {
   testAllMcpConnections,
   testMcpConnection,
   transitionState,
+  failRuntimeAction,
   suggestCommand,
   updateRuntimeSession,
+  workflowAdvanceStatus,
   AI_PROVIDER_DEFINITIONS,
   MCP_SERVER_DEFINITIONS,
   upsertEnvFileValues,
   validateEnv,
   SetupChoices,
   Workstream,
+  ConnectionCheck,
+  ConnectionReportProvenance,
+  AgentRole,
+  HandoffPacket,
+  WorkflowStageId,
+  WorkflowTransitionContext,
   writeConnectionReport,
   writeAiRunRecord,
   writeAiChatTurnRecord,
+  writeJson,
+  runtimeSessionJournalFile,
+  runtimeSessionSnapshotFile,
   WORKFLOW_STAGES,
   writeGitHubBranchPlan,
   writeGitHubTemplates
@@ -135,32 +262,156 @@ interface SetupPrompter {
 
 interface CommandContext {
   prompter?: SetupPrompter;
+  runtimeShell?: boolean;
 }
+
+type CommandSurface = "rph" | "slash";
+
+function writeLiveConnectionReport(
+  projectRoot: string,
+  checks: ConnectionCheck[],
+  provenance?: Partial<ConnectionReportProvenance>
+): string {
+  const filePath = writeConnectionReport(projectRoot, checks, provenance);
+  const report = readConnectionReport(projectRoot);
+  recordLiveVerificationEvidence(projectRoot, report?.checks ?? checks, filePath, {
+    source: report?.provenance?.source,
+    configFingerprint: report?.provenance?.configFingerprint,
+    checkedAt: report?.provenance?.generatedAt ?? report?.checkedAt
+  });
+  return filePath;
+}
+
+function workflowTransitionContext(projectRoot: string, to: WorkflowStageId): WorkflowTransitionContext {
+  if (to !== "RELEASE_REVIEW" && to !== "RELEASE_APPROVED") {
+    return {};
+  }
+  const trust = readConnectionReportTrust(projectRoot);
+  if (!trust.trusted) {
+    return {
+      liveVerificationTrusted: false,
+      liveVerificationTrustReason: `latest live report not trusted (${trust.reason ?? "unknown"})`
+    };
+  }
+  const checks = readTrustedConnectionChecks(projectRoot);
+  const passedTargets = checks.filter((check) => check.status === "passed").map(formatConnectionTarget);
+  const failedTargets = checks.filter((check) => check.status === "failed").map(formatConnectionTarget);
+  const skippedTargets = checks.filter((check) => check.status === "skipped").map(formatConnectionTarget);
+  if (failedTargets.length > 0) {
+    return {
+      liveVerificationTrusted: false,
+      liveVerificationTrustReason: `latest live report has failed targets: ${failedTargets.join(",")}`
+    };
+  }
+  if (skippedTargets.length > 0 || passedTargets.length === 0) {
+    return {
+      liveVerificationTrusted: false,
+      liveVerificationTrustReason: skippedTargets.length > 0
+        ? `latest live report has skipped targets: ${skippedTargets.join(",")}`
+        : "latest live report has no passed targets"
+    };
+  }
+  return { liveVerificationTrusted: true };
+}
+
+function formatConnectionTarget(check: ConnectionCheck): string {
+  return `${check.kind}:${check.id}`;
+}
+
+const HERMES_OPERATOR_AGENT_PACK = [
+  "workflow-orchestrator",
+  "multi-agent-coordinator",
+  "task-distributor",
+  "product-manager",
+  "cli-developer",
+  "mcp-developer",
+  "test-automator",
+  "security-auditor",
+  "risk-manager",
+  "error-coordinator"
+] as const;
 
 const HELP_TOPIC_LINES: Record<string, string[]> = {
   runtime: [
     "Runtime commands",
     "",
     "Enter runtime: rph",
+    "Setup-first entrypoint: rph start",
+    "Bare one-shot chat: rph \"what should I do next?\"",
     "One-shot natural language: rph ask <message>",
+    "One-shot natural language execution: rph ask --execute <message>",
+    "Looped local orchestration: rph ask --execute --loop <message>",
+    "Consume pending runtime work: rph agent run --steps 5",
     "One-shot golden path: rph /productize <product idea>",
     "One-shot: rph /pm start",
     "",
     "Core commands:",
     "  /status",
+    "  /workspace [--json]",
     "  /next",
     "  /pause | /resume | /cancel",
     "  /project <path> | /pwd",
     "  /chat status | clear",
-    "  /agent status | clear",
+    "  /agent status | roles | pack | import <toml> | use <name> | session | replay [session-id] | graph | handoffs | actions | lanes | workers | pool | run | recover [--steps N] | reduce <stage> | clear",
+    "  /agent pool service install | status | uninstall | plist",
+    "  /agent claim <handoff-id> | heartbeat <handoff-id> | dead-letter <handoff-id>",
+    "  /agent approve-action <action-id> | reject-action <action-id>",
     "  /exit"
+  ],
+  agent: [
+    "Agent commands",
+    "",
+    "  rph agent roles",
+    "  rph agent pack",
+    "  rph agent pack --activate workflow-orchestrator",
+    "  rph agent discover [query]",
+    "  rph agent import cli-developer",
+    "  rph agent import /path/to/agent.toml",
+    "  rph agent use cli-developer",
+    "  /agent status",
+    "  /agent roles",
+    "  /agent pack",
+    "  /agent discover cli",
+    "  /agent import cli-developer",
+    "  /agent use cli-developer",
+    "  /agent session [session-id] [--limit N]",
+    "  /agent replay [session-id]",
+    "  /agent graph [status|refresh|json] [--verbose]",
+    "  /agent handoffs | actions | lanes | workers | pool status | pool start | pool service install | pool service status | pool run | pool stop | run | recover [--steps N] | reduce <stage>",
+    "",
+    "Discovers Awesome Codex Subagents from ~/Desktop/awesome-codex-subagents/categories and imports selected TOML agents into the project-local .rph/agents catalog. `agent pack` installs a recommended Hermes-operator set in one command. The active custom agent guides chat and role behavior, but RPH approval gates and external-write policy still win."
+  ],
+  workspace: [
+    "Workspace commands",
+    "",
+    "  rph workspace",
+    "  rph workspace --json",
+    "  rph workspace status --json",
+    "  /workspace",
+    "  /status --json",
+    "",
+    "Shows a read-only operator view of runtime status, readiness, approvals, artifacts, PR/QA blockers, proof counts, and the next safe action. It never approves, mutates, or crosses external-write gates."
+  ],
+  doctor: [
+    "Doctor commands",
+    "",
+    "  rph doctor",
+    "  rph doctor --live",
+    "  rph doctor install",
+    "  rph doctor shell",
+    "  rph update",
+    "",
+    "`doctor install` checks whether the installed wrapper, source checkout, built CLI, init file, completion, and JSON operator commands are current. `doctor shell` checks slash-helper shell integration. `rph update` reruns the installer from the current source checkout."
   ],
   productize: [
     "Productize commands",
     "",
     "  rph /productize <product idea>",
     "  rph productize --idea <product idea>",
+    "  rph \"이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: <idea>\"",
     "  rph ask \"이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: <idea>\"",
+    "  rph ask --execute \"이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: <idea>\"",
+    "  rph ask --execute --loop \"PM부터 승인 대기 전까지 진행해줘: <idea>\"",
     "",
     "Creates a review-ready package: PM docs, PD artifacts, FE/BE/API specs, sprint plans, FE/BE issues, PR drafts, QA reports, and a local deployment plan.",
     "External merge/deploy/write actions remain blocked until explicit user approval."
@@ -176,10 +427,15 @@ const HELP_TOPIC_LINES: Record<string, string[]> = {
     "    Run live connection checks against the currently applied config.",
     "  rph setup auto",
     "    Guided assistant. In TTY it can collect/apply/check end-to-end.",
+    "    GitHub can use an existing gh login without copying the gh token into project .env.",
+    "  rph setup repair --live",
+    "    Re-run only the failed AI/MCP checks from the latest live report, prompting for replacement values when possible.",
     "",
     "Shortcuts:",
     "  /setup ai [openai|anthropic|gemini|local]",
+    "  /setup provider [openai|anthropic|gemini|local]",
     "  /setup mcp [notion|github|figma|stitch]",
+    "  /setup mcp add <id> --url <https://host/mcp> [--auth bearer|x-goog-api-key|none] [--auth-env ENV] [--allow-tool tool.name,other.read] [--probe-tool name] [--probe-args-json '{}']",
     "  /setup custom <key> <value>"
   ],
   ai: [
@@ -195,9 +451,39 @@ const HELP_TOPIC_LINES: Record<string, string[]> = {
     "MCP commands",
     "",
     "  /mcp status",
+    "  /mcp tools [server]",
+    "  /mcp tools <server> --bind",
+    "  /mcp tools <server> --agent",
+    "  /mcp call <server> <tool> --read-only --args-json '{}' 또는 /mcp call <server>.<tool> --args-json '{}'",
     "  /mcp test [server]",
     "  /mcp enable <server>",
-    "  /mcp disable <server>"
+    "  /mcp disable <server>",
+    "  /setup mcp add <id> --url <https://host/mcp> [--allow-tool read.only.tool] [--probe-tool read.only.tool] [--live]",
+    "",
+    "--bind captures the current tools/list schema and annotations for the configured read-only allowlist. Bound tools are blocked if later tools/list metadata drifts."
+  ],
+  live: [
+    "Live proof commands",
+    "",
+    "  rph live ai:openai",
+    "  rph live ai:anthropic",
+    "  rph live ai:gemini",
+    "  rph live mcp:stitch",
+    "  rph live target mcp:github",
+    "",
+    "Runtime slash form:",
+    "  /live ai:openai",
+    "  /live mcp:stitch",
+    "",
+    "Runs one selected provider or connector through live setup/test, writes .rph/connections/latest.json, and exits non-zero when the target is not verified."
+  ],
+  proofs: [
+    "Proof ledger commands",
+    "",
+    "  /proofs status [--limit N]",
+    "  /proofs events [--limit N]",
+    "",
+    "Shows the unified append-only evidence index across live checks, agent tool reads, external action readbacks, and lane merges."
   ],
   pm: [
     "PM commands",
@@ -254,6 +540,10 @@ const HELP_TOPIC_LINES: Record<string, string[]> = {
     "  /qa review --pr <number>",
     "  /qa conflicts --pr <number>",
     "  /qa test --pr <number>",
+    "  /qa security --pr <number> --auto",
+    "  /qa security --pr <number> --status <clear|risk>",
+    "  /qa accessibility --pr <number> --auto",
+    "  /qa accessibility --pr <number> --status <clear|risk>",
     "  /qa report --pr <number>"
   ],
   notion: [
@@ -277,14 +567,15 @@ const HELP_TOPIC_LINES: Record<string, string[]> = {
   github: [
     "GitHub commands",
     "",
-    "  /github create-repo",
+    "  /github create-repo [--public|--private]",
     "  /github setup-labels",
     "  /github setup-templates",
     "  /github setup-branches",
-    "  /github create-issue --agent <FE|BE> --title <title>",
-    "  /github create-pr --issue <number>",
+    "  /github create-issue --agent <FE|BE> --title <title> [--live]",
+    "  /github create-pr --issue <number> [--target <dev|release|main>] [--live]",
     "  /github sync",
     "  /github release-plan --version <version>",
+    "  /github release-approve --id <release-id> [--by <name>]",
     "  /github hotfix-plan --title <title>"
   ]
 };
@@ -300,6 +591,22 @@ async function main(): Promise<void> {
   }
 
   const parsed = parseCli(argv);
+  const bareInput = argv.join(" ").trim();
+  if (
+    !isKnownTopLevelCommand(parsed.command)
+    && argv.length > 0
+    && !argv[0].startsWith("/")
+    && !argv[0].startsWith("-")
+    && naturalRuntimeIntent(bareInput)
+  ) {
+    await runParsedCommand(cwd, parseCli(["ask", "--execute", ...argv]));
+    return;
+  }
+  const maybeBareConversation = argv.length > 1 || /[가-힣?!.,]/.test(argv.join(" "));
+  if (!isKnownTopLevelCommand(parsed.command) && maybeBareConversation && argv.length > 0 && !argv[0].startsWith("/") && !argv[0].startsWith("-")) {
+    await runParsedCommand(cwd, parseCli(["ask", ...argv]));
+    return;
+  }
   await runParsedCommand(cwd, parsed);
 }
 
@@ -319,6 +626,10 @@ export async function runParsedCommand(
     }
 
     switch (parsed.command) {
+      case "start":
+      case "go":
+        await handleStart(projectRoot, parsed.args, parsed.options, context);
+        break;
       case "shell":
       case "runtime":
         await runRuntimeShell(projectRoot);
@@ -327,10 +638,16 @@ export async function runParsedCommand(
         await handleInit(projectRoot, parsed.options);
         break;
       case "status":
-        handleStatus(projectRoot);
+        handleStatus(projectRoot, {
+          commandSurface: context.runtimeShell ? "slash" : "rph",
+          json: optionBool(parsed.options, "json")
+        });
+        break;
+      case "workspace":
+        handleWorkspace(projectRoot, parsed.subcommand, parsed.options);
         break;
       case "next":
-        handleNext(projectRoot);
+        await handleNext(projectRoot, parsed.options);
         break;
       case "pause":
         handlePause(projectRoot, true);
@@ -348,18 +665,29 @@ export async function runParsedCommand(
         handleSettings(projectRoot, parsed.subcommand, parsed.args);
         break;
       case "ask":
-      case "agent":
       case "chat":
         await handleAsk(projectRoot, [parsed.subcommand, ...parsed.args].filter((item): item is string => Boolean(item)), parsed.options);
+        break;
+      case "agent":
+        await handleAgentControlCommand(projectRoot, parsed.subcommand, parsed.args, parsed.options);
         break;
       case "ai":
         await handleAi(projectRoot, parsed.subcommand, parsed.args, parsed.options);
         break;
       case "mcp":
-        await handleMcp(projectRoot, parsed.subcommand, parsed.args);
+        await handleMcp(projectRoot, parsed.subcommand, parsed.args, parsed.options);
+        break;
+      case "live":
+        await handleLive(projectRoot, parsed.subcommand, parsed.args, parsed.options);
+        break;
+      case "proofs":
+        handleProofs(projectRoot, parsed.subcommand, parsed.args, parsed.options);
         break;
       case "doctor":
-        await handleDoctor(projectRoot, parsed.options);
+        await handleDoctor(projectRoot, parsed.subcommand, parsed.args, parsed.options);
+        break;
+      case "update":
+        handleUpdate(parsed.options);
         break;
       case "productize":
         handleProductize(projectRoot, parsed.subcommand, parsed.args, parsed.options);
@@ -420,12 +748,22 @@ async function runRuntimeShell(initialRoot: string): Promise<void> {
   printRuntimeBanner(projectRoot, sessionId);
   if (isRuntimeProjectInitialized(projectRoot)) {
     const manifest = ensureRuntimeSession(projectRoot, sessionId);
+    printRuntimeDigest(projectRoot, manifest);
     if (manifest.status === "paused") {
       console.log("이전 runtime session이 일시정지 상태입니다. 계속하려면 /resume 을 입력하세요.");
+    }
+    if (manifest.status === "blocked" && manifest.blocker) {
+      console.log(`이전 runtime session이 차단 상태입니다: ${manifest.blocker}`);
+      console.log("문제를 해결한 뒤 /agent run 또는 다음 안전 명령으로 재개하세요.");
     }
     if (manifest.pendingAction?.command) {
       console.log(`pending action: ${manifest.pendingAction.command}`);
     }
+    printRuntimeRecoveryBrief(projectRoot, manifest, { onlyWhenActionable: true });
+  } else {
+    console.log("Fresh workspace.");
+    console.log("next: /setup auto --live");
+    console.log("fallback: /pm start");
   }
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
@@ -447,7 +785,7 @@ async function runRuntimeShell(initialRoot: string): Promise<void> {
 
       let ok = false;
       try {
-        const control = handleRuntimeControlCommand(projectRoot, line);
+        const control = await handleRuntimeControlCommand(projectRoot, line);
         if (control.handled) {
           projectRoot = control.projectRoot;
           if (control.clearChat) {
@@ -467,7 +805,7 @@ async function runRuntimeShell(initialRoot: string): Promise<void> {
           parsed.options.yes = true;
           console.log("runtime init은 비대화형 기본값으로 실행합니다. 필요한 값은 /init --project-name <name>처럼 넘기세요.");
         }
-        ok = await runParsedCommand(projectRoot, parsed, false, { prompter: rl });
+        ok = await runParsedCommand(projectRoot, parsed, false, { prompter: rl, runtimeShell: true });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         console.error(`[error] ${message}`);
@@ -506,10 +844,10 @@ function isExitCommand(line: string): boolean {
   return ["/exit", "/quit", "exit", "quit"].includes(line);
 }
 
-function handleRuntimeControlCommand(
+async function handleRuntimeControlCommand(
   projectRoot: string,
   line: string
-): { handled: true; projectRoot: string; clearChat?: boolean } | { handled: false; projectRoot: string } {
+): Promise<{ handled: true; projectRoot: string; clearChat?: boolean } | { handled: false; projectRoot: string }> {
   const argv = parseCommandLine(line);
   const [command, target, ...rest] = argv;
   if (!["/project", "/cd", "/pwd", "/chat", "/agent"].includes(command ?? "")) {
@@ -536,27 +874,2911 @@ function handleRuntimeControlCommand(
   return { handled: true, projectRoot: nextRoot, clearChat: true };
 }
 
-function handleRuntimeAgentCommand(
+async function handleRuntimeAgentCommand(
   projectRoot: string,
   subcommand: string | undefined,
-  _args: string[]
-): { handled: true; projectRoot: string; clearChat?: boolean } {
+  args: string[]
+): Promise<{ handled: true; projectRoot: string; clearChat?: boolean }> {
+  const result = await handleAgentControlCommand(projectRoot, subcommand, args, {
+    ...parseRuntimeAgentOptions(args),
+    commandSurface: "slash"
+  });
+  return { handled: true, projectRoot, clearChat: result.clearChat };
+}
+
+async function handleAgentControlCommand(
+  projectRoot: string,
+  subcommand: string | undefined,
+  args: string[],
+  options: Record<string, string | boolean>
+): Promise<{ clearChat?: boolean }> {
   const config = loadRuntimeChatConfig(projectRoot);
   switch (subcommand) {
     case undefined:
     case "status":
       console.log(`AI agent: ${config.activeAiProvider}`);
-      printAiStatus(config);
+      printActiveCustomAgent(projectRoot);
+      printAiStatus(config, projectRoot);
+      if (printRuntimeHandoffsReadIssue(projectRoot)) {
+        return {};
+      }
+      printRuntimeRecoveryBrief(projectRoot);
+      printLatestAgentToolProof(projectRoot);
+      printProofLedgerSummary(projectRoot, { compact: true });
+      printRuntimeHandoffSummary(projectRoot);
       console.log("일반 텍스트를 입력하면 AI agent와 대화합니다. Slash command는 /pm start처럼 /로 시작합니다.");
-      return { handled: true, projectRoot };
+      return {};
+    case "roles":
+    case "catalog":
+      printAgentRoleCatalog(projectRoot);
+      return {};
+    case "pack":
+    case "bootstrap":
+    case "install-pack":
+      importAgentPack(projectRoot, args, options);
+      return {};
+    case "discover":
+    case "search":
+      printAgentLibraryProfiles(args.join(" "), options);
+      return {};
+    case "import":
+    case "install": {
+      const sourcePath = args[0] ?? optionString(options, "path") ?? optionString(options, "file");
+      if (!sourcePath) {
+        console.log("usage: /agent import <agent-name|agent.toml>");
+        console.log("try: /agent discover cli");
+        process.exitCode = 2;
+        return {};
+      }
+      ensureProjectForAgentCatalog(projectRoot);
+      const profile = importCustomAgentProfile(projectRoot, sourcePath, { libraryRoot: agentLibraryRootFromOptions(options) });
+      console.log(`agent imported: ${profile.name}`);
+      console.log(`stored: .rph/agents/${profile.slug}.json`);
+      console.log(`next: /agent use ${profile.slug}`);
+      return {};
+    }
+    case "use":
+    case "activate": {
+      const name = args[0] ?? optionString(options, "name");
+      if (!name) {
+        console.log("usage: /agent use <agent-name>");
+        process.exitCode = 2;
+        return {};
+      }
+      const profile = activateCustomAgentProfile(projectRoot, name);
+      console.log(`active custom agent: ${profile.name}`);
+      console.log("scope: current project .rph/agents");
+      console.log("policy: imported instructions guide chat, but RPH approval gates still win");
+      return {};
+    }
+    case "session":
+    case "journal":
+      printRuntimeSessionJournal(projectRoot, args, options);
+      return {};
+    case "replay":
+      printRuntimeSessionReplay(projectRoot, args, options);
+      return {};
+    case "handoffs":
+      printRuntimeHandoffs(projectRoot, optionBool(options, "debug"));
+      return {};
+    case "actions":
+    case "action-approvals":
+      printRuntimeActionApprovals(projectRoot);
+      return {};
+    case "lanes":
+      printRuntimeLaneRuns(projectRoot, optionBool(options, "debug"));
+      return {};
+    case "workers":
+      printRuntimeWorkers(projectRoot, commandSurfaceFromOptions(options), optionBool(options, "debug"));
+      return {};
+    case "graph":
+      handleAgentGraphCommand(projectRoot, args, options);
+      return {};
+    case "pool":
+      await handleAgentPoolCommand(projectRoot, args, options);
+      return {};
+    case "run":
+    case "continue":
+      await handleAgentRun(projectRoot, options);
+      return {};
+    case "recover":
+      await handleAgentRecover(projectRoot, options);
+      return {};
+    case "reduce":
+      handleAgentReduce(projectRoot, args);
+      return {};
+    case "worker":
+      if (printRuntimeHandoffsReadIssue(projectRoot)) {
+        return {};
+      }
+      await handleAgentWorkerCommand(projectRoot, args, options);
+      return {};
+    case "ack":
+    case "accept": {
+      const id = args[0];
+      if (!id) {
+        console.log("usage: /agent ack <handoff-id>");
+        return {};
+      }
+      if (printRuntimeHandoffsReadIssue(projectRoot)) {
+        return {};
+      }
+      const record = acknowledgeRuntimeHandoff(projectRoot, id, "accepted from runtime agent command");
+      console.log(`handoff acknowledged: ${record.id} -> ${record.packet.toAgent}`);
+      if (record.packet.nextCommand) {
+        console.log(`next command: ${record.packet.nextCommand}`);
+      }
+      return {};
+    }
+    case "claim": {
+      const id = args[0];
+      if (!id) {
+        console.log("usage: /agent claim <handoff-id>");
+        return {};
+      }
+      if (printRuntimeHandoffsReadIssue(projectRoot)) {
+        return {};
+      }
+      const record = claimRuntimeHandoff(projectRoot, id, agentWorkerIdFromOptions(options), leaseMsFromOptions(options));
+      console.log(`handoff claimed: ${record.id} by ${record.claimedBy}`);
+      console.log(`lease expires: ${record.leaseExpiresAt}`);
+      return {};
+    }
+    case "heartbeat": {
+      const id = args[0];
+      if (!id) {
+        console.log("usage: /agent heartbeat <handoff-id>");
+        return {};
+      }
+      if (printRuntimeHandoffsReadIssue(projectRoot)) {
+        return {};
+      }
+      const current = loadRuntimeHandoffs(projectRoot).find((item) => item.id === id);
+      if (!current) {
+        console.log(`handoff not found: ${id}`);
+        return {};
+      }
+      const record = heartbeatRuntimeHandoff(projectRoot, id, runtimeHandoffExecutionToken(current, current.laneRunId), leaseMsFromOptions(options));
+      console.log(`handoff heartbeat: ${record.id} by ${record.claimedBy}`);
+      console.log(`lease expires: ${record.leaseExpiresAt}`);
+      return {};
+    }
+    case "complete": {
+      const id = args[0];
+      if (!id) {
+        console.log("usage: /agent complete <handoff-id>");
+        return {};
+      }
+      if (printRuntimeHandoffsReadIssue(projectRoot)) {
+        return {};
+      }
+      const record = completeRuntimeHandoff(projectRoot, id, "completed from runtime agent command");
+      console.log(`handoff completed: ${record.id}`);
+      return {};
+    }
+    case "dead-letter": {
+      const id = args[0];
+      if (!id) {
+        console.log("usage: /agent dead-letter <handoff-id> [--reason <reason>]");
+        return {};
+      }
+      if (printRuntimeHandoffsReadIssue(projectRoot)) {
+        return {};
+      }
+      const reason = optionString(options, "reason") ?? "manually dead-lettered";
+      const record = deadLetterRuntimeHandoff(projectRoot, id, reason);
+      console.log(`handoff dead-lettered: ${record.id}`);
+      console.log(`reason: ${record.deadLetterReason}`);
+      return {};
+    }
+    case "approve-action": {
+      const id = args[0];
+      if (!id) {
+        console.log("usage: /agent approve-action <action-id> [--by <name>]");
+        return {};
+      }
+      await approveAndExecuteRuntimeAction(projectRoot, id, optionString(options, "by") ?? "user");
+      return {};
+    }
+    case "reject-action": {
+      const id = args[0];
+      if (!id) {
+        console.log("usage: /agent reject-action <action-id> [--reason <reason>] [--by <name>]");
+        return {};
+      }
+      const record = rejectRuntimeAction(
+        projectRoot,
+        id,
+        optionString(options, "reason") ?? "rejected from runtime agent command",
+        optionString(options, "by") ?? "user"
+      );
+      const sessionId = resolveRuntimeSessionId(projectRoot);
+      updateRuntimeSession(projectRoot, sessionId, {
+        pendingExternalActionId: null,
+        blocker: null,
+        note: `external action rejected: ${record.id}`
+      });
+      console.log(`external action rejected: ${record.id}`);
+      console.log(`reason: ${record.rejectReason}`);
+      return {};
+    }
     case "clear":
     case "reset":
       console.log("AI chat context cleared");
-      return { handled: true, projectRoot, clearChat: true };
+      return { clearChat: true };
     default:
-      console.log("Agent 명령어: /agent status | /agent clear");
-      return { handled: true, projectRoot };
+      console.log("Agent 명령어: /agent status | /agent roles | /agent pack [--activate name] | /agent discover [query] | /agent import <name|toml> | /agent use <name> | /agent session [id] | /agent replay [id] | /agent graph [status|refresh|json] [--verbose] | /agent handoffs | /agent actions | /agent lanes | /agent workers | /agent pool <status|start|run|stop|logs|service> | /agent run [--steps N] | /agent recover [--steps N] | /agent reduce <stage> | /agent worker run <id> | /agent claim <id> | /agent heartbeat <id> | /agent ack <id> | /agent complete <id> | /agent dead-letter <id> | /agent approve-action <id> | /agent reject-action <id> | /agent clear");
+      return {};
   }
+}
+
+function agentLibraryRootFromOptions(options: Record<string, string | boolean>): string | undefined {
+  return optionString(options, "library") ?? process.env.RPH_AGENT_LIBRARY ?? process.env.RPH_AGENT_LIBRARY_DIR;
+}
+
+function ensureProjectForAgentCatalog(projectRoot: string): void {
+  if (isRuntimeProjectInitialized(projectRoot)) {
+    return;
+  }
+  const projectName = path.basename(projectRoot) || "RPH Project";
+  initProject(projectRoot, { projectName });
+  console.log(`RPH project initialized: ${projectName}`);
+}
+
+function importAgentPack(
+  projectRoot: string,
+  args: string[],
+  options: Record<string, string | boolean>
+): void {
+  ensureProjectForAgentCatalog(projectRoot);
+  const positional = runtimeAgentPositionalArgs(args);
+  const requested = positional.filter((value) => !["recommended", "default", "hermes", "hermes-operator"].includes(value));
+  const names = requested.length > 0 ? requested : [...HERMES_OPERATOR_AGENT_PACK];
+  const libraryRoot = agentLibraryRootFromOptions(options);
+  const imported = names.map((name) => importCustomAgentProfile(projectRoot, name, { libraryRoot }));
+  const activateName = optionString(options, "activate") ?? optionString(options, "use");
+
+  console.log(`agent pack imported: ${requested.length > 0 ? "custom" : "hermes-operator"}`);
+  console.log(`library: ${libraryRoot ?? defaultAgentLibraryRoot()}`);
+  console.log(`profiles: ${imported.length}`);
+  for (const profile of imported) {
+    const model = profile.model ? ` model=${profile.model}` : "";
+    const sandbox = profile.sandboxMode ? ` sandbox=${profile.sandboxMode}` : "";
+    console.log(`- ${profile.slug}${model}${sandbox}`);
+  }
+  if (activateName) {
+    const active = activateCustomAgentProfile(projectRoot, activateName);
+    console.log(`active custom agent: ${active.name}`);
+    console.log("policy: imported instructions guide chat, but RPH approval gates still win");
+    return;
+  }
+  console.log("next: /agent use workflow-orchestrator");
+  console.log("next: /agent roles");
+}
+
+function printActiveCustomAgent(projectRoot: string): void {
+  const active = loadActiveCustomAgentProfile(projectRoot);
+  console.log(`active custom agent: ${active ? active.name : "none"}`);
+}
+
+function printAgentRoleCatalog(projectRoot: string): void {
+  const catalog = listAgentCatalog(projectRoot);
+  const builtIns = catalog.filter((entry) => entry.source === "built-in");
+  const custom = catalog.filter((entry) => entry.source === "custom");
+  console.log("Agent roles");
+  console.log("Built-in lanes:");
+  for (const entry of builtIns) {
+    console.log(`- ${entry.name}: ${entry.description}`);
+  }
+  console.log("Custom TOML agents:");
+  if (custom.length === 0) {
+    console.log("- none");
+    console.log("next: /agent discover");
+    return;
+  }
+  for (const entry of custom) {
+    const active = entry.active ? " active" : "";
+    const model = entry.model ? ` model=${entry.model}` : "";
+    const sandbox = entry.sandboxMode ? ` sandbox=${entry.sandboxMode}` : "";
+    console.log(`- ${entry.name}${active}:${model}${sandbox} ${entry.description}`.trim());
+  }
+}
+
+function printAgentLibraryProfiles(query: string, options: Record<string, string | boolean>): void {
+  const libraryRoot = agentLibraryRootFromOptions(options);
+  const profiles = discoverAgentLibraryProfiles({
+    libraryRoot,
+    query,
+    limit: parseOptionalPositiveInt(optionString(options, "limit")) ?? 30
+  });
+  console.log("Awesome Codex Subagents");
+  console.log(`library: ${libraryRoot ?? defaultAgentLibraryRoot()}`);
+  if (query.trim()) {
+    console.log(`query: ${query.trim()}`);
+  }
+  if (profiles.length === 0) {
+    console.log("- none");
+    console.log("next: /agent discover cli");
+    return;
+  }
+  for (const profile of profiles) {
+    const model = profile.model ? ` model=${profile.model}` : "";
+    const sandbox = profile.sandboxMode ? ` sandbox=${profile.sandboxMode}` : "";
+    console.log(`- ${profile.name} [${profile.category}]${model}${sandbox}`);
+    console.log(`  ${profile.description}`);
+    console.log(`  import: /agent import ${profile.slug}`);
+  }
+}
+
+function printRuntimeSessionJournal(
+  projectRoot: string,
+  args: string[],
+  options: Record<string, string | boolean>
+): void {
+  const current = loadRuntimeSession(projectRoot);
+  const [requestedSessionId] = runtimeAgentPositionalArgs(args);
+  const sessionId = requestedSessionId ?? optionString(options, "session") ?? current?.sessionId;
+  if (!sessionId) {
+    console.log("Runtime session journal");
+    console.log("- session: none");
+    console.log("next: rph start");
+    return;
+  }
+  const records = loadRuntimeSessionJournal(projectRoot, sessionId);
+  const latest = records[records.length - 1] ?? latestRuntimeSessionJournalRecord(projectRoot, sessionId);
+  const limit = parseOptionalPositiveInt(optionString(options, "limit")) ?? 5;
+
+  console.log("Runtime session journal");
+  console.log(`- session: ${sessionId}`);
+  console.log(`- journal: ${path.relative(projectRoot, runtimeSessionJournalFile(projectRoot, sessionId))}`);
+  console.log(`- snapshot: ${path.relative(projectRoot, runtimeSessionSnapshotFile(projectRoot, sessionId))}`);
+  console.log(`- entries: ${records.length}`);
+  if (!latest) {
+    console.log("- latest: none");
+    return;
+  }
+  console.log(`- latest: #${latest.sequence} ${latest.status} stage=${latest.stage} owner=${latest.ownerAgent}`);
+  if (latest.pendingActionCommand) {
+    console.log(`- pending command: ${latest.pendingActionCommand}`);
+  }
+  if (latest.checkpoint) {
+    console.log(`- checkpoint: ${latest.checkpoint}`);
+  }
+  if (latest.blocker) {
+    console.log(`- blocker: ${latest.blocker}`);
+  }
+  const tail = records.slice(-limit);
+  if (tail.length > 0) {
+    console.log(`- tail (${tail.length}/${records.length}):`);
+    for (const record of tail) {
+      console.log(`  #${record.sequence} ${record.at} ${record.status} stage=${record.stage} history=${record.historyLength}`);
+    }
+  }
+}
+
+function printRuntimeSessionReplay(
+  projectRoot: string,
+  args: string[],
+  options: Record<string, string | boolean>
+): void {
+  const current = loadRuntimeSession(projectRoot);
+  const [requestedSessionId] = runtimeAgentPositionalArgs(args);
+  const sessionId = requestedSessionId ?? optionString(options, "session") ?? current?.sessionId;
+  if (!sessionId) {
+    console.log("Runtime session replay");
+    console.log("- session: none");
+    console.log("next: rph start");
+    return;
+  }
+  const replayed = replayRuntimeSession(projectRoot, sessionId);
+  const records = loadRuntimeSessionJournal(projectRoot, sessionId);
+  const limit = parseOptionalPositiveInt(optionString(options, "limit")) ?? 8;
+  console.log("Runtime session replay");
+  console.log(`- session: ${sessionId}`);
+  console.log(`- entries: ${records.length}`);
+  if (!replayed) {
+    console.log("- replay: unavailable");
+    process.exitCode = 1;
+    return;
+  }
+  console.log(`- replayed: ${replayed.status} stage=${replayed.stage} owner=${replayed.ownerAgent}`);
+  if (replayed.lastCommand) {
+    console.log(`- last command: ${replayed.lastCommand} ok=${replayed.lastCommandOk ?? "unknown"}`);
+  }
+  if (replayed.checkpoint) {
+    console.log(`- checkpoint: ${replayed.checkpoint}`);
+  }
+  if (replayed.blocker) {
+    console.log(`- blocker: ${replayed.blocker}`);
+  }
+  const tail = records.slice(-limit);
+  const timeline = runtimeSessionTimeline(replayed, limit);
+  if (timeline.length > 0) {
+    console.log("Session timeline:");
+    for (const item of timeline) {
+      const status = item.ok === undefined ? "" : ` ok=${item.ok}`;
+      console.log(`- ${item.at} ${item.kind}: ${item.message}${status}`);
+    }
+  }
+  if (tail.length > 0) {
+    console.log("Replay snapshots:");
+    for (const record of tail) {
+      const command = record.pendingActionCommand ? ` command=${record.pendingActionCommand}` : "";
+      console.log(`#${record.sequence} ${record.at} ${record.status} stage=${record.stage}${command}`);
+    }
+  }
+}
+
+function runtimeSessionTimeline(
+  manifest: RuntimeSessionManifest,
+  limit: number
+): Array<{ at: string; kind: string; message: string; ok?: boolean }> {
+  return manifest.history.slice(-limit).map((event) => ({
+    at: event.at,
+    kind: timelineEventLabel(event.kind),
+    message: compactTimelineMessage(event.message),
+    ok: event.ok
+  }));
+}
+
+function timelineEventLabel(kind: RuntimeSessionManifest["history"][number]["kind"]): string {
+  switch (kind) {
+    case "input":
+      return "user";
+    case "chat":
+      return "agent";
+    case "command":
+      return "executed";
+    case "blocker":
+      return "blocked";
+    default:
+      return kind;
+  }
+}
+
+function compactTimelineMessage(message: string, maxLength = 120): string {
+  const compact = message.replace(/\s+/g, " ").trim();
+  return compact.length > maxLength ? `${compact.slice(0, maxLength - 3)}...` : compact;
+}
+
+interface ReapedDeadWorkerLease {
+  handoffId: string;
+  laneRunId: string;
+  workerPid: number;
+  status: "requeued" | "dead-letter";
+}
+
+interface OrchestrationLoopResult {
+  executed: number;
+  blocker: string | null;
+}
+
+interface RuntimeWorkerLeaseView {
+  handoff: RuntimeHandoffRecord;
+  lane?: AgentLaneRunRecord;
+  pidState: "alive" | "dead" | "unknown";
+  health: "healthy" | "dead-worker" | "lease-expired" | "unknown-pid";
+  claimable: boolean;
+}
+
+interface RuntimeWorkerPoolRecord {
+  version: 1;
+  poolId: string;
+  status: "starting" | "running" | "stopping" | "stopped" | "failed";
+  pid: number;
+  pidStartedAt?: string;
+  poolToken?: string;
+  startedAt: string;
+  updatedAt: string;
+  heartbeatAt: string;
+  stoppedAt?: string;
+  stopRequestedAt?: string;
+  stopReason?: string;
+  stopMode?: "drain" | "force";
+  forceRequestedAt?: string;
+  mode?: "foreground" | "background" | "service";
+  logPath?: string;
+  concurrency: number;
+  pollMs: number;
+  idleMs: number;
+  cycles: number;
+  dispatched: number;
+  lastActionAt?: string;
+  lastBlocker?: string | null;
+}
+
+interface RuntimeWorkerSlotsRecord {
+  version: 1;
+  poolId: string;
+  updatedAt: string;
+  slots: RuntimeWorkerSlotRecord[];
+}
+
+interface RuntimeWorkerSlotRecord {
+  slotId: string;
+  slotIndex: number;
+  status: "idle" | "running" | "completed" | "dead";
+  updatedAt: string;
+  lastTransitionAt: string;
+  role?: AgentRole;
+  stage?: WorkflowStageId;
+  handoffId?: string;
+  laneRunId?: string;
+  workerId?: string;
+  command?: string;
+  attempt?: number;
+  heartbeatAt?: string;
+  leaseExpiresAt?: string;
+  completedAt?: string;
+  mergeStatus?: "pending" | "merged" | "blocked";
+  failureDisposition?: "requeued" | "dead_letter";
+  failureReason?: string;
+  idleReason?: "available" | "pool-draining" | "no-claimable-handoff" | "waiting-on-active-leases";
+}
+
+async function handleAgentRecover(projectRoot: string, options: Record<string, string | boolean>): Promise<void> {
+  if (!isRuntimeProjectInitialized(projectRoot)) {
+    console.log("recovery: project is not initialized");
+    return;
+  }
+  if (printRuntimeHandoffsReadIssue(projectRoot)) {
+    return;
+  }
+  const session = loadRuntimeSession(projectRoot);
+  if (!session) {
+    console.log("recovery: no runtime session");
+    return;
+  }
+  printReapedDeadWorkerLeases(reapDeadHandoffWorkerLeases(projectRoot));
+  printIntegratedPendingLaneResults(integratePendingCompletedLaneResults(projectRoot), "recovery");
+  const maxSteps = recoveryMaxSteps(options);
+  const executedCommands = new Set<string>();
+  for (let step = 1; step <= maxSteps; step += 1) {
+    const current = loadRuntimeSession(projectRoot) ?? session;
+    const recovery = runtimeRecoveryState(projectRoot, current);
+    printRuntimeRecoveryBrief(projectRoot, current);
+    if (!recovery.actionable) {
+      finishRecoveryIfIdle(projectRoot, current);
+      return;
+    }
+    const command = recovery.nextCommand;
+    if (!isSafeRecoveryCommand(command)) {
+      updateRuntimeSession(projectRoot, current.sessionId, {
+        status: "blocked",
+        blocker: `recovery requires explicit action: ${command}`,
+        note: `recovery blocked before ${command}`
+      });
+      console.log(`recovery blocked: explicit action required before ${command}`);
+      return;
+    }
+    if (executedCommands.has(command)) {
+      console.log(`recovery paused: next action unchanged after ${command}`);
+      return;
+    }
+    executedCommands.add(command);
+    updateRuntimeSession(projectRoot, current.sessionId, {
+      status: "recovering",
+      checkpoint: `recovery step ${step}: ${command}`,
+      blocker: null,
+      note: `recovery action: ${command}`
+    });
+    console.log(`recovery step ${step}/${maxSteps}`);
+    console.log(`recovery action: ${command}`);
+    const ok = await runParsedCommand(projectRoot, parseCli(parseCommandLine(command)), false);
+    if (!ok) {
+      updateRuntimeSession(projectRoot, current.sessionId, {
+        status: "blocked",
+        blocker: `recovery command failed: ${command}`,
+        note: `recovery failed after ${command}`
+      });
+      process.exitCode = 1;
+      return;
+    }
+    const next = loadRuntimeSession(projectRoot);
+    if (!next) {
+      return;
+    }
+    const nextRecovery = runtimeRecoveryState(projectRoot, next);
+    if (!nextRecovery.actionable) {
+      finishRecoveryIfIdle(projectRoot, next);
+      return;
+    }
+    if (nextRecovery.nextCommand === command) {
+      printRuntimeRecoveryBrief(projectRoot, next);
+      console.log(`recovery paused: next action unchanged after ${command}`);
+      return;
+    }
+  }
+  const current = loadRuntimeSession(projectRoot) ?? session;
+  const recovery = runtimeRecoveryState(projectRoot, current);
+  if (recovery.actionable) {
+    console.log(`recovery paused: step limit reached (${maxSteps})`);
+    console.log(`next safe command: ${recovery.nextCommand}`);
+    return;
+  }
+  finishRecoveryIfIdle(projectRoot, current);
+}
+
+function recoveryMaxSteps(options: Record<string, string | boolean>): number {
+  return Math.min(parseOptionalPositiveInt(optionString(options, "steps")) ?? 3, 10);
+}
+
+function finishRecoveryIfIdle(projectRoot: string, session: RuntimeSessionManifest): void {
+  if (session.status === "recovering") {
+    updateRuntimeSession(projectRoot, session.sessionId, {
+      status: "active",
+      blocker: null,
+      note: "recovery complete"
+    });
+  }
+  console.log("recovery complete: no pending recovery action");
+}
+
+function reapDeadHandoffWorkerLeases(projectRoot: string, now = new Date()): ReapedDeadWorkerLease[] {
+  const lanesById = new Map(loadAgentLaneRuns(projectRoot).map((lane) => [lane.id, lane]));
+  const reaped: ReapedDeadWorkerLease[] = [];
+  for (const handoff of loadRuntimeHandoffs(projectRoot)) {
+    if ((handoff.status !== "claimed" && handoff.status !== "running") || !handoff.laneRunId) {
+      continue;
+    }
+    const lane = lanesById.get(handoff.laneRunId);
+    if (!lane || (lane.status !== "claimed" && lane.status !== "running") || !lane.workerPid || processIsAlive(lane.workerPid)) {
+      continue;
+    }
+    const reason = `worker process is not alive: pid ${lane.workerPid}`;
+    const token = runtimeHandoffExecutionToken(handoff, lane.id);
+    const next = failRuntimeHandoffAttempt(projectRoot, handoff.id, token, reason, now);
+    completeAgentLaneRun(projectRoot, lane.id, {
+      ok: false,
+      error: reason,
+      executionMode: lane.executionMode ?? "command",
+      autonomousTurnId: lane.autonomousTurnId,
+      proposedCommand: lane.proposedCommand,
+      executedCommand: lane.executedCommand
+    });
+    reaped.push({
+      handoffId: handoff.id,
+      laneRunId: lane.id,
+      workerPid: lane.workerPid,
+      status: next.status === "dead_letter" ? "dead-letter" : "requeued"
+    });
+    refreshRuntimeWorkerSlots(projectRoot, lane.poolId, undefined, "available");
+  }
+  return reaped;
+}
+
+function printReapedDeadWorkerLeases(reaped: ReapedDeadWorkerLease[]): void {
+  for (const item of reaped) {
+    console.log(`reaped dead worker lease: ${item.handoffId} lane=${item.laneRunId} pid=${item.workerPid} -> ${item.status}`);
+  }
+}
+
+function pendingCompletedLaneRuns(projectRoot: string): AgentLaneRunRecord[] {
+  return loadAgentLaneRuns(projectRoot).filter((run) => {
+    return run.status === "completed"
+      && run.exitOk === true
+      && run.merge?.status !== "merged";
+  });
+}
+
+function runtimeWorkerPoolActiveWorkSummary(projectRoot: string): string | null {
+  const activeHandoffs = loadRuntimeHandoffs(projectRoot).filter((handoff) => handoff.status === "claimed" || handoff.status === "running");
+  const activeLanes = loadAgentLaneRuns(projectRoot).filter((lane) => lane.status === "claimed" || lane.status === "running");
+  const pendingMerge = pendingCompletedLaneRuns(projectRoot);
+  const blockers: string[] = [];
+  if (activeHandoffs.length > 0) {
+    blockers.push(`active handoffs=${activeHandoffs.length}`);
+  }
+  if (activeLanes.length > 0) {
+    blockers.push(`active lanes=${activeLanes.length}`);
+  }
+  if (pendingMerge.length > 0) {
+    blockers.push(`pending merges=${pendingMerge.length}`);
+  }
+  return blockers.length > 0 ? blockers.join(" ") : null;
+}
+
+function integratePendingCompletedLaneResults(projectRoot: string): ReturnType<typeof integrateAgentLaneBatch> | null {
+  const runIds = pendingCompletedLaneRuns(projectRoot).map((run) => run.id);
+  if (runIds.length === 0) {
+    return null;
+  }
+  return integrateAgentLaneBatch(projectRoot, runIds, "reattached completed worker lane result(s)");
+}
+
+function printIntegratedPendingLaneResults(
+  integration: ReturnType<typeof integrateAgentLaneBatch> | null,
+  source: "orchestration" | "recovery"
+): void {
+  if (!integration) {
+    return;
+  }
+  console.log(`integrator: ${integration.status} ${integration.mergedRunIds.length}/${integration.runIds.length} pending lane result(s) reattached during ${source}`);
+  if (integration.failedRunIds.length > 0) {
+    console.log(`integrator failed lanes: ${integration.failedRunIds.join(", ")}`);
+  }
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return Boolean(error && typeof error === "object" && "code" in error && (error as NodeJS.ErrnoException).code === "EPERM");
+  }
+}
+
+function readProcessStartedAt(pid: number): string | null {
+  const result = spawnSync("ps", ["-p", String(pid), "-o", "lstart="], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"]
+  });
+  if (result.status !== 0) {
+    return null;
+  }
+  const value = result.stdout.trim().replace(/\s+/g, " ");
+  return value || null;
+}
+
+function isSafeRecoveryCommand(command: string): boolean {
+  if (classifyMutableAgentCommand(command) || isUserApprovalAgentCommand(command)) {
+    return false;
+  }
+  try {
+    const parsed = parseCli(parseCommandLine(command));
+    if (parsed.command === "resume" || parsed.command === "status") {
+      return true;
+    }
+    if (parsed.command !== "agent") {
+      return false;
+    }
+    return ["run", "continue", "status", "handoffs", "actions", "lanes"].includes(parsed.subcommand ?? "status");
+  } catch {
+    return false;
+  }
+}
+
+async function handleAgentWorkerCommand(
+  projectRoot: string,
+  args: string[],
+  options: Record<string, string | boolean>
+): Promise<void> {
+  const action = args[0];
+  const id = args[1];
+  if (action !== "run" || !id) {
+    console.log("usage: /agent worker run <handoff-id> [--worker-id <id>] [--lease-ms <ms>]");
+    process.exitCode = 2;
+    return;
+  }
+  const ok = await runHandoffWorker(projectRoot, id, agentWorkerIdFromOptions(options), leaseMsFromOptions(options), {
+    laneMaxToolCalls: parseOptionalNonNegativeInt(optionString(options, "max-tool-calls")),
+    debug: optionBool(options, "debug")
+  });
+  if (!ok) {
+    process.exitCode = 1;
+  }
+}
+
+function handleAgentReduce(projectRoot: string, args: string[]): void {
+  requireInitialized(projectRoot);
+  const stage = parseWorkflowStageId(args[0]);
+  if (!stage) {
+    console.log("usage: /agent reduce <fan-in-stage>");
+    process.exitCode = 2;
+    return;
+  }
+  const session = loadRuntimeSession(projectRoot) ?? ensureRuntimeSession(projectRoot, resolveRuntimeSessionId(projectRoot));
+  const reconciled = reconcileRuntimeStageQueue(projectRoot, session);
+  const entry = reconciled?.stageQueue?.find((item) => item.stage === stage);
+  if (!entry || entry.nodeType !== "fan-in") {
+    console.log(`fan-in reducer blocked: ${stage} is not a fan-in queue node`);
+    process.exitCode = 1;
+    return;
+  }
+  if (entry.fanIn?.reducerStatus !== "ready" || entry.blockers.length > 0) {
+    console.log(`fan-in reducer blocked: ${stage} status=${entry.status} reducer=${entry.fanIn?.reducerStatus ?? "none"}`);
+    for (const prerequisite of entry.fanIn?.pendingPrerequisites ?? []) {
+      console.log(`- pending prerequisite: ${prerequisite}`);
+    }
+    for (const blocker of entry.blockers) {
+      console.log(`- ${blocker}`);
+    }
+    process.exitCode = 1;
+    return;
+  }
+  const state = loadState(projectRoot);
+  const transitionContext = workflowTransitionContext(projectRoot, stage);
+  const check = canTransition(state, stage, transitionContext);
+  if (!check.ok) {
+    console.log(`fan-in reducer blocked: ${state.currentStage} -> ${stage}`);
+    check.reasons.forEach((reason) => console.log(`- ${reason}`));
+    process.exitCode = 1;
+    return;
+  }
+  const updated = transitionState(state, stage, `fan-in reducer accepted ${entry.fanIn.readyPrerequisites.join(" + ")}`, transitionContext);
+  saveState(projectRoot, updated);
+  const activeSession = reconciled ?? session;
+  if (activeSession && isContinuableRuntimeManifestStatus(activeSession.status)) {
+    updateRuntimeSession(projectRoot, activeSession.sessionId, {
+      status: "active",
+      stage,
+      blocker: null,
+      checkpoint: `fan-in reducer advanced to ${stage}`,
+      note: `fan-in reducer accepted ${entry.fanIn.readyPrerequisites.join(" + ")}`
+    });
+    reconcileRuntimeStageQueue(projectRoot, loadRuntimeSession(projectRoot));
+  }
+  console.log(`fan-in reducer complete: ${state.currentStage} -> ${stage}`);
+  console.log(`sources: ${entry.fanIn.readyPrerequisites.join(", ")}`);
+  console.log(`next command: ${recommendedAgentCommand(updated)}`);
+}
+
+function parseWorkflowStageId(value: string | undefined): WorkflowStageId | null {
+  if (!value || !Object.prototype.hasOwnProperty.call(WORKFLOW_STAGES, value)) {
+    return null;
+  }
+  return value as WorkflowStageId;
+}
+
+function parseRuntimeAgentOptions(args: string[]): Record<string, string | boolean> {
+  const options: Record<string, string | boolean> = {};
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index];
+    if (token === "--steps") {
+      const value = args[index + 1];
+      if (value) {
+        options.steps = value;
+        index += 1;
+      }
+    } else if (token === "--reason") {
+      const value = args[index + 1];
+      if (value) {
+        options.reason = value;
+        index += 1;
+      }
+    } else if (token === "--worker-id") {
+      const value = args[index + 1];
+      if (value) {
+        options["worker-id"] = value;
+        index += 1;
+      }
+    } else if (token === "--lease-ms") {
+      const value = args[index + 1];
+      if (value) {
+        options["lease-ms"] = value;
+        index += 1;
+      }
+    } else if (token === "--concurrency") {
+      const value = args[index + 1];
+      if (value) {
+        options.concurrency = value;
+        index += 1;
+      }
+    } else if (token === "--poll-ms") {
+      const value = args[index + 1];
+      if (value) {
+        options["poll-ms"] = value;
+        index += 1;
+      }
+    } else if (token === "--idle-ms") {
+      const value = args[index + 1];
+      if (value) {
+        options["idle-ms"] = value;
+        index += 1;
+      }
+    } else if (token === "--log") {
+      const value = args[index + 1];
+      if (value) {
+        options.log = value;
+        index += 1;
+      }
+    } else if (token === "--max-cycles") {
+      const value = args[index + 1];
+      if (value) {
+        options["max-cycles"] = value;
+        index += 1;
+      }
+    } else if (token === "--max-tool-calls") {
+      const value = args[index + 1];
+      if (value) {
+        options["max-tool-calls"] = value;
+        index += 1;
+      }
+    } else if (token === "--drain-ms") {
+      const value = args[index + 1];
+      if (value) {
+        options["drain-ms"] = value;
+        index += 1;
+      }
+    } else if (token === "--library") {
+      const value = args[index + 1];
+      if (value) {
+        options.library = value;
+        index += 1;
+      }
+    } else if (token === "--activate") {
+      const value = args[index + 1];
+      if (value) {
+        options.activate = value;
+        index += 1;
+      }
+    } else if (token === "--use") {
+      const value = args[index + 1];
+      if (value) {
+        options.use = value;
+        index += 1;
+      }
+    } else if (token === "--limit") {
+      const value = args[index + 1];
+      if (value) {
+        options.limit = value;
+        index += 1;
+      }
+    } else if (token === "--by") {
+      const value = args[index + 1];
+      if (value) {
+        options.by = value;
+        index += 1;
+      }
+    } else if (token === "--session") {
+      const value = args[index + 1];
+      if (value) {
+        options.session = value;
+        index += 1;
+      }
+    } else if (token === "--debug") {
+      options.debug = true;
+    } else if (token === "--force") {
+      options.force = true;
+    } else if (token === "--load") {
+      options.load = true;
+    } else if (token === "--no-load") {
+      options["no-load"] = true;
+    } else if (token === "--unload") {
+      options.unload = true;
+    } else if (token === "--no-unload") {
+      options["no-unload"] = true;
+    }
+  }
+  return options;
+}
+
+function commandSurfaceFromOptions(options: Record<string, string | boolean>): CommandSurface {
+  return options.commandSurface === "slash" ? "slash" : "rph";
+}
+
+function agentSurfaceCommand(surface: CommandSurface, command: string): string {
+  return surface === "slash" ? `/agent ${command}` : `rph agent ${command}`;
+}
+
+function runtimeSurfaceCommand(surface: CommandSurface, command: string): string {
+  return surface === "slash" ? `/${command}` : `rph ${command}`;
+}
+
+function runtimeAgentPositionalArgs(args: string[]): string[] {
+  const positional: string[] = [];
+  const valueOptions = new Set([
+    "--steps",
+    "--reason",
+    "--worker-id",
+    "--lease-ms",
+    "--concurrency",
+    "--poll-ms",
+    "--idle-ms",
+    "--log",
+    "--max-cycles",
+    "--max-tool-calls",
+    "--drain-ms",
+    "--library",
+    "--activate",
+    "--use",
+    "--limit",
+    "--by",
+    "--session"
+  ]);
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index];
+    if (token.startsWith("--")) {
+      if (valueOptions.has(token)) {
+        index += 1;
+      }
+      continue;
+    }
+    positional.push(token);
+  }
+  return positional;
+}
+
+function printRuntimeRecoveryBrief(
+  projectRoot: string,
+  session: RuntimeSessionManifest | null = loadRuntimeSession(projectRoot),
+  options: { onlyWhenActionable?: boolean } = {}
+): void {
+  if (!isRuntimeProjectInitialized(projectRoot) || !session) {
+    return;
+  }
+  if (printRuntimeHandoffsReadIssue(projectRoot)) {
+    return;
+  }
+  const recovery = runtimeRecoveryState(projectRoot, session);
+  if (options.onlyWhenActionable && !recovery.actionable) {
+    return;
+  }
+
+  console.log("Session recovery brief");
+  console.log(`- session: ${session.sessionId} status=${session.status} stage=${session.stage} owner=${session.ownerAgent}`);
+  if (session.waitCondition) {
+    console.log(`- wait: ${session.waitCondition.kind} ${session.waitCondition.message}`);
+  }
+  if (session.checkpoint) {
+    console.log(`- checkpoint: ${session.checkpoint}`);
+  }
+  if (session.blocker) {
+    console.log(`- blocker: ${session.blocker}`);
+  }
+  if (session.pendingAction?.command) {
+    console.log(`- pending command: ${session.pendingAction.command}`);
+  }
+  if (recovery.pendingExternal) {
+    console.log(`- pending external action: ${recovery.pendingExternal.id} [${recovery.pendingExternal.status}] ${recovery.pendingExternal.command}`);
+  }
+  if (recovery.claimableHandoffs.length > 0) {
+    const next = recovery.claimableHandoffs[0];
+    console.log(`- claimable handoffs: ${recovery.claimableHandoffs.length}; next=${next.id} ${next.packet.toAgent} stage=${next.packet.stage} command=${next.packet.nextCommand ?? "none"}`);
+  }
+  if (recovery.mergeableLaneRuns.length > 0) {
+    const next = recovery.mergeableLaneRuns[0];
+    console.log(`- completed lane results pending merge: ${recovery.mergeableLaneRuns.length}; next=${next.id} ${next.role} stage=${next.stage}`);
+  }
+  const resumeCursor = session.handoffPacket?.resumeCursor ?? session.stageQueue?.find((entry) => entry.status === "active" || entry.status === "ready")?.id;
+  if (resumeCursor) {
+    console.log(`- resume cursor: ${resumeCursor}`);
+  }
+  console.log(`- next safe command: ${recovery.nextCommand}`);
+}
+
+function runtimeRecoveryState(
+  projectRoot: string,
+  session: RuntimeSessionManifest
+): {
+  pendingExternal: RuntimeActionApprovalRecord | undefined;
+  claimableHandoffs: RuntimeHandoffRecord[];
+  mergeableLaneRuns: AgentLaneRunRecord[];
+  actionable: boolean;
+  nextCommand: string;
+} {
+  const pendingActions = loadRuntimeActionApprovals(projectRoot).filter((record) => record.status === "pending" || record.status === "approved" || record.status === "running" || record.status === "failed");
+  const pendingExternal = session.pendingExternalActionId
+    ? pendingActions.find((record) => record.id === session.pendingExternalActionId)
+    : pendingActions[0];
+  const claimableHandoffs = loadRuntimeHandoffs(projectRoot).filter((record) => isRuntimeHandoffClaimable(record));
+  const mergeableLaneRuns = pendingCompletedLaneRuns(projectRoot);
+  const actionable = session.status !== "active"
+    || Boolean(session.waitCondition)
+    || Boolean(session.blocker)
+    || Boolean(session.pendingAction?.command)
+    || Boolean(pendingExternal)
+    || claimableHandoffs.length > 0
+    || mergeableLaneRuns.length > 0
+    || Boolean(session.handoffPacket);
+  return {
+    pendingExternal,
+    claimableHandoffs,
+    mergeableLaneRuns,
+    actionable,
+    nextCommand: runtimeRecoveryNextCommand(session, pendingExternal, claimableHandoffs, mergeableLaneRuns)
+  };
+}
+
+function runtimeRecoveryNextCommand(
+  session: RuntimeSessionManifest,
+  pendingExternal: RuntimeActionApprovalRecord | undefined,
+  claimableHandoffs: RuntimeHandoffRecord[],
+  mergeableLaneRuns: AgentLaneRunRecord[]
+): string {
+  if (pendingExternal?.status === "pending") {
+    return `/agent approve-action ${pendingExternal.id}`;
+  }
+  if (session.status === "paused" || session.waitCondition?.kind === "paused") {
+    return "/resume";
+  }
+  if (session.pendingAction?.command) {
+    return session.pendingAction.command;
+  }
+  if (mergeableLaneRuns.length > 0) {
+    return "/agent run --steps 1";
+  }
+  if (claimableHandoffs.length > 0) {
+    return "/agent run --steps 1";
+  }
+  if (session.waitCondition?.kind === "user_approval") {
+    return "/status";
+  }
+  if (session.waitCondition?.kind === "external_live_write") {
+    return "/agent actions";
+  }
+  return "/agent run --steps 1";
+}
+
+function printRuntimeHandoffSummary(projectRoot: string): void {
+  if (!isRuntimeProjectInitialized(projectRoot)) {
+    return;
+  }
+  if (printRuntimeHandoffsReadIssue(projectRoot)) {
+    return;
+  }
+  const records = loadRuntimeHandoffs(projectRoot);
+  const pending = records.filter((record) => record.status === "pending" || record.status === "acknowledged");
+  const running = records.filter((record) => record.status === "claimed" || record.status === "running");
+  const deadLetters = records.filter((record) => record.status === "dead_letter");
+  console.log(`handoffs pending: ${pending.length}`);
+  console.log(`handoffs running: ${running.length}`);
+  console.log(`handoffs dead-letter: ${deadLetters.length}`);
+  if (pending[0]) {
+    console.log(`next handoff: ${pending[0].id} ${pending[0].packet.fromAgent} -> ${pending[0].packet.toAgent}`);
+  }
+  const latestLane = latestAgentLaneRun(projectRoot);
+  if (latestLane) {
+    console.log(`latest lane: ${latestLane.id} ${latestLane.role} ${latestLane.status} stage=${latestLane.stage}`);
+  }
+}
+
+function handleAgentGraphCommand(
+  projectRoot: string,
+  args: string[],
+  options: Record<string, string | boolean>
+): void {
+  const action = args[0] ?? "status";
+  switch (action) {
+    case "status":
+    case "show":
+      printRuntimeExecutionGraph(projectRoot, {
+        json: optionBool(options, "json"),
+        verbose: optionBool(options, "verbose") || optionBool(options, "debug")
+      });
+      return;
+    case "refresh":
+    case "materialize":
+      printRuntimeExecutionGraph(projectRoot, {
+        refresh: true,
+        json: optionBool(options, "json"),
+        verbose: optionBool(options, "verbose") || optionBool(options, "debug")
+      });
+      return;
+    case "json":
+      printRuntimeExecutionGraph(projectRoot, { json: true });
+      return;
+    default:
+      console.log("usage: /agent graph [status|refresh|json] [--verbose]");
+      process.exitCode = 2;
+      return;
+  }
+}
+
+function printRuntimeExecutionGraph(
+  projectRoot: string,
+  options: { refresh?: boolean; json?: boolean; verbose?: boolean } = {}
+): void {
+  if (!isRuntimeProjectInitialized(projectRoot)) {
+    console.log("Runtime execution graph");
+    console.log("- project: not initialized");
+    console.log("next: rph setup auto --live");
+    return;
+  }
+  const issue = runtimeExecutionGraphReadIssue(projectRoot);
+  if (issue && !options.refresh) {
+    console.log("Runtime execution graph");
+    console.log(`- issue: ${issue}`);
+    console.log(`- file: ${path.relative(projectRoot, runtimeExecutionGraphFile(projectRoot))}`);
+    console.log("next: rph agent graph refresh");
+    process.exitCode = 1;
+    return;
+  }
+  const session = reconcileRuntimeStageQueue(projectRoot, loadRuntimeSession(projectRoot)) ?? loadRuntimeSession(projectRoot);
+  const cachedGraph = loadRuntimeExecutionGraph(projectRoot);
+  const shouldRefresh = options.refresh
+    || !cachedGraph
+    || (cachedGraph as { source?: string } | null)?.source !== "runtime-execution-graph"
+    || Boolean(session && cachedGraph.sessionId !== session.sessionId);
+  const graph = shouldRefresh
+    ? materializeRuntimeExecutionGraph(projectRoot, session)
+    : cachedGraph;
+  if (!graph) {
+    console.log("Runtime execution graph");
+    console.log("- session: none");
+    console.log("next: rph start");
+    return;
+  }
+  if (options.json) {
+    console.log(JSON.stringify(graph, null, 2));
+    return;
+  }
+  console.log("Runtime execution graph");
+  console.log(`- session: ${graph.sessionId}`);
+  console.log(`- file: ${path.relative(projectRoot, runtimeExecutionGraphFile(projectRoot))}`);
+  console.log(`- source: ${graph.source}`);
+  console.log(`- graph: ${graph.graphId}`);
+  console.log(`- digest: ${runtimeExecutionGraphDigest(graph)}`);
+  console.log(`- stage=${graph.currentStage} status=${graph.status}`);
+  console.log(`- nodes=${graph.summary.nodeCount} edges=${graph.summary.edgeCount} blockers=${graph.summary.blockerCount}`);
+  console.log(`- active=${formatGraphNodeIds(graph.summary.activeNodeIds)}`);
+  console.log(`- ready=${formatGraphNodeIds(graph.summary.readyNodeIds)}`);
+  console.log(`- pending=${formatGraphNodeIds(graph.summary.pendingNodeIds)}`);
+  console.log(`- blocked=${formatGraphNodeIds(graph.summary.blockedNodeIds)}`);
+  console.log(`- completed=${formatGraphNodeIds(graph.summary.completedNodeIds)}`);
+  console.log(`- fan-out=${formatGraphNodeIds(graph.summary.fanOutNodeIds)} fan-in=${formatGraphNodeIds(graph.summary.fanInNodeIds)}`);
+  console.log(`- handoffs=${graph.summary.handoffCount} lanes=${graph.summary.laneRunCount}`);
+  const nextCommand = runtimeExecutionGraphNextCommand(graph);
+  console.log(`- next: ${nextCommand ?? "none"}`);
+  const blockers = runtimeExecutionGraphTopBlockers(graph);
+  if (blockers.length > 0) {
+    console.log("Top blockers:");
+    for (const blocker of blockers) {
+      console.log(`- ${blocker}`);
+    }
+  }
+  if (!options.verbose) {
+    console.log("details: rph agent graph status --verbose | rph agent graph json");
+    return;
+  }
+  console.log("Graph nodes:");
+  for (const node of graph.nodes.slice(0, 12)) {
+    const next = node.nextCommand ? ` next=${node.nextCommand}` : "";
+    const blockers = node.blockers.length > 0 ? ` blockers=${node.blockers.length}` : "";
+    console.log(`- ${node.id} [${node.status} ${node.nodeType}] owner=${node.ownerAgent}${next}${blockers}`);
+  }
+  if (graph.nodes.length > 12) {
+    console.log(`- ... ${graph.nodes.length - 12} more node(s)`);
+  }
+  console.log("Graph edges:");
+  for (const edge of graph.edges.slice(0, 12)) {
+    console.log(`- ${edge.kind}: ${edge.from} -> ${edge.to} status=${edge.status}`);
+  }
+  if (graph.edges.length > 12) {
+    console.log(`- ... ${graph.edges.length - 12} more edge(s)`);
+  }
+}
+
+function formatGraphNodeIds(nodeIds: string[]): string {
+  return nodeIds.length > 0 ? nodeIds.join(",") : "none";
+}
+
+function runtimeExecutionGraphDigest(graph: RuntimeExecutionGraph): string {
+  return createHash("sha256").update(graph.queueFingerprint).digest("hex").slice(0, 12);
+}
+
+function runtimeDigestLines(projectRoot: string, session: RuntimeSessionManifest | null): string[] {
+  if (!session || runtimeExecutionGraphReadIssue(projectRoot)) {
+    return [];
+  }
+  try {
+    const cached = loadRuntimeExecutionGraph(projectRoot);
+    const graph = cached?.source === "runtime-execution-graph" && cached.sessionId === session.sessionId
+      ? cached
+      : materializeRuntimeExecutionGraph(projectRoot, session);
+    if (!graph) {
+      return [];
+    }
+    return [
+      `- graph: ${graph.graphId}`,
+      `- digest: ${runtimeExecutionGraphDigest(graph)}`,
+      "- inspect: rph agent graph status --verbose"
+    ];
+  } catch {
+    return [];
+  }
+}
+
+function printRuntimeDigest(projectRoot: string, session: RuntimeSessionManifest | null): void {
+  const lines = runtimeDigestLines(projectRoot, session);
+  if (lines.length === 0) {
+    return;
+  }
+  for (const line of lines) {
+    console.log(line);
+  }
+  console.log("");
+}
+
+function runtimeExecutionGraphNextCommand(graph: RuntimeExecutionGraph): string | null {
+  const active = graph.nodes.find((node) => node.status === "active" && node.nextCommand);
+  const ready = graph.nodes.find((node) => node.status === "ready" && node.nextCommand);
+  const pending = graph.nodes.find((node) => node.status === "pending" && node.nextCommand);
+  return active?.nextCommand ?? ready?.nextCommand ?? pending?.nextCommand ?? null;
+}
+
+function runtimeExecutionGraphTopBlockers(graph: RuntimeExecutionGraph): string[] {
+  return graph.nodes
+    .filter((node) => node.blockers.length > 0)
+    .slice(0, 5)
+    .map((node) => `${node.id}: ${node.blockers[0]}`);
+}
+
+function runtimeExecutionGraphReadIssue(projectRoot: string): string | null {
+  const filePath = runtimeExecutionGraphFile(projectRoot);
+  if (!fs.existsSync(filePath)) {
+    return null;
+  }
+  try {
+    if (!fs.lstatSync(filePath).isFile()) {
+      return "execution graph file is not a regular file";
+    }
+    JSON.parse(fs.readFileSync(filePath, "utf8")) as RuntimeExecutionGraph;
+    return null;
+  } catch {
+    return "execution graph file is unreadable JSON";
+  }
+}
+
+function printRuntimeHandoffs(projectRoot: string, debug = false): void {
+  if (!isRuntimeProjectInitialized(projectRoot)) {
+    console.log("handoffs: project is not initialized");
+    return;
+  }
+  if (printRuntimeHandoffsReadIssue(projectRoot)) {
+    return;
+  }
+  const records = loadRuntimeHandoffs(projectRoot);
+  if (records.length === 0) {
+    console.log("handoffs: none");
+    return;
+  }
+  for (const record of records) {
+    console.log(`${record.id} [${record.status}] ${record.packet.fromAgent} -> ${record.packet.toAgent} stage=${record.packet.stage}`);
+    console.log(`  summary: ${record.packet.summary}`);
+    if (record.packet.nextCommand) {
+      console.log(`  next: ${record.packet.nextCommand}`);
+    }
+    if (record.claimedBy) {
+      console.log(`  worker: ${record.claimedBy}`);
+    }
+    if (debug && record.workerSessionId) {
+      console.log(`  worker-session: ${record.workerSessionId}`);
+    }
+    console.log(`  attempts: ${record.attempts ?? 0}/${record.maxAttempts ?? "?"}`);
+    if (record.laneRunId) {
+      console.log(`  lane: ${record.laneRunId}`);
+    }
+    if (record.leaseExpiresAt) {
+      console.log(`  lease: ${record.leaseExpiresAt}`);
+    }
+    if (record.heartbeatAt) {
+      console.log(`  heartbeat: ${record.heartbeatAt}`);
+    }
+    if (record.deadLetterReason) {
+      console.log(`  dead-letter: ${record.deadLetterReason}`);
+    }
+    if (record.lastFailureReason) {
+      console.log(`  last-failure: ${record.lastFailureReason}`);
+    }
+  }
+}
+
+function printRuntimeHandoffsReadIssue(projectRoot: string): boolean {
+  const issue = runtimeHandoffsReadIssue(projectRoot);
+  if (!issue) {
+    return false;
+  }
+  console.log("Runtime handoff mailbox");
+  console.log(`- issue: ${issue}`);
+  console.log(`- file: ${path.relative(projectRoot, runtimeHandoffsFile(projectRoot))}`);
+  console.log("next: repair or restore .rph/runtime/handoffs.json before running agent orchestration");
+  process.exitCode = 1;
+  return true;
+}
+
+function printRuntimeActionApprovals(projectRoot: string): void {
+  if (!isRuntimeProjectInitialized(projectRoot)) {
+    console.log("external actions: project is not initialized");
+    return;
+  }
+  const records = loadRuntimeActionApprovals(projectRoot);
+  if (records.length === 0) {
+    console.log("external actions: none");
+    return;
+  }
+  for (const record of records) {
+    console.log(`${record.id} [${record.status}] ${record.target}:${record.action}`);
+    console.log(`  command: ${record.command}`);
+    console.log(`  risk: ${record.risk}`);
+    console.log(`  description: ${record.description}`);
+    if (record.reason) {
+      console.log(`  reason: ${record.reason}`);
+    }
+    if (record.resultSummary) {
+      console.log(`  result: ${record.resultSummary}`);
+    }
+    if (record.failureReason) {
+      console.log(`  failure: ${record.failureReason}`);
+    }
+  }
+}
+
+function printRuntimeLaneRuns(projectRoot: string, debug = false): void {
+  if (!isRuntimeProjectInitialized(projectRoot)) {
+    console.log("lanes: project is not initialized");
+    return;
+  }
+  const issues = loadAgentLaneRunReadIssues(projectRoot);
+  const runs = loadAgentLaneRuns(projectRoot);
+  if (issues.length > 0) {
+    console.log(`lanes unreadable: ${issues.length}`);
+    if (debug) {
+      for (const issue of issues) {
+        console.log(`  ${issue.file}: ${issue.issue}`);
+      }
+    }
+  }
+  if (runs.length === 0) {
+    console.log("lanes: none");
+    return;
+  }
+  for (const run of runs) {
+    console.log(`${run.id} [${run.status}] ${run.role} stage=${run.stage}`);
+    console.log(`  command: ${run.command}`);
+    console.log(`  handoff: ${run.handoffId ?? "none"}`);
+    if (run.workerId) {
+      console.log(`  worker: ${run.workerId}`);
+    }
+    if (run.poolId || run.slotId) {
+      console.log(`  owner: pool=${run.poolId ?? "none"} slot=${run.slotId ?? "none"}`);
+    }
+    if (debug && run.workerSessionId) {
+      console.log(`  worker-session: ${run.workerSessionId}`);
+    }
+    if (debug && run.workerPid) {
+      console.log(`  worker-pid: ${run.workerPid}`);
+    }
+    if (run.attempt) {
+      console.log(`  attempt: ${run.attempt}`);
+    }
+    if (run.leaseExpiresAt) {
+      console.log(`  lease: ${run.leaseExpiresAt}`);
+    }
+    if (run.merge) {
+      console.log(`  merge: ${run.merge.status}${run.merge.summary ? ` - ${run.merge.summary}` : ""}`);
+    }
+    if (run.executionMode) {
+      console.log(`  execution: ${run.executionMode}${run.autonomousTurnId ? ` turn=${run.autonomousTurnId}` : ""}`);
+    }
+    if (run.executionProfile) {
+      const model = run.executionProfile.model ? ` model=${run.executionProfile.model}` : "";
+      const reasoning = run.executionProfile.modelReasoningEffort ? ` reasoning=${run.executionProfile.modelReasoningEffort}` : "";
+      const sandbox = run.executionProfile.sandboxMode ? ` sandbox=${run.executionProfile.sandboxMode}` : "";
+      console.log(`  profile: ${run.executionProfile.name}${model}${reasoning}${sandbox}`);
+    }
+    if (run.proposedCommand && run.proposedCommand !== run.command) {
+      console.log(`  proposed: ${run.proposedCommand}`);
+    }
+    if (run.executedCommand && run.executedCommand !== run.command) {
+      console.log(`  executed: ${run.executedCommand}`);
+    }
+    if (run.memory) {
+      console.log(`  memory: ${run.memory.scope} entries=${run.memory.entriesAfter ?? run.memory.entriesBefore}`);
+    }
+    if (run.toolBudget) {
+      console.log(`  tool-budget: ${run.toolBudget.remainingToolCalls}/${run.toolBudget.maxToolCalls} calls, ${run.toolBudget.maxOutputTokens} tokens`);
+    }
+    console.log(`  allowed: ${run.toolPolicy.allowedCommandPrefixes.join(", ")}`);
+  }
+}
+
+function printRuntimeWorkers(projectRoot: string, surface: CommandSurface, debug = false): void {
+  if (!isRuntimeProjectInitialized(projectRoot)) {
+    console.log("workers: project is not initialized");
+    return;
+  }
+  if (printRuntimeHandoffsReadIssue(projectRoot)) {
+    return;
+  }
+  const pool = readRuntimeWorkerPool(projectRoot);
+  const handoffs = loadRuntimeHandoffs(projectRoot);
+  const laneIssues = loadAgentLaneRunReadIssues(projectRoot);
+  const lanes = loadAgentLaneRuns(projectRoot);
+  const laneById = new Map(lanes.map((lane) => [lane.id, lane]));
+  const active = handoffs
+    .filter((handoff) => handoff.status === "claimed" || handoff.status === "running")
+    .map((handoff) => runtimeWorkerLeaseView(handoff, laneById.get(handoff.laneRunId ?? "")));
+  const claimable = handoffs.filter((handoff) => Boolean(handoff.packet.nextCommand) && isRuntimeHandoffClaimable(handoff));
+  const mergeable = pendingCompletedLaneRuns(projectRoot);
+  const healthy = active.filter((item) => item.health === "healthy");
+  const dead = active.filter((item) => item.health === "dead-worker");
+  const expired = active.filter((item) => item.health === "lease-expired");
+  const unknownPid = active.filter((item) => item.health === "unknown-pid");
+
+  console.log("Worker pool");
+  if (pool) {
+    const poolProcess = runtimeWorkerPoolProcessState(pool);
+    console.log(`- pool daemon: ${pool.status} process=${poolProcess} cycles=${pool.cycles} dispatched=${pool.dispatched}`);
+    const slotIssue = runtimeWorkerSlotsReadIssue(projectRoot);
+    if (slotIssue) {
+      console.log(`- pool slots: unreadable (${slotIssue})`);
+    } else {
+      const slots = projectRuntimeWorkerSlots(projectRoot, pool.poolId, pool.concurrency).slots;
+      console.log(`- pool slots: ${formatRuntimeWorkerSlotSummary(slots)}`);
+      if (debug) {
+        for (const slot of slots) {
+          console.log(`  slot=${slot.slotId} status=${slot.status} role=${slot.role ?? "none"} handoff=${slot.handoffId ?? "none"} lane=${slot.laneRunId ?? "none"}`);
+        }
+      }
+    }
+    if (debug) {
+      console.log(`- debug-pool-pid: ${pool.pid}`);
+    }
+  } else {
+    console.log("- pool daemon: none");
+  }
+  console.log(`- active leases: ${active.length}`);
+  console.log(`- healthy workers: ${healthy.length}`);
+  console.log(`- dead workers: ${dead.length}`);
+  console.log(`- expired/reclaimable leases: ${expired.length}`);
+  console.log(`- unknown-pid workers: ${unknownPid.length}`);
+  console.log(`- claimable handoffs: ${claimable.length}`);
+  console.log(`- completed pending merge: ${mergeable.length}`);
+  if (laneIssues.length > 0) {
+    console.log(`- unreadable lane files: ${laneIssues.length}`);
+    if (debug) {
+      for (const issue of laneIssues) {
+        console.log(`  ${issue.file}: ${issue.issue}`);
+      }
+    }
+  }
+
+  if (active.length > 0) {
+    console.log("Active workers:");
+    for (const item of active) {
+      const lane = item.lane;
+      const handoff = item.handoff;
+      console.log(`- handoff=${handoff.id} lane=${handoff.laneRunId ?? "none"} role=${handoff.packet.toAgent} stage=${handoff.packet.stage}`);
+      console.log(`  status=${handoff.status} health=${item.health} worker=${handoff.claimedBy ?? lane?.workerId ?? "unknown"} attempt=${handoff.attempts ?? lane?.attempt ?? 0}`);
+      if (handoff.poolId || lane?.poolId || handoff.slotId || lane?.slotId) {
+        console.log(`  owner=pool:${handoff.poolId ?? lane?.poolId ?? "none"} slot:${handoff.slotId ?? lane?.slotId ?? "none"}`);
+      }
+      console.log(`  process=${item.pidState}`);
+      if (debug) {
+        console.log(`  debug-pid=${formatWorkerPid(lane?.workerPid, item.pidState)}`);
+        if (handoff.workerSessionId || lane?.workerSessionId) {
+          console.log(`  debug-worker-session=${handoff.workerSessionId ?? lane?.workerSessionId}`);
+        }
+      }
+      if (handoff.leaseExpiresAt || lane?.leaseExpiresAt) {
+        console.log(`  lease=${formatWorkerLease(handoff.leaseExpiresAt ?? lane?.leaseExpiresAt)}`);
+      }
+      if (handoff.heartbeatAt || lane?.heartbeatAt) {
+        console.log(`  heartbeat=${handoff.heartbeatAt ?? lane?.heartbeatAt}`);
+      }
+      if (handoff.packet.nextCommand) {
+        console.log(`  command=${handoff.packet.nextCommand}`);
+      }
+      if (handoff.lastFailureReason) {
+        console.log(`  last-failure=${handoff.lastFailureReason}`);
+      }
+    }
+  }
+
+  if (mergeable.length > 0) {
+    console.log("Completed lane results pending merge:");
+    for (const run of mergeable.slice(0, 5)) {
+      console.log(`- lane=${run.id} handoff=${run.handoffId ?? "none"} role=${run.role} stage=${run.stage}`);
+    }
+  }
+
+  if (dead.length > 0 || expired.length > 0 || mergeable.length > 0) {
+    console.log(`next: ${agentSurfaceCommand(surface, "recover --steps 1")}`);
+    return;
+  }
+  if (claimable.length > 0) {
+    console.log(`next: ${agentSurfaceCommand(surface, "run --steps 1")}`);
+    return;
+  }
+  if (active.length > 0) {
+    console.log("next: wait for worker heartbeat or completion");
+    return;
+  }
+  console.log(`next: ${agentSurfaceCommand(surface, "run --steps 1")}`);
+}
+
+function runtimeWorkerLeaseView(handoff: RuntimeHandoffRecord, lane?: AgentLaneRunRecord): RuntimeWorkerLeaseView {
+  const claimable = isRuntimeHandoffClaimable(handoff);
+  const pidState = lane?.workerPid
+    ? processIsAlive(lane.workerPid) ? "alive" : "dead"
+    : "unknown";
+  const health: RuntimeWorkerLeaseView["health"] = pidState === "dead"
+    ? "dead-worker"
+    : claimable
+      ? "lease-expired"
+      : pidState === "unknown"
+        ? "unknown-pid"
+        : "healthy";
+  return {
+    handoff,
+    lane,
+    pidState,
+    health,
+    claimable
+  };
+}
+
+function formatWorkerPid(pid: number | undefined, state: RuntimeWorkerLeaseView["pidState"]): string {
+  return pid ? `${pid}(${state})` : "unknown";
+}
+
+function formatWorkerLease(leaseExpiresAt: string | undefined): string {
+  if (!leaseExpiresAt) {
+    return "unknown";
+  }
+  const deltaMs = Date.parse(leaseExpiresAt) - Date.now();
+  if (!Number.isFinite(deltaMs)) {
+    return leaseExpiresAt;
+  }
+  const seconds = Math.ceil(Math.abs(deltaMs) / 1000);
+  return deltaMs >= 0
+    ? `${leaseExpiresAt} (${seconds}s left)`
+    : `${leaseExpiresAt} (expired ${seconds}s ago)`;
+}
+
+async function handleAgentPoolCommand(
+  projectRoot: string,
+  args: string[],
+  options: Record<string, string | boolean>
+): Promise<void> {
+  const action = args[0] ?? "status";
+  switch (action) {
+    case "run":
+      await runRuntimeWorkerPool(projectRoot, options);
+      return;
+    case "start":
+    case "daemon":
+    case "background":
+      await startRuntimeWorkerPoolBackground(projectRoot, options);
+      return;
+    case "status":
+      printRuntimeWorkerPoolStatus(projectRoot, optionBool(options, "debug"), commandSurfaceFromOptions(options));
+      return;
+    case "logs":
+    case "log":
+      printRuntimeWorkerPoolLogs(projectRoot, options);
+      return;
+    case "service":
+      await handleRuntimeWorkerPoolServiceCommand(projectRoot, args.slice(1), options);
+      return;
+    case "stop":
+      await stopRuntimeWorkerPool(projectRoot, {
+        reason: optionString(options, "reason") ?? "operator requested stop",
+        force: optionBool(options, "force"),
+        drainMs: parseOptionalNonNegativeInt(optionString(options, "drain-ms"))
+      });
+      return;
+    default:
+      console.log("usage: /agent pool <status|start|run|stop|logs|service> [--concurrency N] [--poll-ms N] [--idle-ms N] [--max-cycles N] [--log PATH] [--force] [--debug]");
+      console.log("service: /agent pool service <install|status|uninstall|plist> [--no-load] [--no-unload]");
+      process.exitCode = 2;
+      return;
+  }
+}
+
+function runtimeWorkerPoolFile(projectRoot: string): string {
+  return path.join(projectRoot, ".rph", "runtime", "worker-pool.json");
+}
+
+function runtimeWorkerSlotsFile(projectRoot: string): string {
+  return path.join(projectRoot, ".rph", "runtime", "worker-slots.json");
+}
+
+function runtimeWorkerPoolLogFile(projectRoot: string): string {
+  return path.join(projectRoot, ".rph", "runtime", "worker-pool.log");
+}
+
+function runtimeWorkerPoolServiceLogFile(projectRoot: string): string {
+  return path.join(projectRoot, ".rph", "runtime", "worker-pool.launchd.log");
+}
+
+function canonicalRuntimeProjectRoot(projectRoot: string): string {
+  try {
+    return fs.realpathSync.native(projectRoot);
+  } catch {
+    return path.resolve(projectRoot);
+  }
+}
+
+function runtimeWorkerPoolServiceLabel(projectRoot: string): string {
+  const canonicalRoot = canonicalRuntimeProjectRoot(projectRoot);
+  const projectSlug = path.basename(canonicalRoot)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32) || "project";
+  const hash = createHash("sha256").update(canonicalRoot).digest("hex").slice(0, 12);
+  return `dev.rph.${projectSlug}.${hash}.worker-pool`;
+}
+
+function runtimeWorkerPoolServicePlistPath(projectRoot: string): string | null {
+  const home = process.env.HOME;
+  if (!home) {
+    return null;
+  }
+  return path.join(home, "Library", "LaunchAgents", `${runtimeWorkerPoolServiceLabel(projectRoot)}.plist`);
+}
+
+function servicePathForDisplay(value: string): string {
+  const home = process.env.HOME;
+  if (home && (value === home || value.startsWith(`${home}${path.sep}`))) {
+    return `~${value.slice(home.length)}`;
+  }
+  return value;
+}
+
+function runtimeWorkerPoolServicePlistIssue(plistPath: string): string | null {
+  if (!fs.existsSync(plistPath)) {
+    return null;
+  }
+  try {
+    const stat = fs.lstatSync(plistPath);
+    if (!stat.isFile()) {
+      return "plist path is not a regular file";
+    }
+    const content = fs.readFileSync(plistPath, "utf8");
+    if (!content.includes("<plist") || !content.includes("<key>Label</key>")) {
+      return "plist is unreadable XML";
+    }
+    return null;
+  } catch {
+    return "plist is unreadable XML";
+  }
+}
+
+function writeLaunchAgentPlistSafely(plistPath: string, plist: string): string | null {
+  const issue = runtimeWorkerPoolServicePlistIssue(plistPath);
+  if (issue) {
+    return issue;
+  }
+  const tmpPath = `${plistPath}.tmp-${process.pid}-${Date.now()}`;
+  try {
+    fs.writeFileSync(tmpPath, plist, { mode: 0o644 });
+    fs.chmodSync(tmpPath, 0o644);
+    fs.renameSync(tmpPath, plistPath);
+    return null;
+  } catch (error) {
+    fs.rmSync(tmpPath, { force: true });
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
+function launchdGuiTarget(): string | null {
+  return typeof process.getuid === "function" ? `gui/${process.getuid()}` : null;
+}
+
+function xmlEscape(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function runtimeWorkerPoolServiceProgramArgs(
+  projectRoot: string,
+  options: Record<string, string | boolean>
+): string[] | null {
+  const cliEntry = process.argv[1] ? path.resolve(process.argv[1]) : null;
+  if (!cliEntry) {
+    return null;
+  }
+  const concurrency = Math.max(1, Math.min(parseOptionalPositiveInt(optionString(options, "concurrency")) ?? 2, 6));
+  const pollMs = Math.max(50, Math.min(parseOptionalPositiveInt(optionString(options, "poll-ms")) ?? 1_000, 30_000));
+  const idleMs = Math.max(0, parseOptionalNonNegativeInt(optionString(options, "idle-ms")) ?? 0);
+  const args = [
+    process.execPath,
+    cliEntry,
+    "agent",
+    "pool",
+    "run",
+    "--concurrency",
+    String(concurrency),
+    "--poll-ms",
+    String(pollMs),
+    "--idle-ms",
+    String(idleMs)
+  ];
+  const maxCycles = parseOptionalPositiveInt(optionString(options, "max-cycles"));
+  if (maxCycles) {
+    args.push("--max-cycles", String(maxCycles));
+  }
+  const laneMaxToolCalls = parseOptionalNonNegativeInt(optionString(options, "max-tool-calls"));
+  if (laneMaxToolCalls !== undefined) {
+    args.push("--max-tool-calls", String(laneMaxToolCalls));
+  }
+  return args;
+}
+
+function renderRuntimeWorkerPoolServicePlist(
+  projectRoot: string,
+  options: Record<string, string | boolean>
+): { label: string; plist: string; logPath: string; programArgs: string[] } | null {
+  const canonicalRoot = canonicalRuntimeProjectRoot(projectRoot);
+  const programArgs = runtimeWorkerPoolServiceProgramArgs(canonicalRoot, options);
+  if (!programArgs) {
+    return null;
+  }
+  const label = runtimeWorkerPoolServiceLabel(canonicalRoot);
+  const requestedLogPath = optionString(options, "log");
+  const logPath = requestedLogPath
+    ? resolveRuntimeWorkerPoolLogPath(canonicalRoot, requestedLogPath)
+    : runtimeWorkerPoolServiceLogFile(canonicalRoot);
+  if (!logPath) {
+    return null;
+  }
+  const programArguments = programArgs.map((arg) => `    <string>${xmlEscape(arg)}</string>`).join("\n");
+  const plist = [
+    `<?xml version="1.0" encoding="UTF-8"?>`,
+    `<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">`,
+    `<plist version="1.0">`,
+    `<dict>`,
+    `  <key>Label</key>`,
+    `  <string>${xmlEscape(label)}</string>`,
+    `  <key>ProgramArguments</key>`,
+    `  <array>`,
+    programArguments,
+    `  </array>`,
+    `  <key>WorkingDirectory</key>`,
+    `  <string>${xmlEscape(canonicalRoot)}</string>`,
+    `  <key>RunAtLoad</key>`,
+    `  <true/>`,
+    `  <key>KeepAlive</key>`,
+    `  <dict>`,
+    `    <key>SuccessfulExit</key>`,
+    `    <false/>`,
+    `  </dict>`,
+    `  <key>ThrottleInterval</key>`,
+    `  <integer>10</integer>`,
+    `  <key>StandardOutPath</key>`,
+    `  <string>${xmlEscape(logPath)}</string>`,
+    `  <key>StandardErrorPath</key>`,
+    `  <string>${xmlEscape(logPath)}</string>`,
+    `  <key>EnvironmentVariables</key>`,
+    `  <dict>`,
+    `    <key>RPH_WORKER_POOL_MODE</key>`,
+    `    <string>service</string>`,
+    `    <key>RPH_WORKER_POOL_LOG</key>`,
+    `    <string>${xmlEscape(logPath)}</string>`,
+    `  </dict>`,
+    `</dict>`,
+    `</plist>`,
+    ``
+  ].join("\n");
+  return { label, plist, logPath, programArgs };
+}
+
+async function handleRuntimeWorkerPoolServiceCommand(
+  projectRoot: string,
+  args: string[],
+  options: Record<string, string | boolean>
+): Promise<void> {
+  const action = args[0] ?? "status";
+  switch (action) {
+    case "install":
+      installRuntimeWorkerPoolService(projectRoot, options);
+      return;
+    case "uninstall":
+    case "remove":
+      uninstallRuntimeWorkerPoolService(projectRoot, options);
+      return;
+    case "status":
+      printRuntimeWorkerPoolServiceStatus(projectRoot, options);
+      return;
+    case "plist":
+    case "print":
+      printRuntimeWorkerPoolServicePlist(projectRoot, options);
+      return;
+    default:
+      console.log("usage: /agent pool service <install|status|uninstall|plist> [--concurrency N] [--poll-ms N] [--idle-ms N] [--no-load] [--no-unload]");
+      process.exitCode = 2;
+      return;
+  }
+}
+
+function printRuntimeWorkerPoolServicePlist(projectRoot: string, options: Record<string, string | boolean>): void {
+  if (!isRuntimeProjectInitialized(projectRoot)) {
+    console.log("worker pool service: project is not initialized");
+    process.exitCode = 1;
+    return;
+  }
+  const rendered = renderRuntimeWorkerPoolServicePlist(projectRoot, options);
+  if (!rendered) {
+    console.log("worker pool service failed: unable to resolve CLI entrypoint");
+    process.exitCode = 1;
+    return;
+  }
+  process.stdout.write(rendered.plist);
+}
+
+function installRuntimeWorkerPoolService(projectRoot: string, options: Record<string, string | boolean>): void {
+  if (!isRuntimeProjectInitialized(projectRoot)) {
+    console.log("worker pool service install: project is not initialized");
+    process.exitCode = 1;
+    return;
+  }
+  const poolReadIssue = runtimeWorkerPoolReadIssue(projectRoot);
+  if (poolReadIssue) {
+    console.log(`worker pool service install blocked: ${poolReadIssue}`);
+    console.log("next: inspect or remove .rph/runtime/worker-pool.json");
+    process.exitCode = 1;
+    return;
+  }
+  const currentPool = readRuntimeWorkerPool(projectRoot);
+  const currentPoolActive = currentPool && ["starting", "running", "stopping"].includes(currentPool.status);
+  const currentPoolProcess = currentPool ? runtimeWorkerPoolProcessState(currentPool) : "dead";
+  if (currentPool && currentPoolActive && (currentPoolProcess === "alive" || currentPoolProcess === "unknown")) {
+    console.log(`worker pool service install blocked: worker pool already active (${currentPool.poolId})`);
+    console.log("next: rph agent pool status");
+    process.exitCode = 1;
+    return;
+  }
+  const plistPath = runtimeWorkerPoolServicePlistPath(projectRoot);
+  if (!plistPath) {
+    console.log("worker pool service install failed: HOME is not set");
+    process.exitCode = 1;
+    return;
+  }
+  const rendered = renderRuntimeWorkerPoolServicePlist(projectRoot, options);
+  if (!rendered) {
+    console.log("worker pool service install failed: unable to resolve CLI entrypoint");
+    process.exitCode = 1;
+    return;
+  }
+  fs.mkdirSync(path.dirname(plistPath), { recursive: true });
+  fs.mkdirSync(path.dirname(rendered.logPath), { recursive: true });
+  appendText(rendered.logPath, "");
+  const writeIssue = writeLaunchAgentPlistSafely(plistPath, rendered.plist);
+  if (writeIssue) {
+    console.log(`worker pool service install blocked: ${writeIssue}`);
+    console.log(`next: inspect or remove ${servicePathForDisplay(plistPath)}`);
+    process.exitCode = 1;
+    return;
+  }
+  console.log("worker pool service installed");
+  console.log(`- label=${rendered.label}`);
+  console.log(`- plist=${servicePathForDisplay(plistPath)}`);
+  console.log(`- project=${projectRoot}`);
+  console.log(`- log=${path.relative(projectRoot, rendered.logPath)}`);
+
+  if (optionBool(options, "no-load")) {
+    console.log("- launchctl=skipped (--no-load)");
+    console.log("next: rph agent pool service status");
+    return;
+  }
+  const loaded = loadRuntimeWorkerPoolLaunchAgent(rendered.label, plistPath);
+  if (!loaded.ok) {
+    console.log(`worker pool service load failed: ${loaded.message}`);
+    console.log(`next: launchctl bootstrap ${launchdGuiTarget() ?? "gui/$UID"} ${servicePathForDisplay(plistPath)}`);
+    process.exitCode = 1;
+    return;
+  }
+  console.log("- launchctl=loaded");
+  console.log("next: rph agent pool service status");
+}
+
+function uninstallRuntimeWorkerPoolService(projectRoot: string, options: Record<string, string | boolean>): void {
+  const plistPath = runtimeWorkerPoolServicePlistPath(projectRoot);
+  const label = runtimeWorkerPoolServiceLabel(projectRoot);
+  if (!plistPath) {
+    console.log("worker pool service uninstall failed: HOME is not set");
+    process.exitCode = 1;
+    return;
+  }
+  const existed = fs.existsSync(plistPath);
+  if (!optionBool(options, "no-unload")) {
+    const unloaded = unloadRuntimeWorkerPoolLaunchAgent(label, plistPath);
+    if (!unloaded.ok) {
+      console.log(`worker pool service unload warning: ${unloaded.message}`);
+    }
+  }
+  if (existed) {
+    fs.rmSync(plistPath, { force: true });
+  }
+  console.log(existed ? "worker pool service uninstalled" : "worker pool service not installed");
+  console.log(`- label=${label}`);
+  console.log(`- plist=${servicePathForDisplay(plistPath)}`);
+  console.log("next: rph agent pool service status");
+}
+
+function printRuntimeWorkerPoolServiceStatus(projectRoot: string, options: Record<string, string | boolean>): void {
+  const surface = commandSurfaceFromOptions(options);
+  const plistPath = runtimeWorkerPoolServicePlistPath(projectRoot);
+  const label = runtimeWorkerPoolServiceLabel(projectRoot);
+  console.log("Worker pool service");
+  console.log(`- label=${label}`);
+  if (!plistPath) {
+    console.log("- installed=unknown");
+    console.log("- issue=HOME is not set");
+    return;
+  }
+  const installed = fs.existsSync(plistPath);
+  const plistIssue = runtimeWorkerPoolServicePlistIssue(plistPath);
+  console.log(`- plist=${servicePathForDisplay(plistPath)}`);
+  console.log(`- installed=${installed && !plistIssue ? "yes" : installed ? "unreadable" : "no"}`);
+  if (plistIssue) {
+    console.log(`- issue=${plistIssue}`);
+  }
+  const poolReadIssue = runtimeWorkerPoolReadIssue(projectRoot);
+  const pool = readRuntimeWorkerPool(projectRoot);
+  if (poolReadIssue) {
+    console.log("- pool_daemon=unreadable");
+    console.log(`- pool_issue=${poolReadIssue}`);
+  } else if (pool) {
+    console.log(`- pool_daemon=${pool.status} process=${runtimeWorkerPoolProcessState(pool)}`);
+  } else {
+    console.log("- pool_daemon=none");
+  }
+  if (installed && !plistIssue && optionBool(options, "debug")) {
+    const state = readRuntimeWorkerPoolLaunchAgentState(label);
+    console.log(`- launchctl=${state}`);
+  } else if (installed && !plistIssue) {
+    console.log("- launchctl=not-checked");
+  }
+  const next = installed
+    ? (plistIssue ? `inspect or remove ${servicePathForDisplay(plistPath)}` : agentSurfaceCommand(surface, "pool service uninstall"))
+    : agentSurfaceCommand(surface, "pool service install");
+  console.log(`next: ${next}`);
+}
+
+function loadRuntimeWorkerPoolLaunchAgent(label: string, plistPath: string): { ok: boolean; message: string } {
+  if (process.platform !== "darwin") {
+    return { ok: false, message: "launchctl is only available on macOS" };
+  }
+  const target = launchdGuiTarget();
+  if (!target) {
+    return { ok: false, message: "unable to resolve launchd gui target" };
+  }
+  spawnSync("launchctl", ["bootout", `${target}/${label}`], { encoding: "utf8" });
+  const result = spawnSync("launchctl", ["bootstrap", target, plistPath], { encoding: "utf8" });
+  if (result.status !== 0) {
+    return { ok: false, message: (result.stderr || result.stdout || `launchctl exited ${result.status}`).trim() };
+  }
+  return { ok: true, message: "loaded" };
+}
+
+function unloadRuntimeWorkerPoolLaunchAgent(label: string, plistPath: string): { ok: boolean; message: string } {
+  if (process.platform !== "darwin") {
+    return { ok: false, message: "launchctl is only available on macOS" };
+  }
+  const target = launchdGuiTarget();
+  if (!target) {
+    return { ok: false, message: "unable to resolve launchd gui target" };
+  }
+  const scoped = spawnSync("launchctl", ["bootout", `${target}/${label}`], { encoding: "utf8" });
+  if (scoped.status === 0) {
+    return { ok: true, message: "unloaded" };
+  }
+  const byPath = fs.existsSync(plistPath)
+    ? spawnSync("launchctl", ["bootout", target, plistPath], { encoding: "utf8" })
+    : scoped;
+  if (byPath.status !== 0) {
+    return { ok: false, message: (byPath.stderr || scoped.stderr || byPath.stdout || scoped.stdout || `launchctl exited ${byPath.status}`).trim() };
+  }
+  return { ok: true, message: "unloaded" };
+}
+
+function readRuntimeWorkerPoolLaunchAgentState(label: string): string {
+  if (process.platform !== "darwin") {
+    return "unavailable";
+  }
+  const target = launchdGuiTarget();
+  if (!target) {
+    return "unknown";
+  }
+  const result = spawnSync("launchctl", ["print", `${target}/${label}`], { encoding: "utf8" });
+  if (result.status !== 0) {
+    return "not-loaded";
+  }
+  return "loaded";
+}
+
+function readRuntimeWorkerPool(projectRoot: string): RuntimeWorkerPoolRecord | null {
+  const filePath = runtimeWorkerPoolFile(projectRoot);
+  if (!fs.existsSync(filePath)) {
+    return null;
+  }
+  try {
+    if (!fs.lstatSync(filePath).isFile()) {
+      return null;
+    }
+    return JSON.parse(fs.readFileSync(filePath, "utf8")) as RuntimeWorkerPoolRecord;
+  } catch {
+    return null;
+  }
+}
+
+function writeRuntimeWorkerPool(projectRoot: string, record: RuntimeWorkerPoolRecord): void {
+  writeJson(runtimeWorkerPoolFile(projectRoot), record);
+}
+
+function readRuntimeWorkerSlots(projectRoot: string): RuntimeWorkerSlotsRecord | null {
+  const filePath = runtimeWorkerSlotsFile(projectRoot);
+  if (!fs.existsSync(filePath)) {
+    return null;
+  }
+  try {
+    if (!fs.lstatSync(filePath).isFile()) {
+      return null;
+    }
+    return JSON.parse(fs.readFileSync(filePath, "utf8")) as RuntimeWorkerSlotsRecord;
+  } catch {
+    return null;
+  }
+}
+
+function writeRuntimeWorkerSlots(projectRoot: string, record: RuntimeWorkerSlotsRecord): void {
+  writeJson(runtimeWorkerSlotsFile(projectRoot), record);
+}
+
+function runtimeWorkerSlotsReadIssue(projectRoot: string): string | null {
+  const filePath = runtimeWorkerSlotsFile(projectRoot);
+  if (!fs.existsSync(filePath)) {
+    return null;
+  }
+  try {
+    if (!fs.lstatSync(filePath).isFile()) {
+      return "slot state file is not a regular file";
+    }
+    JSON.parse(fs.readFileSync(filePath, "utf8"));
+    return null;
+  } catch {
+    return "slot state file is unreadable JSON";
+  }
+}
+
+function refreshRuntimeWorkerSlots(
+  projectRoot: string,
+  poolId: string | undefined,
+  concurrency?: number,
+  idleReason?: RuntimeWorkerSlotRecord["idleReason"]
+): RuntimeWorkerSlotsRecord | null {
+  const currentPool = readRuntimeWorkerPool(projectRoot);
+  const resolvedPoolId = poolId ?? currentPool?.poolId;
+  if (!resolvedPoolId) {
+    return null;
+  }
+  const slotCount = concurrency
+    ?? (currentPool?.poolId === resolvedPoolId ? currentPool.concurrency : undefined)
+    ?? inferRuntimeWorkerSlotCount(projectRoot, resolvedPoolId);
+  const projection = projectRuntimeWorkerSlots(projectRoot, resolvedPoolId, slotCount, idleReason);
+  writeRuntimeWorkerSlots(projectRoot, projection);
+  return projection;
+}
+
+function projectRuntimeWorkerSlots(
+  projectRoot: string,
+  poolId: string,
+  concurrency: number,
+  idleReason: RuntimeWorkerSlotRecord["idleReason"] = "available"
+): RuntimeWorkerSlotsRecord {
+  const now = new Date().toISOString();
+  const previous = readRuntimeWorkerSlots(projectRoot);
+  const previousSlots = previous?.poolId === poolId
+    ? new Map(previous.slots.map((slot) => [slot.slotIndex, slot]))
+    : new Map<number, RuntimeWorkerSlotRecord>();
+  const handoffs = loadRuntimeHandoffs(projectRoot);
+  const lanes = loadAgentLaneRuns(projectRoot);
+  const handoffById = new Map(handoffs.map((handoff) => [handoff.id, handoff]));
+  const slots: RuntimeWorkerSlotRecord[] = [];
+  const count = Math.max(1, Math.min(concurrency, 6));
+
+  for (let index = 0; index < count; index += 1) {
+    const slotId = runtimeWorkerSlotId(poolId, index);
+    const previousSlot = previousSlots.get(index);
+    const matchingLanes = lanes
+      .filter((lane) => lane.poolId === poolId && lane.slotIndex === index)
+      .sort((left, right) => runtimeRecordTime(right) - runtimeRecordTime(left));
+    const activeLane = matchingLanes.find((lane) => lane.status === "claimed" || lane.status === "running");
+    if (activeLane) {
+      slots.push(runtimeWorkerSlotFromLane({
+        lane: activeLane,
+        handoff: activeLane.handoffId ? handoffById.get(activeLane.handoffId) : undefined,
+        slotId,
+        slotIndex: index,
+        status: "running",
+        now,
+        previous: previousSlot
+      }));
+      continue;
+    }
+    const lastLane = matchingLanes.find((lane) => lane.status === "completed" || lane.status === "failed");
+    if (lastLane) {
+      slots.push(runtimeWorkerSlotFromLane({
+        lane: lastLane,
+        handoff: lastLane.handoffId ? handoffById.get(lastLane.handoffId) : undefined,
+        slotId,
+        slotIndex: index,
+        status: lastLane.status === "failed" ? "dead" : "completed",
+        now,
+        previous: previousSlot
+      }));
+      continue;
+    }
+    slots.push({
+      slotId,
+      slotIndex: index,
+      status: "idle",
+      updatedAt: now,
+      lastTransitionAt: previousSlot?.status === "idle" ? previousSlot.lastTransitionAt : now,
+      idleReason
+    });
+  }
+
+  return {
+    version: 1,
+    poolId,
+    updatedAt: now,
+    slots
+  };
+}
+
+function runtimeWorkerSlotFromLane(input: {
+  lane: AgentLaneRunRecord;
+  handoff?: RuntimeHandoffRecord;
+  slotId: string;
+  slotIndex: number;
+  status: RuntimeWorkerSlotRecord["status"];
+  now: string;
+  previous?: RuntimeWorkerSlotRecord;
+}): RuntimeWorkerSlotRecord {
+  const { lane, handoff, slotId, slotIndex, status, now, previous } = input;
+  const lastTransitionAt = status === previous?.status && previous.laneRunId === lane.id
+    ? previous.lastTransitionAt
+    : status === "running"
+      ? lane.runningAt ?? lane.startedAt
+      : lane.completedAt ?? lane.updatedAt;
+  return {
+    slotId,
+    slotIndex,
+    status,
+    updatedAt: now,
+    lastTransitionAt,
+    role: lane.role,
+    stage: lane.stage,
+    handoffId: lane.handoffId,
+    laneRunId: lane.id,
+    workerId: lane.workerId,
+    command: lane.command,
+    attempt: lane.attempt,
+    heartbeatAt: lane.heartbeatAt ?? handoff?.heartbeatAt,
+    leaseExpiresAt: lane.leaseExpiresAt ?? handoff?.leaseExpiresAt,
+    completedAt: lane.completedAt,
+    mergeStatus: lane.merge?.status,
+    failureDisposition: status === "dead" ? handoff?.status === "dead_letter" ? "dead_letter" : "requeued" : undefined,
+    failureReason: status === "dead" ? lane.error ?? handoff?.lastFailureReason : undefined
+  };
+}
+
+function inferRuntimeWorkerSlotCount(projectRoot: string, poolId: string): number {
+  const maxIndex = [...loadRuntimeHandoffs(projectRoot), ...loadAgentLaneRuns(projectRoot)]
+    .filter((record) => record.poolId === poolId && record.slotIndex !== undefined)
+    .reduce((max, record) => Math.max(max, record.slotIndex ?? -1), -1);
+  return Math.max(1, Math.min(maxIndex + 1, 6));
+}
+
+function runtimeRecordTime(record: { updatedAt?: string; completedAt?: string; startedAt?: string; createdAt?: string }): number {
+  return Date.parse(record.updatedAt ?? record.completedAt ?? record.startedAt ?? record.createdAt ?? "") || 0;
+}
+
+function runtimeWorkerSlotId(poolId: string, slotIndex: number): string {
+  return `${poolId}:slot-${slotIndex}`;
+}
+
+function runtimeWorkerPoolIdFromEnv(): string | undefined {
+  const value = process.env.RPH_WORKER_POOL_ID?.trim();
+  if (!value) {
+    return undefined;
+  }
+  return /^[A-Za-z0-9._:-]{1,80}$/.test(value) ? value : undefined;
+}
+
+function formatRuntimeWorkerSlotSummary(slots: RuntimeWorkerSlotRecord[]): string {
+  if (slots.length === 0) {
+    return "none";
+  }
+  return slots
+    .map((slot) => `slot-${slot.slotIndex}:${slot.status}${slot.role ? `/${slot.role}` : ""}`)
+    .join(" ");
+}
+
+function runtimeWorkerPoolReadIssue(projectRoot: string): string | null {
+  const filePath = runtimeWorkerPoolFile(projectRoot);
+  if (!fs.existsSync(filePath)) {
+    return null;
+  }
+  try {
+    if (!fs.lstatSync(filePath).isFile()) {
+      return "state file is not a regular file";
+    }
+    JSON.parse(fs.readFileSync(filePath, "utf8"));
+    return null;
+  } catch {
+    return "state file is unreadable JSON";
+  }
+}
+
+type RuntimeWorkerPoolProcessState = "alive" | "dead" | "identity-mismatch" | "unknown";
+
+function runtimeWorkerPoolProcessState(record: RuntimeWorkerPoolRecord): RuntimeWorkerPoolProcessState {
+  if (!processIsAlive(record.pid)) {
+    return "dead";
+  }
+  if (!record.pidStartedAt) {
+    return "unknown";
+  }
+  const startedAt = readProcessStartedAt(record.pid);
+  if (!startedAt) {
+    return "unknown";
+  }
+  return startedAt === record.pidStartedAt ? "alive" : "identity-mismatch";
+}
+
+function printRuntimeWorkerPoolStatus(projectRoot: string, debug: boolean, surface: CommandSurface): void {
+  if (!isRuntimeProjectInitialized(projectRoot)) {
+    console.log("worker pool: project is not initialized");
+    return;
+  }
+  const record = readRuntimeWorkerPool(projectRoot);
+  const readIssue = runtimeWorkerPoolReadIssue(projectRoot);
+  console.log("Worker pool daemon");
+  if (!record && readIssue) {
+    console.log("- status=unreadable");
+    console.log(`- issue=${readIssue}`);
+    console.log(`next: ${agentSurfaceCommand(surface, "pool start")}`);
+    return;
+  }
+  if (!record) {
+    console.log("- status=none");
+    console.log(`next: ${agentSurfaceCommand(surface, "pool start")}`);
+    return;
+  }
+  const processState = runtimeWorkerPoolProcessState(record);
+  console.log(`- status=${record.status} pool=${record.poolId} process=${processState}`);
+  if (record.mode) {
+    console.log(`- mode=${record.mode}`);
+  }
+  if (record.stopMode) {
+    console.log(`- stop_mode=${record.stopMode}`);
+  }
+  console.log(`- concurrency=${record.concurrency} poll_ms=${record.pollMs} idle_ms=${record.idleMs}`);
+  const slotIssue = runtimeWorkerSlotsReadIssue(projectRoot);
+  if (slotIssue) {
+    console.log(`- slots=unreadable (${slotIssue})`);
+  } else {
+    const slots = projectRuntimeWorkerSlots(projectRoot, record.poolId, record.concurrency).slots;
+    console.log(`- slots=${formatRuntimeWorkerSlotSummary(slots)}`);
+  }
+  console.log(`- heartbeat=${record.heartbeatAt}`);
+  console.log(`- cycles=${record.cycles} dispatched=${record.dispatched}`);
+  if (record.logPath) {
+    console.log(`- log=${path.relative(projectRoot, record.logPath) || record.logPath}`);
+  }
+  if (record.lastActionAt) {
+    console.log(`- last_action=${record.lastActionAt}`);
+  }
+  if (record.lastBlocker) {
+    console.log(`- last_blocker=${compactTimelineMessage(record.lastBlocker, 120)}`);
+  }
+  if (record.stopRequestedAt) {
+    console.log(`- stop_requested=${record.stopRequestedAt}`);
+  }
+  if (record.stoppedAt) {
+    console.log(`- stopped=${record.stoppedAt}`);
+  }
+  if (debug) {
+    console.log(`- debug-pid=${record.pid}`);
+  }
+  const next = record.status === "running" || record.status === "stopping"
+    ? agentSurfaceCommand(surface, "pool stop")
+    : agentSurfaceCommand(surface, "pool start");
+  console.log(`next: ${next}`);
+}
+
+async function stopRuntimeWorkerPool(
+  projectRoot: string,
+  options: { reason: string; force?: boolean; drainMs?: number }
+): Promise<void> {
+  if (!isRuntimeProjectInitialized(projectRoot)) {
+    console.log("worker pool stop: project is not initialized");
+    return;
+  }
+  const current = readRuntimeWorkerPool(projectRoot);
+  const readIssue = runtimeWorkerPoolReadIssue(projectRoot);
+  if (!current && readIssue) {
+    console.log(`worker pool stop blocked: ${readIssue}`);
+    console.log("next: inspect or remove .rph/runtime/worker-pool.json");
+    process.exitCode = 1;
+    return;
+  }
+  if (!current || current.status === "stopped" || current.status === "failed") {
+    console.log("worker pool stop: no running pool");
+    return;
+  }
+  const now = new Date().toISOString();
+  const processState = runtimeWorkerPoolProcessState(current);
+  if (processState === "dead") {
+    writeRuntimeWorkerPool(projectRoot, {
+      ...current,
+      status: "stopped",
+      updatedAt: now,
+      heartbeatAt: now,
+      stoppedAt: now,
+      stopReason: "stale pool process is not alive"
+    });
+    refreshRuntimeWorkerSlots(projectRoot, current.poolId, current.concurrency, "available");
+    console.log(`worker pool stop: stale pool marked stopped (${current.poolId})`);
+    return;
+  }
+  if (processState === "identity-mismatch" || (options.force && processState !== "alive")) {
+    writeRuntimeWorkerPool(projectRoot, {
+      ...current,
+      status: "failed",
+      updatedAt: now,
+      heartbeatAt: now,
+      stoppedAt: now,
+      stopReason: processState === "identity-mismatch"
+        ? "pool process identity mismatch; refusing to signal pid"
+        : "pool process identity is unknown; refusing force stop"
+    });
+    refreshRuntimeWorkerSlots(projectRoot, current.poolId, current.concurrency, "pool-draining");
+    console.log(`worker pool stop blocked: process identity ${processState} (${current.poolId})`);
+    process.exitCode = 1;
+    return;
+  }
+  const stopMode = options.force ? "force" : "drain";
+  writeRuntimeWorkerPool(projectRoot, {
+    ...current,
+    status: "stopping",
+    updatedAt: now,
+    stopRequestedAt: now,
+    stopReason: options.reason,
+    stopMode,
+    forceRequestedAt: options.force ? now : current.forceRequestedAt
+  });
+  refreshRuntimeWorkerSlots(projectRoot, current.poolId, current.concurrency, "pool-draining");
+  if (!options.force) {
+    console.log(`worker pool stop requested: ${current.poolId}`);
+    console.log("worker pool stop mode: drain");
+    return;
+  }
+  try {
+    process.kill(current.pid, "SIGTERM");
+    const exited = await waitForRuntimeWorkerPoolExit(current, options.drainMs ?? 2_000);
+    if (!exited) {
+      const failedAt = new Date().toISOString();
+      writeRuntimeWorkerPool(projectRoot, {
+        ...current,
+        status: "failed",
+        updatedAt: failedAt,
+        heartbeatAt: failedAt,
+        stopRequestedAt: now,
+        forceRequestedAt: now,
+        stopReason: "force stop timeout; pool process still alive",
+        stopMode
+      });
+      refreshRuntimeWorkerSlots(projectRoot, current.poolId, current.concurrency, "pool-draining");
+      console.log(`worker pool force stop failed: process still alive (${current.poolId})`);
+      process.exitCode = 1;
+      return;
+    }
+    const stoppedAt = new Date().toISOString();
+    writeRuntimeWorkerPool(projectRoot, {
+      ...current,
+      status: "stopped",
+      updatedAt: stoppedAt,
+      heartbeatAt: stoppedAt,
+      stopRequestedAt: now,
+      forceRequestedAt: now,
+      stoppedAt,
+      stopReason: `${options.reason} (forced)`,
+      stopMode
+    });
+    refreshRuntimeWorkerSlots(projectRoot, current.poolId, current.concurrency, "available");
+    console.log(`worker pool force stop confirmed: ${current.poolId}`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const failedAt = new Date().toISOString();
+    writeRuntimeWorkerPool(projectRoot, {
+      ...current,
+      status: "failed",
+      updatedAt: failedAt,
+      heartbeatAt: failedAt,
+      stopRequestedAt: now,
+      forceRequestedAt: now,
+      stopReason: `force stop failed: ${message}`,
+      stopMode
+    });
+    refreshRuntimeWorkerSlots(projectRoot, current.poolId, current.concurrency, "pool-draining");
+    console.log(`worker pool force stop failed: ${message}`);
+    process.exitCode = 1;
+  }
+}
+
+async function startRuntimeWorkerPoolBackground(projectRoot: string, options: Record<string, string | boolean>): Promise<void> {
+  if (!isRuntimeProjectInitialized(projectRoot)) {
+    console.log("worker pool start: project is not initialized");
+    process.exitCode = 1;
+    return;
+  }
+  const existing = readRuntimeWorkerPool(projectRoot);
+  const readIssue = runtimeWorkerPoolReadIssue(projectRoot);
+  if (!existing && readIssue) {
+    console.log(`worker pool start blocked: ${readIssue}`);
+    console.log("next: inspect or remove .rph/runtime/worker-pool.json");
+    process.exitCode = 1;
+    return;
+  }
+  const existingIsActive = existing && ["starting", "running", "stopping"].includes(existing.status);
+  const existingProcessState = existing ? runtimeWorkerPoolProcessState(existing) : "dead";
+  if (existing && existingIsActive && (existingProcessState === "alive" || existingProcessState === "unknown")) {
+    console.log(`worker pool start blocked: already running (${existing.poolId})`);
+    console.log("next: rph agent pool status");
+    process.exitCode = 1;
+    return;
+  }
+  if (existing && existingIsActive && (existingProcessState === "dead" || existingProcessState === "identity-mismatch")) {
+    console.log(`worker pool start: replacing stale pool ${existing.poolId}`);
+  }
+
+  const cliEntry = process.argv[1];
+  if (!cliEntry) {
+    console.log("worker pool start failed: unable to resolve CLI entrypoint");
+    process.exitCode = 1;
+    return;
+  }
+
+  const logPath = resolveRuntimeWorkerPoolLogPath(projectRoot, optionString(options, "log"));
+  if (!logPath) {
+    console.log("worker pool start failed: --log must resolve inside this project");
+    process.exitCode = 1;
+    return;
+  }
+  appendText(logPath, "");
+  const concurrency = Math.max(1, Math.min(parseOptionalPositiveInt(optionString(options, "concurrency")) ?? 2, 6));
+  const pollMs = Math.max(50, Math.min(parseOptionalPositiveInt(optionString(options, "poll-ms")) ?? 1_000, 30_000));
+  const idleMs = Math.max(0, parseOptionalNonNegativeInt(optionString(options, "idle-ms")) ?? 0);
+  const poolToken = randomUUID();
+  const childArgs = [
+    ...process.execArgv,
+    cliEntry,
+    "agent",
+    "pool",
+    "run",
+    "--concurrency",
+    String(concurrency),
+    "--poll-ms",
+    String(pollMs),
+    "--idle-ms",
+    String(idleMs)
+  ];
+  const maxCycles = parseOptionalPositiveInt(optionString(options, "max-cycles"));
+  if (maxCycles) {
+    childArgs.push("--max-cycles", String(maxCycles));
+  }
+  const laneMaxToolCalls = parseOptionalNonNegativeInt(optionString(options, "max-tool-calls"));
+  if (laneMaxToolCalls !== undefined) {
+    childArgs.push("--max-tool-calls", String(laneMaxToolCalls));
+  }
+
+  let logFd: number | null = null;
+  try {
+    logFd = fs.openSync(logPath, "a");
+    const child = spawn(process.execPath, childArgs, {
+      cwd: projectRoot,
+      env: {
+        ...process.env,
+        RPH_WORKER_POOL_MODE: "background",
+        RPH_WORKER_POOL_LOG: logPath,
+        RPH_WORKER_POOL_TOKEN: poolToken
+      },
+      detached: true,
+      stdio: ["ignore", logFd, logFd]
+    });
+    fs.closeSync(logFd);
+    logFd = null;
+    if (!child.pid) {
+      console.log("worker pool start failed: background process did not expose a pid");
+      process.exitCode = 1;
+      return;
+    }
+    child.unref();
+
+    const started = await waitForRuntimeWorkerPoolStart(projectRoot, child.pid, 2_000);
+    if (!started) {
+      const now = new Date().toISOString();
+      writeRuntimeWorkerPool(projectRoot, {
+        version: 1,
+        poolId: `pool-starting-${child.pid}`,
+        status: "starting",
+        pid: child.pid,
+        pidStartedAt: readProcessStartedAt(child.pid) ?? undefined,
+        poolToken,
+        startedAt: now,
+        updatedAt: now,
+        heartbeatAt: now,
+        mode: "background",
+        logPath,
+        concurrency,
+        pollMs,
+        idleMs,
+        cycles: 0,
+        dispatched: 0,
+        lastActionAt: now,
+        lastBlocker: "background process has not written a running heartbeat yet"
+      });
+    }
+    console.log("worker pool background started");
+    console.log(`worker pool config: concurrency=${concurrency} poll_ms=${pollMs} idle_ms=${idleMs}`);
+    console.log(`worker pool log: ${path.relative(projectRoot, logPath) || logPath}`);
+    if (optionBool(options, "debug")) {
+      console.log(`debug-pid=${child.pid}`);
+    }
+    if (!started) {
+      console.log("worker pool start warning: background process has not written a running heartbeat yet");
+    }
+    console.log("next: rph agent pool status");
+  } catch (error) {
+    if (logFd !== null) {
+      fs.closeSync(logFd);
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    console.log(`worker pool start failed: ${message}`);
+    process.exitCode = 1;
+  }
+}
+
+async function waitForRuntimeWorkerPoolStart(projectRoot: string, pid: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const record = readRuntimeWorkerPool(projectRoot);
+    if (record?.pid === pid && record.status === "running") {
+      return true;
+    }
+    if (!processIsAlive(pid)) {
+      return false;
+    }
+    await sleepMs(50);
+  }
+  return false;
+}
+
+async function waitForRuntimeWorkerPoolExit(record: RuntimeWorkerPoolRecord, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + Math.max(100, timeoutMs);
+  while (Date.now() < deadline) {
+    const processState = runtimeWorkerPoolProcessState(record);
+    if (processState === "dead") {
+      return true;
+    }
+    if (processState === "identity-mismatch") {
+      return false;
+    }
+    await sleepMs(50);
+  }
+  return runtimeWorkerPoolProcessState(record) === "dead";
+}
+
+function printRuntimeWorkerPoolLogs(projectRoot: string, options: Record<string, string | boolean>): void {
+  if (!isRuntimeProjectInitialized(projectRoot)) {
+    console.log("worker pool logs: project is not initialized");
+    return;
+  }
+  const record = readRuntimeWorkerPool(projectRoot);
+  const logPath = record?.logPath ?? runtimeWorkerPoolLogFile(projectRoot);
+  if (!fs.existsSync(logPath)) {
+    console.log("worker pool logs: no log file");
+    console.log(`expected: ${path.relative(projectRoot, logPath) || logPath}`);
+    return;
+  }
+  const limit = parseOptionalPositiveInt(optionString(options, "limit")) ?? 80;
+  const lines = fs.readFileSync(logPath, "utf8").split(/\r?\n/).filter(Boolean);
+  console.log(`Worker pool logs: ${path.relative(projectRoot, logPath) || logPath}`);
+  for (const line of lines.slice(-limit)) {
+    console.log(redactRuntimeLogLine(line));
+  }
+}
+
+function resolveRuntimeWorkerPoolLogPath(projectRoot: string, value: string | undefined): string | null {
+  const target = path.resolve(projectRoot, value ?? runtimeWorkerPoolLogFile(projectRoot));
+  const relative = path.relative(projectRoot, target);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    return null;
+  }
+  return target;
+}
+
+function redactRuntimeLogLine(value: string): string {
+  return value
+    .replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi, "$1<redacted>")
+    .replace(/("(?:api[_-]?key|token|secret|authorization|claimToken|workerSessionId|poolToken)"\s*:\s*")[^"]+(")/gi, "$1<redacted>$2")
+    .replace(/((?:api[_-]?key|token|secret|authorization|claimToken|workerSessionId|poolToken)[=:]\s*)[^,\s}]+/gi, "$1<redacted>");
+}
+
+async function runRuntimeWorkerPool(projectRoot: string, options: Record<string, string | boolean>): Promise<void> {
+  if (!isRuntimeProjectInitialized(projectRoot)) {
+    console.log("worker pool: project is not initialized");
+    process.exitCode = 1;
+    return;
+  }
+  const existing = readRuntimeWorkerPool(projectRoot);
+  const readIssue = runtimeWorkerPoolReadIssue(projectRoot);
+  if (!existing && readIssue) {
+    console.log(`worker pool blocked: ${readIssue}`);
+    console.log("next: inspect or remove .rph/runtime/worker-pool.json");
+    process.exitCode = 1;
+    return;
+  }
+  const existingIsActive = existing && ["starting", "running", "stopping"].includes(existing.status);
+  const existingProcessState = existing ? runtimeWorkerPoolProcessState(existing) : "dead";
+  if (
+    existing &&
+    existingIsActive &&
+    (existingProcessState === "alive" || existingProcessState === "unknown") &&
+    existing.pid !== process.pid
+  ) {
+    console.log(`worker pool blocked: already running (${existing.poolId})`);
+    console.log("next: rph agent pool status");
+    process.exitCode = 1;
+    return;
+  }
+  if (existing && existingIsActive && (existingProcessState === "dead" || existingProcessState === "identity-mismatch")) {
+    console.log(`worker pool: replacing stale pool ${existing.poolId}`);
+  }
+
+  const concurrency = Math.max(1, Math.min(parseOptionalPositiveInt(optionString(options, "concurrency")) ?? 2, 6));
+  const pollMs = Math.max(50, Math.min(parseOptionalPositiveInt(optionString(options, "poll-ms")) ?? 1_000, 30_000));
+  const idleMs = Math.max(0, parseOptionalNonNegativeInt(optionString(options, "idle-ms")) ?? 0);
+  const maxCycles = parseOptionalPositiveInt(optionString(options, "max-cycles"));
+  const poolId = runtimeWorkerPoolIdFromEnv() ?? `pool-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const poolToken = process.env.RPH_WORKER_POOL_TOKEN ?? randomUUID();
+  const startedAt = new Date().toISOString();
+  let record: RuntimeWorkerPoolRecord = {
+    version: 1,
+    poolId,
+    status: "running",
+    pid: process.pid,
+    pidStartedAt: readProcessStartedAt(process.pid) ?? undefined,
+    poolToken,
+    startedAt,
+    updatedAt: startedAt,
+    heartbeatAt: startedAt,
+    mode: process.env.RPH_WORKER_POOL_MODE === "background" || process.env.RPH_WORKER_POOL_MODE === "service"
+      ? process.env.RPH_WORKER_POOL_MODE
+      : "foreground",
+    logPath: process.env.RPH_WORKER_POOL_LOG ? path.resolve(process.env.RPH_WORKER_POOL_LOG) : undefined,
+    concurrency,
+    pollMs,
+    idleMs,
+    cycles: 0,
+    dispatched: 0,
+    lastActionAt: startedAt,
+    lastBlocker: null
+  };
+  writeRuntimeWorkerPool(projectRoot, record);
+  refreshRuntimeWorkerSlots(projectRoot, poolId, concurrency, "available");
+  console.log(`worker pool started: ${poolId}`);
+  console.log(`worker pool config: concurrency=${concurrency} poll_ms=${pollMs} idle_ms=${idleMs}`);
+
+  let idleSince = Date.now();
+  let stopReason = "stopped";
+  try {
+    while (true) {
+      const current = readRuntimeWorkerPool(projectRoot);
+      if (current?.poolId === poolId && current.poolToken === poolToken && current.stopRequestedAt) {
+        stopReason = current.stopReason ?? "stop requested";
+        record = {
+          ...record,
+          status: "stopping",
+          updatedAt: current.updatedAt,
+          heartbeatAt: current.heartbeatAt,
+          stopRequestedAt: current.stopRequestedAt,
+          stopReason,
+          stopMode: current.stopMode
+        };
+        break;
+      }
+      const heartbeatAt = new Date().toISOString();
+      record = {
+        ...record,
+        status: "running",
+        updatedAt: heartbeatAt,
+        heartbeatAt
+      };
+      writeRuntimeWorkerPool(projectRoot, record);
+      refreshRuntimeWorkerSlots(projectRoot, poolId, concurrency, current?.stopRequestedAt ? "pool-draining" : "available");
+
+      console.log(`worker pool cycle ${record.cycles + 1}`);
+      const result = await runAgentOrchestrationLoop(projectRoot, resolveRuntimeSessionId(projectRoot), {
+        maxSteps: concurrency,
+        concurrency,
+        laneMaxToolCalls: parseOptionalNonNegativeInt(optionString(options, "max-tool-calls")),
+        handoffsOnly: true,
+        poolId
+      });
+      const now = new Date().toISOString();
+      record = {
+        ...record,
+        cycles: record.cycles + 1,
+        dispatched: record.dispatched + result.executed,
+        updatedAt: now,
+        heartbeatAt: now,
+        lastBlocker: result.blocker
+      };
+      if (result.executed > 0) {
+        record.lastActionAt = now;
+        idleSince = Date.now();
+      }
+      writeRuntimeWorkerPool(projectRoot, record);
+      refreshRuntimeWorkerSlots(projectRoot, poolId, concurrency, result.executed > 0 ? "available" : "no-claimable-handoff");
+
+      if (maxCycles && record.cycles >= maxCycles) {
+        stopReason = `max cycles reached (${maxCycles})`;
+        break;
+      }
+      if (idleMs > 0 && result.executed === 0 && Date.now() - idleSince >= idleMs) {
+        stopReason = `idle timeout (${idleMs}ms)`;
+        break;
+      }
+      await sleepMs(pollMs);
+    }
+    const stoppedAt = new Date().toISOString();
+    const activeWork = runtimeWorkerPoolActiveWorkSummary(projectRoot);
+    if (activeWork) {
+      writeRuntimeWorkerPool(projectRoot, {
+        ...record,
+        status: "failed",
+        updatedAt: stoppedAt,
+        heartbeatAt: stoppedAt,
+        stoppedAt,
+        stopReason: `pool stopped with unfinished work: ${activeWork}`
+      });
+      refreshRuntimeWorkerSlots(projectRoot, poolId, concurrency, "pool-draining");
+      console.log(`worker pool failed: unfinished work remains (${activeWork})`);
+      process.exitCode = 1;
+      return;
+    }
+    writeRuntimeWorkerPool(projectRoot, {
+      ...record,
+      status: "stopped",
+      updatedAt: stoppedAt,
+      heartbeatAt: stoppedAt,
+      stoppedAt,
+      stopReason
+    });
+    refreshRuntimeWorkerSlots(projectRoot, poolId, concurrency, "available");
+    console.log(`worker pool stopped: ${stopReason}`);
+  } catch (error) {
+    const failedAt = new Date().toISOString();
+    const message = error instanceof Error ? error.message : String(error);
+    writeRuntimeWorkerPool(projectRoot, {
+      ...record,
+      status: "failed",
+      updatedAt: failedAt,
+      heartbeatAt: failedAt,
+      stoppedAt: failedAt,
+      stopReason: message
+    });
+    refreshRuntimeWorkerSlots(projectRoot, poolId, concurrency, "pool-draining");
+    throw error;
+  }
+}
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function manualAgentWorkerId(): string {
+  return "manual-runtime-agent";
+}
+
+function agentWorkerIdFromOptions(options: Record<string, string | boolean>): string {
+  return optionString(options, "worker-id") ?? manualAgentWorkerId();
+}
+
+function leaseMsFromOptions(options: Record<string, string | boolean>): number {
+  return parseOptionalPositiveInt(optionString(options, "lease-ms")) ?? 10 * 60 * 1000;
 }
 
 function appendRuntimeLog(projectRoot: string, sessionId: string, command: string, ok: boolean): void {
@@ -572,8 +3794,12 @@ function appendRuntimeLog(projectRoot: string, sessionId: string, command: strin
     command,
     ok
   };
-  fs.appendFileSync(path.join(runtimeDir, `${sessionId}.jsonl`), `${JSON.stringify(record)}\n`);
+  appendText(path.join(runtimeDir, `${sessionId}.jsonl`), `${JSON.stringify(record)}\n`);
   if (isRuntimeProjectInitialized(projectRoot) && !isExitCommand(command)) {
+    const session = loadRuntimeSession(projectRoot);
+    if (ok && session?.status === "blocked" && !command.trim().startsWith("/")) {
+      return;
+    }
     recordRuntimeSessionEvent(projectRoot, sessionId, {
       kind: ok ? "checkpoint" : "error",
       message: command,
@@ -593,30 +3819,407 @@ async function handleRuntimeAgentInput(
     recordRuntimeSessionEvent(projectRoot, sessionId, {
       kind: "plan",
       message: plan.reason,
-      ok: plan.kind !== "blocked",
+      ok: true,
       plan
     });
   }
-  if (plan.kind === "blocked") {
-    console.log(`[blocked] ${plan.reason}`);
+  if (plan.kind !== "chat" && plan.command) {
+    console.log(`agent proposed command: ${plan.command}`);
+  }
+  const naturalControl = await handleRuntimeNaturalControl(projectRoot, sessionId, userInput, plan);
+  if (naturalControl.handled) {
+    return naturalControl.ok;
+  }
+  if (plan.kind !== "chat" && plan.command) {
+    console.log("auto-run: skipped for conversational input; type the slash command to run it.");
+  }
+  if (!safeHasReadyAiProvider(projectRoot)) {
+    printMissingAiAgentGuidance(projectRoot, plan.command, "slash");
     return false;
   }
-  if (plan.kind !== "chat" && plan.command && plan.safeToAutoRun) {
-    console.log(`agent action: ${plan.command}`);
-    const parsed = parseCli(parseCommandLine(plan.command));
-    const ok = await runParsedCommand(projectRoot, parsed, false);
-    if (isRuntimeProjectInitialized(projectRoot)) {
-      recordRuntimeSessionEvent(projectRoot, sessionId, {
-        kind: "command",
-        message: plan.command,
-        ok,
-        plan
-      });
-      updateRuntimeContinuation(projectRoot, sessionId, ok);
-    }
-    return ok;
-  }
   return handleRuntimeChat(projectRoot, sessionId, chatHistory, userInput);
+}
+
+async function handleRuntimeNaturalControl(
+  projectRoot: string,
+  sessionId: string,
+  userInput: string,
+  plan: ReturnType<typeof createRuntimePlan>
+): Promise<{ handled: boolean; ok: boolean }> {
+  const intent = naturalRuntimeIntent(userInput);
+  if (intent === "approve") {
+    return approveRuntimeNaturalPendingAction(projectRoot, sessionId);
+  }
+  if (intent === "reject") {
+    return rejectRuntimeNaturalPendingAction(projectRoot, sessionId);
+  }
+  const command = naturalWorkflowCommand(projectRoot, intent, plan);
+  if (!command) {
+    return { handled: false, ok: false };
+  }
+  if (!isSafeNaturalRuntimeCommand(command)) {
+    console.log("auto-run: blocked because the natural-language command is external or unsupported");
+    return { handled: true, ok: false };
+  }
+  console.log(`agent action: ${command}`);
+  console.log("execution-policy: natural runtime control");
+  const ok = await runParsedCommand(projectRoot, parseCli(parseCommandLine(command)), false);
+  if (isRuntimeProjectInitialized(projectRoot) && !isAgentOrchestrationCommand(command)) {
+    recordRuntimeSessionEvent(projectRoot, sessionId, {
+      kind: ok ? "command" : "error",
+      message: command,
+      ok,
+      plan
+    });
+  }
+  return { handled: true, ok };
+}
+
+function isAgentOrchestrationCommand(command: string): boolean {
+  return /^\/agent (?:run|continue|recover)\b/.test(command.trim());
+}
+
+type NaturalRuntimeIntent = "start" | "continue" | "approve" | "reject" | "status" | "session" | "productDefinition";
+
+function naturalRuntimeIntent(input: string): NaturalRuntimeIntent | null {
+  const text = normalizeNaturalRuntimeText(input);
+  if (!text || /[?？]/.test(input)) {
+    return null;
+  }
+  const exact: Record<NaturalRuntimeIntent, string[]> = {
+    start: ["시작", "시작해", "시작해줘", "start", "start now", "begin", "go"],
+    continue: [
+      "계속",
+      "계속해",
+      "계속해줘",
+      "계속 진행",
+      "계속 진행해",
+      "계속 진행해줘",
+      "다음 작업 진행",
+      "다음 작업 진행해",
+      "다음 작업 진행해줘",
+      "이어해",
+      "이어해줘",
+      "continue",
+      "continue now",
+      "resume",
+      "resume now",
+      "지난 세션 이어서",
+      "이전 세션 이어서",
+      "지난 작업 이어서",
+      "이전 작업 이어서",
+      "세션 이어서",
+      "이어서 진행",
+      "이어서 진행해",
+      "이어서 진행해줘",
+      "다음 단계 진행",
+      "다음 단계 진행해",
+      "다음 단계 진행해줘",
+      "다음 단계로 넘어가",
+      "진행 재개",
+      "진행 재개해",
+      "pick up where we left off",
+      "continue last session"
+    ],
+    approve: ["승인", "승인해", "승인해줘", "허용", "허용해", "approve", "approve it", "confirm", "allow"],
+    reject: ["거절", "거절해", "거절해줘", "반려", "반려해", "reject", "reject it", "deny", "decline"],
+    status: [
+      "현재 상태",
+      "현재 상태 보여줘",
+      "상태 보여줘",
+      "상태 확인",
+      "상태 확인해",
+      "status",
+      "show status",
+      "current status"
+    ],
+    session: [
+      "세션 보여줘",
+      "지난 세션 보여줘",
+      "이전 세션 보여줘",
+      "세션 타임라인",
+      "세션 리플레이",
+      "replay session",
+      "show session",
+      "session timeline"
+    ],
+    productDefinition: [
+      "제품 정의 시작",
+      "제품 정의 시작해",
+      "제품 정의 시작해줘",
+      "제품 정의 만들어줘",
+      "제품 정의 초안 만들어줘",
+      "product definition start",
+      "start product definition",
+      "draft product definition"
+    ]
+  };
+  for (const [intent, phrases] of Object.entries(exact) as Array<[NaturalRuntimeIntent, string[]]>) {
+    if (phrases.includes(text)) {
+      return intent;
+    }
+  }
+  return null;
+}
+
+function normalizeNaturalRuntimeText(input: string): string {
+  return input
+    .trim()
+    .toLowerCase()
+    .replace(/[.!。]+$/g, "")
+    .replace(/\s+/g, " ");
+}
+
+function naturalWorkflowCommand(
+  projectRoot: string,
+  intent: NaturalRuntimeIntent | null,
+  plan?: ReturnType<typeof createRuntimePlan>
+): string | undefined {
+  if (intent === "start") {
+    return canRunNaturalStart(projectRoot) ? "/pm start" : undefined;
+  }
+  if (intent === "status") {
+    return "/status";
+  }
+  if (intent === "session") {
+    return "/agent replay";
+  }
+  if (intent === "productDefinition") {
+    return naturalProductDefinitionCommand(projectRoot, plan);
+  }
+  if (intent === "continue") {
+    if (shouldPreferNaturalRecover(projectRoot)) {
+      return "/agent recover";
+    }
+    if (canRunNaturalContinue(projectRoot)) {
+      return "/agent run --steps 6";
+    }
+    return canRunNaturalRecover(projectRoot) ? "/agent recover" : undefined;
+  }
+  return undefined;
+}
+
+function naturalProductDefinitionCommand(
+  projectRoot: string,
+  plan?: ReturnType<typeof createRuntimePlan>
+): string | undefined {
+  if (!isRuntimeProjectInitialized(projectRoot)) {
+    return "/pm start";
+  }
+  const state = loadState(projectRoot);
+  if (state.currentStage === "SETUP") {
+    return "/pm start";
+  }
+  const planned = plan?.command?.trim();
+  if (planned && /^\/pm draft product-definition\b/.test(planned)) {
+    return planned;
+  }
+  return safeHasReadyAiProvider(projectRoot) ? "/pm draft product-definition --ai" : "/pm draft product-definition";
+}
+
+function canRunNaturalStart(projectRoot: string): boolean {
+  if (!isRuntimeProjectInitialized(projectRoot)) {
+    return true;
+  }
+  const state = loadState(projectRoot);
+  const session = loadRuntimeSession(projectRoot);
+  return state.currentStage === "SETUP" && !state.paused && !hasPendingNaturalGate(projectRoot, session);
+}
+
+function canRunNaturalContinue(projectRoot: string): boolean {
+  if (!isRuntimeProjectInitialized(projectRoot)) {
+    return false;
+  }
+  const state = loadState(projectRoot);
+  const session = loadRuntimeSession(projectRoot);
+  if (state.paused || hasPendingNaturalGate(projectRoot, session)) {
+    return false;
+  }
+  const nextAction = selectNextOrchestrationAction(projectRoot);
+  return typeof nextAction.command === "string" && !nextAction.blocker && isAutonomousLocalCommand(nextAction.command);
+}
+
+function canRunNaturalRecover(projectRoot: string): boolean {
+  if (!isRuntimeProjectInitialized(projectRoot)) {
+    return false;
+  }
+  const session = loadRuntimeSession(projectRoot);
+  return Boolean(session && runtimeRecoveryState(projectRoot, session).actionable);
+}
+
+function shouldPreferNaturalRecover(projectRoot: string): boolean {
+  if (!isRuntimeProjectInitialized(projectRoot)) {
+    return false;
+  }
+  const session = loadRuntimeSession(projectRoot);
+  if (!session) {
+    return false;
+  }
+  return session.status !== "active"
+    || Boolean(session.waitCondition)
+    || Boolean(session.blocker)
+    || Boolean(session.pendingExternalActionId)
+    || Boolean(session.handoffPacket);
+}
+
+function hasPendingNaturalGate(projectRoot: string, session: RuntimeSessionManifest | null): boolean {
+  if (session?.pendingExternalActionId) {
+    return true;
+  }
+  if (session?.waitCondition?.kind === "external_live_write" || session?.waitCondition?.kind === "user_approval") {
+    return true;
+  }
+  return pendingRuntimeExternalActions(projectRoot).length > 0;
+}
+
+function isSafeNaturalRuntimeCommand(command: string): boolean {
+  if (classifyMutableAgentCommand(command) || isUserApprovalAgentCommand(command)) {
+    return false;
+  }
+  try {
+    const parsed = parseCli(parseCommandLine(command));
+    switch (parsed.command) {
+      case "init":
+      case "setup":
+      case "status":
+      case "next":
+      case "help":
+      case "productize":
+      case "pm":
+      case "pd":
+      case "fe":
+      case "be":
+      case "qa":
+        return true;
+      case "agent":
+        return ["run", "continue", "recover", "status", "handoffs", "session", "replay"].includes(parsed.subcommand ?? "status");
+      case "docs":
+        return ["list", "show", "diff"].includes(parsed.subcommand ?? "");
+      default:
+        return false;
+    }
+  } catch {
+    return false;
+  }
+}
+
+async function approveRuntimeNaturalPendingAction(
+  projectRoot: string,
+  sessionId: string
+): Promise<{ handled: boolean; ok: boolean }> {
+  if (!isRuntimeProjectInitialized(projectRoot)) {
+    console.log("natural approval: no initialized project");
+    return { handled: true, ok: false };
+  }
+  const pendingExternal = pendingRuntimeExternalActions(projectRoot);
+  const approvalCommands = pendingUserApprovalCommands(projectRoot);
+  if (pendingExternal.length > 0 && approvalCommands.length > 0) {
+    console.log("natural approval: multiple pending gate types");
+    pendingExternal.forEach((record) => console.log(`- external action: ${record.id}: ${record.command}`));
+    approvalCommands.forEach((command) => console.log(`- approval target: ${command}`));
+    console.log("명확히 선택하려면 /agent approve-action <action-id> 또는 해당 승인 명령을 직접 입력하세요.");
+    return { handled: true, ok: false };
+  }
+  if (pendingExternal.length === 1) {
+    console.log(`natural approval: external action ${pendingExternal[0].id}`);
+    const ok = await approveAndExecuteRuntimeAction(projectRoot, pendingExternal[0].id, "user");
+    return { handled: true, ok };
+  }
+  if (pendingExternal.length > 1) {
+    console.log("natural approval: multiple pending external actions");
+    pendingExternal.forEach((record) => console.log(`- ${record.id}: ${record.command}`));
+    console.log("명확히 선택하려면 /agent approve-action <action-id> 를 사용하세요.");
+    return { handled: true, ok: false };
+  }
+  if (approvalCommands.length === 1) {
+    const command = approvalCommands[0];
+    console.log(`natural approval: ${command}`);
+    const ok = await runParsedCommand(projectRoot, parseCli(parseCommandLine(command)), false);
+    recordRuntimeSessionEvent(projectRoot, sessionId, {
+      kind: ok ? "command" : "error",
+      message: command,
+      ok,
+      plan: planAgentAction({
+        text: command,
+        initialized: true,
+        currentStage: loadState(projectRoot).currentStage
+      })
+    });
+    return { handled: true, ok };
+  }
+  if (approvalCommands.length > 1) {
+    console.log("natural approval: multiple pending approval targets");
+    approvalCommands.forEach((command) => console.log(`- ${command}`));
+    console.log("명확히 선택하려면 해당 승인 명령을 직접 입력하세요.");
+    return { handled: true, ok: false };
+  }
+  console.log("natural approval: pending approval not found");
+  return { handled: true, ok: false };
+}
+
+function rejectRuntimeNaturalPendingAction(
+  projectRoot: string,
+  sessionId: string
+): { handled: boolean; ok: boolean } {
+  if (!isRuntimeProjectInitialized(projectRoot)) {
+    console.log("natural rejection: no initialized project");
+    return { handled: true, ok: false };
+  }
+  const pendingExternal = pendingRuntimeExternalActions(projectRoot);
+  if (pendingExternal.length === 1) {
+    const record = rejectRuntimeAction(projectRoot, pendingExternal[0].id, "rejected by natural-language user input", "user");
+    updateRuntimeSession(projectRoot, sessionId, {
+      pendingExternalActionId: null,
+      blocker: null,
+      note: `external action rejected: ${record.id}`
+    });
+    console.log(`natural rejection: external action ${record.id}`);
+    console.log(`reason: ${record.rejectReason}`);
+    return { handled: true, ok: true };
+  }
+  if (pendingExternal.length > 1) {
+    console.log("natural rejection: multiple pending external actions");
+    pendingExternal.forEach((record) => console.log(`- ${record.id}: ${record.command}`));
+    console.log("명확히 선택하려면 /agent reject-action <action-id> 를 사용하세요.");
+    return { handled: true, ok: false };
+  }
+  console.log("natural rejection: pending external action not found");
+  return { handled: true, ok: false };
+}
+
+function pendingRuntimeExternalActions(projectRoot: string): RuntimeActionApprovalRecord[] {
+  const session = loadRuntimeSession(projectRoot);
+  if (!session || session.waitCondition?.kind !== "external_live_write") {
+    return [];
+  }
+  const pending = loadRuntimeActionApprovals(projectRoot).filter((record) =>
+    record.status === "pending" && (!record.sessionId || record.sessionId === session.sessionId)
+  );
+  if (!session.pendingExternalActionId) {
+    return pending;
+  }
+  return pending.filter((record) => record.id === session.pendingExternalActionId);
+}
+
+function pendingUserApprovalCommands(projectRoot: string): string[] {
+  const state = loadState(projectRoot);
+  const stage = WORKFLOW_STAGES[state.currentStage];
+  const next = nextStage(state);
+  const stages = [stage, ...(next ? [WORKFLOW_STAGES[next]] : [])];
+  const documentCommands = Array.from(new Set(stages.flatMap((item) => item.requiredApprovals)))
+    .filter((docId) => state.documents[docId]?.currentVersion && state.documents[docId]?.status !== "approved")
+    .map((docId) => documentApprovalCommand(docId));
+  const designCommands = Array.from(new Set(stages.flatMap((item) => item.requiredDesignApprovals)))
+    .filter((artifactId) => state.designArtifacts?.[artifactId]?.currentVersion && state.designArtifacts?.[artifactId]?.status !== "approved")
+    .map((artifactId) => `/pd approve ${artifactId}`);
+  return [...documentCommands, ...designCommands];
+}
+
+function documentApprovalCommand(docId: DocumentId): string {
+  if ([FE_SPEC_DOC, BE_SPEC_DOC, API_CONTRACT_DOC, FE_SPRINT_PLAN_DOC, BE_SPRINT_PLAN_DOC].includes(docId)) {
+    return approvalCommandForEngineeringDoc(docId);
+  }
+  return `/docs approve ${docId}`;
 }
 
 async function handleRuntimeChat(
@@ -651,11 +4254,17 @@ async function handleRuntimeChat(
     chatHistory.splice(0, chatHistory.length - 24);
   }
   if (isRuntimeProjectInitialized(projectRoot)) {
-    writeAiChatTurnRecord(projectRoot, createAiChatTurnRecord(turnResult.result, sessionId, userInput, turnResult.prompt));
+    writeAiChatTurnRecord(projectRoot, createAiChatTurnRecord(turnResult.result, sessionId, userInput, turnResult.prompt, turnResult.turn.id));
   }
   console.log("");
+  printAiProviderFallbackNotice(turnResult.result);
   console.log(turnResult.text.trim());
-  await runAgentCommandProposal(projectRoot, turnResult.turn.proposedCommand);
+  await runAgentCommandProposal(projectRoot, turnResult.turn.proposedCommand, {
+    sessionId,
+    executeAutonomousLocalProposals: true,
+    executeReadOnlyProposals: true
+  });
+  runAgentHandoffProposal(projectRoot, sessionId, turnResult.turn.proposedHandoff);
   console.log("");
   return true;
 }
@@ -670,61 +4279,1986 @@ async function handleAsk(
     throw new Error("usage: rph ask <message> 또는 rph ask --prompt <message>");
   }
   const plan = createRuntimePlan(projectRoot, prompt);
+  const sessionId = resolveRuntimeSessionId(projectRoot);
+  const executePlannedCommand = optionBool(options, "execute");
+  if (executePlannedCommand) {
+    const naturalControl = await handleRuntimeNaturalControl(projectRoot, sessionId, prompt, plan);
+    if (naturalControl.handled) {
+      return;
+    }
+  }
   if (plan.kind === "blocked") {
     console.log(`[blocked] ${plan.reason}`);
     return;
   }
-  if (plan.kind !== "chat" && plan.command && plan.safeToAutoRun) {
+  if (plan.kind !== "chat" && plan.command && plan.safeToAutoRun && executePlannedCommand) {
+    if (shouldBlockUnsafeNaturalPlanExecution(prompt, plan.command)) {
+      console.log("auto-run: blocked because the workflow-control intent is not an exact execution phrase");
+      return;
+    }
     console.log(`agent action: ${plan.command}`);
     const parsed = parseCli(parseCommandLine(plan.command));
-    await runParsedCommand(projectRoot, parsed, false);
+    const ok = await runParsedCommand(projectRoot, parsed, false);
+    if (ok && executePlannedCommand && optionBool(options, "loop") && isRuntimeProjectInitialized(projectRoot)) {
+      await runAgentOrchestrationLoop(projectRoot, sessionId, {
+        maxSteps: loopMaxSteps(options),
+        concurrency: loopConcurrency(options),
+        laneMaxToolCalls: parseOptionalNonNegativeInt(optionString(options, "max-tool-calls"))
+      });
+    }
     return;
   }
+  if (plan.kind !== "chat" && plan.command) {
+    console.log(`agent proposed command: ${plan.command}`);
+    console.log(executePlannedCommand
+      ? "auto-run: blocked because the command is not marked safe"
+      : "auto-run: skipped for conversational input; run the slash command or pass --execute");
+    if (!safeHasReadyAiProvider(projectRoot)) {
+      return;
+    }
+  }
   const config = loadRuntimeChatConfig(projectRoot);
-  const sessionId = `ask-${Date.now()}`;
+  if (!hasReadyAiProvider(config)) {
+    printMissingAiAgentGuidance(projectRoot, plan.command);
+    return;
+  }
+  const chatHistory = loadRuntimeChatHistory(projectRoot, sessionId);
   const turnResult = await executeAgentTurn({
     projectRoot,
     sessionId,
     userInput: prompt,
-    history: [],
+    history: chatHistory,
     config,
     system: agentChatSystemPrompt(),
     maxOutputTokens: parseOptionalPositiveInt(optionString(options, "max-tokens")) ?? 1800
   });
   if (isRuntimeProjectInitialized(projectRoot)) {
-    writeAiChatTurnRecord(projectRoot, createAiChatTurnRecord(turnResult.result, sessionId, prompt, turnResult.prompt));
+    writeAiChatTurnRecord(projectRoot, createAiChatTurnRecord(turnResult.result, sessionId, prompt, turnResult.prompt, turnResult.turn.id));
   }
+  printAiProviderFallbackNotice(turnResult.result);
   console.log(turnResult.text.trim());
-  await runAgentCommandProposal(projectRoot, turnResult.turn.proposedCommand);
+  const executed = await runAgentCommandProposal(projectRoot, turnResult.turn.proposedCommand, {
+    sessionId,
+    executeLocalMutations: executePlannedCommand
+  });
+  runAgentHandoffProposal(projectRoot, sessionId, turnResult.turn.proposedHandoff);
+  if (executed && executePlannedCommand && optionBool(options, "loop") && isRuntimeProjectInitialized(projectRoot)) {
+    await runAgentOrchestrationLoop(projectRoot, sessionId, {
+      maxSteps: loopMaxSteps(options),
+      concurrency: loopConcurrency(options),
+      laneMaxToolCalls: parseOptionalNonNegativeInt(optionString(options, "max-tool-calls"))
+    });
+  }
+}
+
+function shouldBlockUnsafeNaturalPlanExecution(input: string, command: string): boolean {
+  const trimmed = input.trim();
+  if (!trimmed || trimmed.startsWith("/")) {
+    return false;
+  }
+  if (hasNaturalNegation(trimmed)) {
+    return true;
+  }
+  if (/^\/(?:agent (?:run|continue)|resume|pm start)\b/.test(command.trim())) {
+    const intent = naturalRuntimeIntent(trimmed);
+    if (command.trim().startsWith("/pm start")) {
+      return intent !== "start";
+    }
+    return intent !== "continue";
+  }
+  return false;
+}
+
+function hasNaturalNegation(input: string): boolean {
+  const text = normalizeNaturalRuntimeText(input);
+  return /(?:하지마|하지 말|말고|나중에|아직|보류|don't|do not|not yet|later|hold off)/i.test(text)
+    || /\bnot\b/i.test(text)
+    || /(?:^|\s)안\s*\S+/.test(text);
+}
+
+async function handleAgentRun(projectRoot: string, options: Record<string, string | boolean>): Promise<void> {
+  if (printRuntimeHandoffsReadIssue(projectRoot)) {
+    return;
+  }
+  const sessionId = resolveRuntimeSessionId(projectRoot);
+  await runAgentOrchestrationLoop(projectRoot, sessionId, {
+    maxSteps: loopMaxSteps(options),
+    concurrency: loopConcurrency(options),
+    laneMaxToolCalls: parseOptionalNonNegativeInt(optionString(options, "max-tool-calls"))
+  });
+}
+
+async function handleStart(
+  projectRoot: string,
+  args: string[],
+  options: Record<string, string | boolean>,
+  context: CommandContext = {}
+): Promise<void> {
+  const message = args.join(" ").trim();
+  if (!isRuntimeProjectInitialized(projectRoot)) {
+    if (shouldStartLaunchSetup(options, context)) {
+      console.log("RPH start: setup required");
+      console.log("launching: rph setup auto --live");
+      const projectName = optionString(options, "project-name") ?? (path.basename(projectRoot) || "RPH Project");
+      initProject(projectRoot, { projectName });
+      console.log(`RPH project initialized: ${projectName}`);
+      const setupOptions = { ...options, live: true };
+      await runAutoSetupWizard(projectRoot, setupOptions, context);
+      if (message) {
+        await handleAsk(projectRoot, [message], options);
+        return;
+      }
+      if (process.stdin.isTTY && process.stdout.isTTY && safeHasReadyAiProvider(projectRoot)) {
+        console.log("handoff: entering runtime");
+        await runRuntimeShell(projectRoot);
+      }
+      return;
+    }
+    if (process.stdin.isTTY && process.stdout.isTTY) {
+      console.log("RPH start: setup required");
+      console.log("launching: rph setup auto --live");
+      const projectName = optionString(options, "project-name") ?? (path.basename(projectRoot) || "RPH Project");
+      initProject(projectRoot, { projectName });
+      console.log(`RPH project initialized: ${projectName}`);
+      const setupOptions = { ...options, live: true };
+      await runAutoSetupWizard(projectRoot, setupOptions, context);
+      if (safeHasReadyAiProvider(projectRoot)) {
+        console.log("handoff: entering runtime");
+        await runRuntimeShell(projectRoot);
+      } else {
+        console.log("handoff: setup complete");
+        console.log("next: rph setup auto --live 또는 rph pm start");
+      }
+      return;
+    }
+    console.log("RPH start: setup required");
+    console.log("next: rph setup auto --live");
+    console.log("fallback: rph pm start");
+    console.log("help: rph help setup");
+    return;
+  }
+  if (message) {
+    await handleAsk(projectRoot, [message], options);
+    return;
+  }
+  if (!safeHasReadyAiProvider(projectRoot)) {
+    printMissingAiAgentGuidance(projectRoot, "/setup auto");
+    return;
+  }
+  if (process.stdin.isTTY) {
+    await runRuntimeShell(projectRoot);
+    return;
+  }
+  await handleAsk(projectRoot, ["현재 상태를 보고 다음으로 할 일을 제안해줘"], options);
+}
+
+function shouldStartLaunchSetup(options: Record<string, string | boolean>, context: CommandContext): boolean {
+  return optionBool(options, "setup")
+    || optionBool(options, "live")
+    || optionBool(options, "from-env")
+    || Boolean(optionString(options, "ai") ?? optionString(options, "provider") ?? optionString(options, "mcp"))
+    || Boolean(context.prompter);
+}
+
+interface OrchestrationLoopOptions {
+  maxSteps: number;
+  concurrency: number;
+  laneMaxToolCalls?: number;
+  handoffsOnly?: boolean;
+  poolId?: string;
+}
+
+async function runAgentOrchestrationLoop(
+  projectRoot: string,
+  sessionId: string,
+  options: OrchestrationLoopOptions
+): Promise<OrchestrationLoopResult> {
+  const maxSteps = Math.max(1, Math.min(options.maxSteps, 12));
+  const concurrency = Math.max(1, Math.min(options.concurrency, 6));
+  let executed = 0;
+  let stoppedWithBlocker: string | null = null;
+  console.log(`orchestration loop: max_steps=${maxSteps} concurrency=${concurrency}`);
+  printReapedDeadWorkerLeases(reapDeadHandoffWorkerLeases(projectRoot));
+  const reattached = integratePendingCompletedLaneResults(projectRoot);
+  if (reattached) {
+    printIntegratedPendingLaneResults(reattached, "orchestration");
+    materializeRuntimeHandoffsFromSession(projectRoot, reconcileRuntimeStageQueue(projectRoot, loadRuntimeSession(projectRoot)));
+    if (isRuntimeProjectInitialized(projectRoot)) {
+      recordRuntimeSessionEvent(projectRoot, sessionId, {
+        kind: reattached.status === "blocked" ? "error" : "checkpoint",
+        message: `reattached ${reattached.mergedRunIds.length}/${reattached.runIds.length} pending lane result(s)`,
+        ok: reattached.status !== "blocked"
+      });
+      updateRuntimeContinuation(projectRoot, sessionId, reattached.status !== "blocked");
+    }
+    if (reattached.status === "blocked") {
+      stoppedWithBlocker = `pending lane result integration blocked: ${reattached.failedRunIds.join(", ")}`;
+      console.log(`orchestration blocked: ${stoppedWithBlocker}`);
+    }
+    executed += 1;
+  }
+  while (!stoppedWithBlocker && executed < maxSteps) {
+    const actions = selectNextOrchestrationActions(projectRoot, Math.min(concurrency, maxSteps - executed));
+    if (actions.length === 0) {
+      stoppedWithBlocker = "no executable local action";
+      console.log(`orchestration blocked: ${stoppedWithBlocker}`);
+      break;
+    }
+    if (options.handoffsOnly && actions.every((action) => action.source !== "handoff")) {
+      stoppedWithBlocker = "no claimable handoff work";
+      console.log(`orchestration idle: ${stoppedWithBlocker}`);
+      break;
+    }
+    const firstBlocked = actions.find((action) => !action.command);
+    if (firstBlocked) {
+      const action = firstBlocked;
+      const blocker = action.blocker ?? "no executable local action";
+      stoppedWithBlocker = blocker;
+      console.log(`orchestration blocked: ${blocker}`);
+      if (isRuntimeProjectInitialized(projectRoot)) {
+        updateRuntimeSession(projectRoot, sessionId, {
+          blocker,
+          note: `orchestration blocked: ${action.source}`
+        });
+      }
+      break;
+    }
+    const unsafe = actions.find((action) => action.command && !isAutonomousLocalCommand(action.command));
+    if (unsafe?.command) {
+      const blocker = `approval or external action required before ${unsafe.command}`;
+      stoppedWithBlocker = blocker;
+      console.log(`orchestration blocked: ${blocker}`);
+      if (isRuntimeProjectInitialized(projectRoot)) {
+        updateRuntimeSession(projectRoot, sessionId, {
+          blocker,
+          note: `orchestration blocked unsafe command: ${unsafe.command}`
+        });
+      }
+      break;
+    }
+
+    if (actions.length > 1) {
+      console.log(`parallel scheduler: dispatching ${actions.length} lane(s)`);
+    }
+    const poolSlotIndexes = options.poolId
+      ? runtimeWorkerPoolFreeSlotIndexes(projectRoot, options.poolId, concurrency)
+      : [];
+    const handoffActions = actions.filter((action) => action.handoffId);
+    if (options.poolId && poolSlotIndexes.length < handoffActions.length) {
+      stoppedWithBlocker = `worker pool is full: free slots=${poolSlotIndexes.length} handoffs=${handoffActions.length}`;
+      console.log(`orchestration blocked: ${stoppedWithBlocker}`);
+      break;
+    }
+    let nextPoolSlot = 0;
+    const results = await Promise.all(actions.map(async (action, index) => {
+      const command = action.command!;
+      console.log(`orchestrator step ${executed + index + 1}: ${command}`);
+      if (action.handoffId) {
+        const slotIndex = options.poolId ? poolSlotIndexes[nextPoolSlot++] : undefined;
+        const ok = await runHandoffWorkerProcess(projectRoot, action.handoffId, {
+          laneMaxToolCalls: options.laneMaxToolCalls,
+          poolId: options.poolId,
+          slotIndex
+        });
+        const laneRunId = loadRuntimeHandoffs(projectRoot).find((handoff) => handoff.id === action.handoffId)?.laneRunId;
+        return { action, command, ok, laneRunId };
+      }
+      const ok = await runParsedCommand(projectRoot, parseCli(parseCommandLine(command)), false);
+      return { action, command, ok, laneRunId: undefined };
+    }));
+
+    const laneRunIds = results
+      .map((result) => result.laneRunId)
+      .filter((runId): runId is string => Boolean(runId));
+    if (laneRunIds.length > 0) {
+      const integration = integrateAgentLaneBatch(projectRoot, laneRunIds);
+      const message = `integrator: ${integration.status} ${integration.mergedRunIds.length}/${integration.runIds.length} lane result(s)`;
+      console.log(message);
+      materializeRuntimeHandoffsFromSession(projectRoot, reconcileRuntimeStageQueue(projectRoot, loadRuntimeSession(projectRoot)));
+      refreshRuntimeWorkerSlots(projectRoot, options.poolId);
+      if (isRuntimeProjectInitialized(projectRoot)) {
+        recordRuntimeSessionEvent(projectRoot, sessionId, {
+          kind: integration.status === "blocked" ? "error" : "checkpoint",
+          message,
+          ok: integration.status !== "blocked"
+        });
+      }
+    }
+
+    for (const result of results) {
+      if (isRuntimeProjectInitialized(projectRoot)) {
+        recordRuntimeSessionEvent(projectRoot, sessionId, {
+          kind: result.ok ? "command" : "error",
+          message: result.command,
+          ok: result.ok,
+          plan: planAgentAction({
+            text: result.command,
+            initialized: true,
+            currentStage: loadState(projectRoot).currentStage
+          })
+        });
+        if (result.ok) {
+          updateRuntimeContinuation(projectRoot, sessionId, true);
+        }
+      }
+    }
+    const failed = results.find((result) => !result.ok);
+    if (failed) {
+      stoppedWithBlocker = `orchestration command failed: ${failed.command}`;
+      console.log(`orchestration blocked: ${stoppedWithBlocker}`);
+      if (isRuntimeProjectInitialized(projectRoot)) {
+        updateRuntimeSession(projectRoot, sessionId, {
+          blocker: stoppedWithBlocker,
+          incrementRetryCount: true,
+          note: "orchestration command failed"
+        });
+      }
+      break;
+    }
+    executed += results.length;
+  }
+  if (executed >= maxSteps) {
+    console.log("orchestration loop: step limit reached");
+  }
+  if (executed > 0 && isRuntimeProjectInitialized(projectRoot)) {
+    const state = loadState(projectRoot);
+    updateRuntimeSession(projectRoot, sessionId, {
+      status: stoppedWithBlocker ? "blocked" : state.paused ? "paused" : "active",
+      stage: state.currentStage,
+      blocker: stoppedWithBlocker,
+      checkpoint: `orchestration loop executed ${executed} step(s)`,
+      note: "orchestration loop checkpoint"
+    });
+  }
+  return { executed, blocker: stoppedWithBlocker };
+}
+
+function selectNextOrchestrationAction(projectRoot: string): OrchestrationAction {
+  return selectNextOrchestrationActions(projectRoot, 1)[0] ?? { source: "stage-action", blocker: "no executable local action" };
+}
+
+function selectNextOrchestrationActions(projectRoot: string, capacity: number): OrchestrationAction[] {
+  if (!isRuntimeProjectInitialized(projectRoot)) {
+    return [planOrchestrationAction({ initialized: false })];
+  }
+  const state = loadState(projectRoot);
+  materializeRuntimeHandoffsFromSession(projectRoot);
+  const handoffsWithNextCommand = loadRuntimeHandoffs(projectRoot).filter((record) => Boolean(record.packet.nextCommand));
+  const activeLeasedHandoffs = handoffsWithNextCommand.filter((record) => {
+    return (record.status === "claimed" || record.status === "running") && !isRuntimeHandoffClaimable(record);
+  });
+  const availableCapacity = Math.max(0, capacity - activeLeasedHandoffs.length);
+  const claimableHandoffs = handoffsWithNextCommand.filter((record) => isRuntimeHandoffClaimable(record));
+  if (claimableHandoffs.length > 0 && availableCapacity > 0) {
+    return claimableHandoffs
+      .slice(0, availableCapacity)
+      .map((handoff) => planHandoffOrchestrationAction(projectRoot, state, handoff));
+  }
+  if (activeLeasedHandoffs.length > 0) {
+    if (activeLeasedHandoffs.length === 1) {
+      const handoff = activeLeasedHandoffs[0];
+      return [{
+        source: "handoff",
+        blocker: `handoff ${handoff.id} has active lease held by ${handoff.claimedBy ?? "unknown"} until ${handoff.leaseExpiresAt ?? "unknown"}`
+      }];
+    }
+    const leases = activeLeasedHandoffs
+      .slice(0, 3)
+      .map((handoff) => `${handoff.id} by ${handoff.claimedBy ?? "unknown"} until ${handoff.leaseExpiresAt ?? "unknown"}`)
+      .join("; ");
+    return [{
+      source: "handoff",
+      blocker: `worker pool is full or leases are active: ${leases}`
+    }];
+  }
+  const session = loadRuntimeSession(projectRoot);
+  const advance = workflowAdvanceStatus(state);
+  return [planOrchestrationAction({
+    initialized: true,
+    paused: state.paused,
+    currentStage: state.currentStage,
+    currentNextStages: WORKFLOW_STAGES[state.currentStage].nextStages,
+    pendingActionCommand: session?.pendingAction?.command,
+    canAdvance: advance.canAdvance,
+    recommendedCommand: recommendedAgentCommand(state),
+    hasReadyAiProvider: safeHasReadyAiProvider(projectRoot)
+  })];
+}
+
+function planHandoffOrchestrationAction(
+  projectRoot: string,
+  state: ProjectState,
+  pendingHandoff: RuntimeHandoffRecord
+): OrchestrationAction {
+  const detachedStageQueueHandoff = pendingHandoff.packet.resumeCursor?.startsWith("stage-queue:")
+    || pendingHandoff.packet.resumeCursor?.startsWith("fan-in:");
+  return planOrchestrationAction({
+    initialized: true,
+    paused: state.paused,
+    currentStage: state.currentStage,
+    currentNextStages: WORKFLOW_STAGES[state.currentStage].nextStages,
+    pendingHandoff: pendingHandoff.packet.nextCommand
+      ? {
+          id: pendingHandoff.id,
+          stage: detachedStageQueueHandoff ? state.currentStage : pendingHandoff.packet.stage,
+          nextCommand: pendingHandoff.packet.nextCommand,
+          contractViolation: handoffContractViolation(pendingHandoff.packet)
+        }
+      : undefined,
+    handoffStageTransition: !detachedStageQueueHandoff && pendingHandoff.packet.nextCommand && pendingHandoff.packet.stage !== state.currentStage
+      ? canTransition(state, pendingHandoff.packet.stage)
+      : undefined,
+    hasReadyAiProvider: safeHasReadyAiProvider(projectRoot)
+  });
+}
+
+function runtimeWorkerPoolFreeSlotIndexes(projectRoot: string, poolId: string, concurrency: number): number[] {
+  const handoffs = loadRuntimeHandoffs(projectRoot);
+  const handoffById = new Map(handoffs.map((handoff) => [handoff.id, handoff]));
+  const occupied = new Set<number>();
+  for (const handoff of handoffs) {
+    if (
+      handoff.poolId === poolId
+      && handoff.slotIndex !== undefined
+      && (handoff.status === "claimed" || handoff.status === "running")
+      && !isRuntimeHandoffClaimable(handoff)
+    ) {
+      occupied.add(handoff.slotIndex);
+    }
+  }
+  for (const lane of loadAgentLaneRuns(projectRoot)) {
+    if (lane.poolId !== poolId || lane.slotIndex === undefined || (lane.status !== "claimed" && lane.status !== "running")) {
+      continue;
+    }
+    const handoff = lane.handoffId ? handoffById.get(lane.handoffId) : undefined;
+    if (!handoff || ((handoff.status === "claimed" || handoff.status === "running") && !isRuntimeHandoffClaimable(handoff))) {
+      occupied.add(lane.slotIndex);
+    }
+  }
+  const slots: number[] = [];
+  for (let index = 0; index < concurrency; index += 1) {
+    if (!occupied.has(index)) {
+      slots.push(index);
+    }
+  }
+  return slots;
+}
+
+async function runHandoffWorkerProcess(
+  projectRoot: string,
+  handoffId: string,
+  options: Pick<OrchestrationLoopOptions, "laneMaxToolCalls" | "poolId"> & { slotIndex?: number }
+): Promise<boolean> {
+  const record = loadRuntimeHandoffs(projectRoot).find((item) => item.id === handoffId);
+  if (!record) {
+    console.log(`handoff worker blocked: handoff not found: ${handoffId}`);
+    return false;
+  }
+  const slotId = options.poolId && options.slotIndex !== undefined ? `${options.poolId}:slot-${options.slotIndex}` : undefined;
+  const workerId = laneWorkerId(record.packet.toAgent, handoffId, options.poolId, options.slotIndex);
+  const cliEntry = process.argv[1];
+  if (!cliEntry) {
+    console.log("handoff worker blocked: cli entry not available");
+    return false;
+  }
+  const childEnv = {
+    ...process.env,
+    RPH_LANE_WORKER: "1",
+    RPH_ORCHESTRATOR_PID: String(process.pid),
+    ...(options.poolId ? { RPH_WORKER_POOL_ID: options.poolId } : {}),
+    ...(slotId ? { RPH_WORKER_SLOT_ID: slotId } : {}),
+    ...(options.slotIndex === undefined ? {} : { RPH_WORKER_SLOT_INDEX: String(options.slotIndex) }),
+    ...(options.laneMaxToolCalls === undefined ? {} : { RPH_LANE_MAX_TOOL_CALLS: String(options.laneMaxToolCalls) })
+  };
+  const ok = await new Promise<boolean>((resolve) => {
+    const child = spawn(process.execPath, [
+      ...process.execArgv,
+      cliEntry,
+      "agent",
+      "worker",
+      "run",
+      handoffId,
+      "--worker-id",
+      workerId
+    ], {
+      cwd: projectRoot,
+      env: childEnv,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr?.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", (error) => {
+      console.log(`handoff worker failed to launch: ${error.message}`);
+      resolve(false);
+    });
+    child.on("close", (status) => {
+      if (stdout) {
+        process.stdout.write(stdout);
+      }
+      if (stderr) {
+        process.stderr.write(stderr);
+      }
+      resolve(status === 0);
+    });
+  });
+  if (ok) {
+    const completed = loadRuntimeHandoffs(projectRoot).find((item) => item.id === handoffId);
+    if (!completed || completed.status !== "completed") {
+      console.log(`handoff worker blocked: ${handoffId} exited without durable completion`);
+      return false;
+    }
+    if (completed?.laneRunId) {
+      const merged = mergeAgentLaneRun(projectRoot, completed.laneRunId, `control-plane merged worker result for ${handoffId}`);
+      console.log(`lane result merged: ${merged.id}`);
+      refreshRuntimeWorkerSlots(projectRoot, options.poolId);
+    }
+  }
+  return ok;
+}
+
+async function runHandoffWorker(
+  projectRoot: string,
+  handoffId: string,
+  workerId: string,
+  leaseMs: number,
+  options: { laneMaxToolCalls?: number; debug?: boolean } = {}
+): Promise<boolean> {
+  const record = loadRuntimeHandoffs(projectRoot).find((item) => item.id === handoffId);
+  if (!record) {
+    console.log(`handoff runner blocked: handoff not found: ${handoffId}`);
+    return false;
+  }
+  const violation = handoffContractViolation(record.packet);
+  if (violation) {
+    console.log(`handoff runner blocked: ${violation}`);
+    return false;
+  }
+  if (!isRuntimeHandoffClaimable(record)) {
+    console.log(`handoff runner skipped: active lease for ${handoffId} held by ${record.claimedBy ?? "unknown"}`);
+    return false;
+  }
+  const poolId = process.env.RPH_WORKER_POOL_ID;
+  const slotId = process.env.RPH_WORKER_SLOT_ID;
+  const slotIndex = parseOptionalNonNegativeInt(process.env.RPH_WORKER_SLOT_INDEX);
+  const claimed = claimRuntimeHandoff(projectRoot, handoffId, workerId, leaseMs, new Date(), {
+    poolId,
+    slotId,
+    slotIndex
+  });
+  const claimToken = runtimeHandoffExecutionToken(claimed);
+  const lane = startAgentLaneRun(projectRoot, {
+    sessionId: record.sessionId,
+    handoffId,
+    workerId,
+    workerSessionId: claimed.workerSessionId,
+    claimToken: claimToken.claimToken,
+    workerPid: process.pid,
+    poolId,
+    slotId,
+    slotIndex,
+    attempt: claimed.attempts,
+    packet: record.packet,
+    command: record.packet.nextCommand ?? "",
+    leaseExpiresAt: claimed.leaseExpiresAt,
+    toolBudget: options.laneMaxToolCalls === undefined
+      ? undefined
+      : {
+          maxToolCalls: options.laneMaxToolCalls,
+          remainingToolCalls: options.laneMaxToolCalls
+        }
+  });
+  const workToken = { ...claimToken, laneRunId: lane.id };
+  startRuntimeHandoffWork(projectRoot, handoffId, workToken, lane.id, leaseMs);
+  refreshRuntimeWorkerSlots(projectRoot, poolId);
+  console.log(`role runner: ${record.packet.toAgent} (${record.packet.stage}) lane=${lane.id}`);
+  console.log(`role worker: ${workerId}`);
+  if (poolId) {
+    console.log(`role pool: ${poolId}`);
+  }
+  if (slotId) {
+    console.log(`role slot: ${slotId}`);
+  }
+  if (options.debug) {
+    console.log(`role worker-session: ${claimed.workerSessionId}`);
+    console.log(`role worker-pid: ${process.pid}`);
+  }
+  if (process.env.RPH_ORCHESTRATOR_PID) {
+    console.log(`role orchestrator-pid: ${process.env.RPH_ORCHESTRATOR_PID}`);
+  }
+  console.log(`role lease: ${claimed.leaseExpiresAt}`);
+  console.log(`role prompt: ${lane.systemPrompt.split("\n")[0]}`);
+  const heartbeat = heartbeatRuntimeHandoff(projectRoot, handoffId, workToken, leaseMs);
+  heartbeatAgentLaneRun(projectRoot, lane.id, heartbeat.leaseExpiresAt);
+  const stopHeartbeat = startLaneHeartbeat(projectRoot, handoffId, workToken, lane.id, leaseMs);
+  const command = record.packet.nextCommand;
+  try {
+    const executeLaneWork = async (): Promise<boolean> => {
+      if (!command) {
+        console.log(`handoff runner blocked: next command missing: ${handoffId}`);
+        failRuntimeHandoffAttempt(projectRoot, handoffId, workToken, "lane execution failed: missing next command");
+        return false;
+      }
+      const branchStateBeforeCommand = loadState(projectRoot);
+      const autonomous = await runAutonomousLaneWorker(projectRoot, record, lane, command);
+      const fallbackCommand = autonomous.attempted ? command : providerlessLaneFallbackCommand(projectRoot, command);
+      if (!autonomous.attempted && fallbackCommand !== command) {
+        console.log(`role fallback command: ${fallbackCommand}`);
+      }
+      let ok: boolean;
+      let budgetError: string | undefined;
+      if (autonomous.attempted) {
+        ok = autonomous.ok;
+      } else {
+        budgetError = consumeLaneBudget(projectRoot, lane.id, `local command ${fallbackCommand}`);
+        ok = budgetError ? false : await runParsedCommand(projectRoot, parseCli(parseCommandLine(fallbackCommand)), false);
+      }
+      if (ok) {
+        restoreDetachedStageQueueBranchState(projectRoot, record, branchStateBeforeCommand);
+      }
+      completeAgentLaneRun(projectRoot, lane.id, {
+        ok,
+        error: ok ? undefined : autonomous.error ?? budgetError ?? `command failed: ${fallbackCommand}`,
+        executionMode: autonomous.attempted ? "autonomous" : "command",
+        autonomousTurnId: autonomous.turnId,
+        proposedCommand: autonomous.proposedCommand,
+        executedCommand: autonomous.attempted ? autonomous.executedCommand : fallbackCommand
+      });
+      if (ok) {
+        completeRuntimeHandoffAttempt(projectRoot, handoffId, workToken, `completed by ${workerId}`);
+      } else {
+        console.log(`role runner failed: ${autonomous.error ?? budgetError ?? `lane execution failed: ${fallbackCommand}`}`);
+        failRuntimeHandoffAttempt(projectRoot, handoffId, workToken, autonomous.error ?? budgetError ?? `lane execution failed: ${fallbackCommand}`);
+      }
+      return ok;
+    };
+    if (shouldSerializeLaneStateMutation(record)) {
+      return await withLaneStateMutationLock(projectRoot, record, executeLaneWork);
+    }
+    return await executeLaneWork();
+  } finally {
+    stopHeartbeat();
+    refreshRuntimeWorkerSlots(projectRoot, poolId);
+  }
+}
+
+function startLaneHeartbeat(
+  projectRoot: string,
+  handoffId: string,
+  workToken: ReturnType<typeof runtimeHandoffExecutionToken>,
+  laneRunId: string,
+  leaseMs: number
+): () => void {
+  const intervalMs = Math.max(250, Math.min(Math.floor(leaseMs / 2), 5_000));
+  const timer = setInterval(() => {
+    try {
+      const heartbeat = heartbeatRuntimeHandoff(projectRoot, handoffId, workToken, leaseMs);
+      heartbeatAgentLaneRun(projectRoot, laneRunId, heartbeat.leaseExpiresAt);
+    } catch {
+      clearInterval(timer);
+    }
+  }, intervalMs);
+  timer.unref?.();
+  return () => clearInterval(timer);
+}
+
+function restoreDetachedStageQueueBranchState(
+  projectRoot: string,
+  record: RuntimeHandoffRecord,
+  stateBeforeCommand: ProjectState
+): void {
+  if (!record.packet.resumeCursor?.startsWith("stage-queue:")) {
+    return;
+  }
+  const current = loadState(projectRoot);
+  if (current.currentStage === stateBeforeCommand.currentStage) {
+    return;
+  }
+  saveState(projectRoot, {
+    ...current,
+    currentStage: stateBeforeCommand.currentStage,
+    history: stateBeforeCommand.history,
+    updatedAt: new Date().toISOString()
+  });
+  console.log(`role branch stage restored: ${current.currentStage} -> ${stateBeforeCommand.currentStage}`);
+}
+
+function shouldSerializeLaneStateMutation(record: RuntimeHandoffRecord): boolean {
+  return Boolean(record.packet.resumeCursor?.startsWith("stage-queue:"));
+}
+
+async function withLaneStateMutationLock<T>(
+  projectRoot: string,
+  record: RuntimeHandoffRecord,
+  fn: () => Promise<T>
+): Promise<T> {
+  const lockPath = path.join(projectRoot, ".rph", "runtime", "lane-state.lock");
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  const startedAt = Date.now();
+  let fd: number | undefined;
+  while (fd === undefined) {
+    try {
+      fd = fs.openSync(lockPath, "wx", 0o600);
+      fs.writeFileSync(fd, JSON.stringify({
+        pid: process.pid,
+        handoffId: record.id,
+        role: record.packet.toAgent,
+        createdAt: new Date().toISOString()
+      }));
+    } catch (error) {
+      const code = typeof error === "object" && error && "code" in error ? String((error as { code?: unknown }).code) : "";
+      if (code === "EEXIST" && isLaneStateMutationLockStale(lockPath)) {
+        fs.rmSync(lockPath, { force: true });
+        continue;
+      }
+      if (code !== "EEXIST" || Date.now() - startedAt > 5_000) {
+        throw error;
+      }
+      await sleepMs(10);
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    fs.closeSync(fd);
+    fs.rmSync(lockPath, { force: true });
+  }
+}
+
+function isLaneStateMutationLockStale(lockPath: string): boolean {
+  try {
+    const stat = fs.statSync(lockPath);
+    return Date.now() - stat.mtimeMs > 30_000;
+  } catch {
+    return false;
+  }
+}
+
+interface AutonomousLaneWorkerResult {
+  attempted: boolean;
+  ok: boolean;
+  turnId?: string;
+  proposedCommand?: string;
+  executedCommand?: string;
+  error?: string;
+}
+
+async function runAutonomousLaneWorker(
+  projectRoot: string,
+  record: RuntimeHandoffRecord,
+  lane: AgentLaneRunRecord,
+  queuedCommand: string
+): Promise<AutonomousLaneWorkerResult> {
+  if (!safeHasReadyAiProvider(projectRoot)) {
+    return { attempted: false, ok: false };
+  }
+  const aiBudgetError = consumeLaneBudget(projectRoot, lane.id, "AI lane turn");
+  if (aiBudgetError) {
+    return { attempted: true, ok: false, error: aiBudgetError };
+  }
+  let turnResult: Awaited<ReturnType<typeof executeAgentTurn>>;
+  try {
+    const config = loadRuntimeChatConfig(projectRoot);
+    const workerSessionId = lane.workerSessionId ?? record.sessionId;
+    turnResult = await executeAgentTurn({
+      projectRoot,
+      sessionId: workerSessionId,
+      userInput: renderLaneWorkerInput(record, lane, queuedCommand),
+      history: loadRuntimeChatHistory(projectRoot, workerSessionId),
+      config,
+      system: renderLaneWorkerSystem(lane),
+      maxOutputTokens: lane.toolBudget.maxOutputTokens
+    });
+    writeAiChatTurnRecord(projectRoot, createAiChatTurnRecord(
+      turnResult.result,
+      workerSessionId,
+      renderLaneWorkerInput(record, lane, queuedCommand),
+      turnResult.prompt
+    ));
+  } catch (error) {
+    console.log(`role agent unavailable; falling back to queued command: ${error instanceof Error ? error.message : String(error)}`);
+    return { attempted: false, ok: false };
+  }
+
+  console.log(`role agent: autonomous turn ${turnResult.turn.id}`);
+  if (turnResult.text.trim()) {
+    console.log(`role agent response: ${firstLine(turnResult.text)}`);
+  }
+  const proposed = turnResult.turn.proposedCommand;
+  if (!proposed) {
+    console.log("role agent: no runnable command proposed; falling back to queued command");
+    return { attempted: false, ok: false, turnId: turnResult.turn.id };
+  }
+
+  console.log(`agent proposed command: ${proposed.command}`);
+  if (proposed.reason) {
+    console.log(`reason: ${proposed.reason}`);
+  }
+  if (lane.executionProfile?.sandboxMode === "read-only" && !isReadOnlyAgentCommand(proposed.command)) {
+    return {
+      attempted: true,
+      ok: false,
+      turnId: turnResult.turn.id,
+      proposedCommand: proposed.command,
+      error: `lane command rejected by active TOML sandbox: ${lane.executionProfile.name} sandbox_mode=read-only allows read-only commands only`
+    };
+  }
+  const validation = validateHandoffContract({
+    toAgent: record.packet.toAgent,
+    roleContract: record.packet.roleContract,
+    nextCommand: proposed.command
+  });
+  if (!validation.ok) {
+    return {
+      attempted: true,
+      ok: false,
+      turnId: turnResult.turn.id,
+      proposedCommand: proposed.command,
+      error: `lane command rejected: ${validation.reasons.join("; ")}`
+    };
+  }
+  const mutableExternalAction = classifyMutableAgentCommand(proposed.command);
+  if (mutableExternalAction) {
+    const approvalRequest = await runtimeActionApprovalRequest(projectRoot, {
+      sessionId: record.sessionId,
+      command: proposed.command,
+      reason: proposed.reason,
+      message: `lane ${record.packet.toAgent} proposed external action: ${proposed.command}`
+    });
+    const approval = recordRuntimeActionApproval(projectRoot, {
+      ...approvalRequest
+    });
+    updateRuntimeSession(projectRoot, record.sessionId, {
+      status: "blocked",
+      blocker: `external action approval required: ${approval.id}`,
+      pendingExternalActionId: approval.id,
+      note: `lane external action approval requested: ${approval.command}`
+    });
+    return {
+      attempted: true,
+      ok: false,
+      turnId: turnResult.turn.id,
+      proposedCommand: proposed.command,
+      error: `external action approval required: ${approval.id}`
+    };
+  }
+  if (!isAutonomousLocalCommand(proposed.command) && !isReadOnlyAgentCommand(proposed.command)) {
+    return {
+      attempted: true,
+      ok: false,
+      turnId: turnResult.turn.id,
+      proposedCommand: proposed.command,
+      error: `lane command rejected: unsupported autonomous command ${proposed.command}`
+    };
+  }
+
+  console.log(`agent action: ${proposed.command}`);
+  const commandBudgetError = consumeLaneBudget(projectRoot, lane.id, `autonomous command ${proposed.command}`);
+  if (commandBudgetError) {
+    return {
+      attempted: true,
+      ok: false,
+      turnId: turnResult.turn.id,
+      proposedCommand: proposed.command,
+      error: commandBudgetError
+    };
+  }
+  const ok = await runParsedCommand(projectRoot, parseCli(parseCommandLine(proposed.command)), false);
+  return {
+    attempted: true,
+    ok,
+    turnId: turnResult.turn.id,
+    proposedCommand: proposed.command,
+    executedCommand: proposed.command,
+    error: ok ? undefined : `command failed: ${proposed.command}`
+  };
+}
+
+function consumeLaneBudget(projectRoot: string, laneRunId: string, reason: string): string | undefined {
+  try {
+    const lane = consumeAgentLaneToolBudget(projectRoot, laneRunId, 1, reason);
+    console.log(`tool budget: ${lane.toolBudget.remainingToolCalls}/${lane.toolBudget.maxToolCalls} after ${reason}`);
+    return undefined;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.log(`tool budget blocked: ${message}`);
+    return message;
+  }
+}
+
+function providerlessLaneFallbackCommand(projectRoot: string, command: string): string {
+  if (safeHasReadyAiProvider(projectRoot) || !/\s--ai(?:\s|$)/.test(command)) {
+    return command;
+  }
+  const stripped = command.replace(/\s--ai(?:\s|$)/, " ").replace(/\s+/g, " ").trim();
+  return stripped.startsWith("/") && isAutonomousLocalCommand(stripped) ? stripped : command;
+}
+
+function renderLaneWorkerSystem(lane: AgentLaneRunRecord): string {
+  return [
+    lane.systemPrompt,
+    "",
+    "You are executing this role lane as an autonomous worker inside RPH.",
+    "Inspect the lane brief and either propose one role-valid local command, request read-only context tools, wait with a blocker, or respond with why the queued command should be used.",
+    "Do not claim external writes ran. External writes must be proposed as commands and will be approval-gated by the runtime."
+  ].join("\n");
+}
+
+function renderLaneWorkerInput(record: RuntimeHandoffRecord, lane: AgentLaneRunRecord, queuedCommand: string): string {
+  return [
+    `Lane role: ${record.packet.toAgent}`,
+    `Lane stage: ${record.packet.stage}`,
+    `Lane summary: ${record.packet.summary}`,
+    `Lane queued command: ${queuedCommand}`,
+    `Lane acceptance: ${(record.packet.acceptanceCriteria ?? []).join("; ") || "none"}`,
+    `Lane artifacts: ${(record.packet.artifactRefs ?? []).join("; ") || "none"}`,
+    `Lane blockers: ${(record.packet.blockers ?? []).join("; ") || "none"}`,
+    `Allowed command prefixes: ${lane.toolPolicy.allowedCommandPrefixes.join(", ")}`,
+    "",
+    "Return JSON following the agent turn contract. If the queued command is the right next step, propose it as an action.type command."
+  ].join("\n");
+}
+
+function firstLine(value: string): string {
+  return value.trim().split(/\r?\n/)[0]?.slice(0, 180) ?? "";
+}
+
+function laneWorkerId(role: AgentRole, handoffId: string, poolId?: string, slotIndex?: number): string {
+  if (poolId && slotIndex !== undefined) {
+    return `lane-worker:${poolId}:slot-${slotIndex}:${role}`;
+  }
+  return `lane-worker:${role}:${handoffId}`;
+}
+
+function handoffContractViolation(packet: HandoffPacket): string | undefined {
+  const validation = validateHandoffContract(packet);
+  return validation.ok ? undefined : validation.reasons.join("; ");
+}
+
+function loopMaxSteps(options: Record<string, string | boolean>): number {
+  return parseOptionalPositiveInt(optionString(options, "steps")) ?? 6;
+}
+
+function loopConcurrency(options: Record<string, string | boolean>): number {
+  return parseOptionalPositiveInt(optionString(options, "concurrency")) ?? 3;
 }
 
 async function runAgentCommandProposal(
   projectRoot: string,
-  proposal: { command: string; safeToAutoRun: boolean; reason?: string } | undefined
-): Promise<void> {
+  proposal: { command: string; safeToAutoRun: boolean; reason?: string } | undefined,
+  options: {
+    executeAutonomousLocalProposals?: boolean;
+    executeLocalMutations?: boolean;
+    executeReadOnlyProposals?: boolean;
+    sessionId?: string;
+  } = {}
+): Promise<boolean> {
   if (!proposal) {
-    return;
+    return false;
   }
   console.log(`agent proposed command: ${proposal.command}`);
   if (proposal.reason) {
     console.log(`reason: ${proposal.reason}`);
   }
-  if (!proposal.safeToAutoRun || !isReadOnlyAgentCommand(proposal.command)) {
-    console.log("auto-run: skipped");
+  const readOnly = isReadOnlyAgentCommand(proposal.command);
+  const localMutation = isLocalAgentCommand(proposal.command);
+  const mutableExternalAction = classifyMutableAgentCommand(proposal.command);
+  const userApprovalAction = isUserApprovalAgentCommand(proposal.command);
+  const sandboxBlocker = activeProfileSandboxCommandBlocker(projectRoot, proposal.command, readOnly);
+  if (sandboxBlocker) {
+    console.log(`auto-run: blocked by active TOML sandbox`);
+    console.log(`reason: ${sandboxBlocker}`);
+    return false;
+  }
+  if (mutableExternalAction) {
+    if (!isRuntimeProjectInitialized(projectRoot)) {
+      console.log("auto-run: blocked because external actions require an initialized RPH project");
+      return false;
+    }
+    const sessionId = options.sessionId ?? resolveRuntimeSessionId(projectRoot);
+    const approvalRequest = await runtimeActionApprovalRequest(projectRoot, {
+      sessionId,
+      command: proposal.command,
+      reason: proposal.reason,
+      message: `agent proposed external action: ${proposal.command}`
+    });
+    const record = recordRuntimeActionApproval(projectRoot, {
+      ...approvalRequest
+    });
+    updateRuntimeSession(projectRoot, sessionId, {
+      status: "blocked",
+      blocker: `external action approval required: ${record.id}`,
+      pendingExternalActionId: record.id,
+      note: `external action approval requested: ${record.command}`
+    });
+    console.log(`external action approval required: ${record.id}`);
+    console.log(`target: ${record.target}:${record.action}`);
+    console.log(`risk: ${record.risk}`);
+    console.log(`approve: /agent approve-action ${record.id}`);
+    console.log(`reject: /agent reject-action ${record.id}`);
+    return false;
+  }
+  if (userApprovalAction) {
+    const blocker = `user approval command requires explicit user action: ${proposal.command}`;
+    console.log(`auto-run: blocked because ${blocker}`);
+    if (isRuntimeProjectInitialized(projectRoot)) {
+      const sessionId = options.sessionId ?? resolveRuntimeSessionId(projectRoot);
+      updateRuntimeSession(projectRoot, sessionId, {
+        status: "blocked",
+        blocker,
+        note: `agent proposed user approval command: ${proposal.command}`
+      });
+    }
+    return false;
+  }
+  if (proposal.safeToAutoRun && readOnly && options.executeReadOnlyProposals) {
+    console.log(`agent action: ${proposal.command}`);
+    console.log("execution-policy: runtime chat allowed read-only command");
+    const parsed = parseCli(parseCommandLine(proposal.command));
+    return runParsedCommand(projectRoot, parsed, false);
+  }
+  if (options.executeAutonomousLocalProposals && localMutation) {
+    if (!isCurrentAutonomousRuntimeCommand(projectRoot, proposal.command)) {
+      console.log("auto-run: blocked because the proposed local command is not the current autonomous step");
+      return false;
+    }
+    console.log(`agent action: ${proposal.command}`);
+    console.log("execution-policy: runtime chat allowed current autonomous local command");
+    const parsed = parseCli(parseCommandLine(proposal.command));
+    return runParsedCommand(projectRoot, parsed, false);
+  }
+  if (options.executeLocalMutations && localMutation) {
+    console.log(`agent action: ${proposal.command}`);
+    console.log("execution-policy: ask --execute allowed local workflow command");
+    const parsed = parseCli(parseCommandLine(proposal.command));
+    return runParsedCommand(projectRoot, parsed, false);
+  }
+  if (options.executeLocalMutations && !localMutation) {
+    if (isMcpCallCommand(proposal.command)) {
+      console.log("auto-run: blocked by MCP policy");
+      console.log("reason: mutable or unclassified MCP tool calls are not exposed to agent auto-run");
+      console.log("next: /mcp tools <server> 또는 /mcp test <server>");
+      return false;
+    }
+    console.log("auto-run: blocked because the proposed command is external or unsupported");
+    return false;
+  }
+  console.log("auto-run: skipped");
+  return false;
+}
+
+function activeProfileSandboxCommandBlocker(projectRoot: string, command: string, readOnly = isReadOnlyAgentCommand(command)): string | undefined {
+  const profile = activeCustomAgentExecutionProfile(projectRoot);
+  if (profile?.sandboxMode !== "read-only") {
+    return undefined;
+  }
+  if (readOnly) {
+    return undefined;
+  }
+  return `${profile.name} sandbox_mode=read-only allows read-only commands only; proposed command was ${command}`;
+}
+
+async function runtimeActionApprovalRequest(
+  projectRoot: string,
+  request: {
+    sessionId: string;
+    command: string;
+    reason?: string;
+    message?: string;
+  }
+): Promise<{
+  sessionId: string;
+  command: string;
+  reason?: string;
+  message?: string;
+  approvedTargetId?: string;
+  approvedParameters?: Record<string, string>;
+  approvedSnapshot?: RuntimeActionApprovedSnapshot;
+}> {
+  const context = await runtimeActionApprovalContext(projectRoot, request.command, { materializeGitHubArtifacts: true });
+  return {
+    ...request,
+    ...context
+  };
+}
+
+interface RuntimeActionApprovalContextOptions {
+  materializeGitHubArtifacts?: boolean;
+}
+
+async function runtimeActionApprovalContext(
+  projectRoot: string,
+  command: string,
+  options: RuntimeActionApprovalContextOptions = {}
+): Promise<{ approvedTargetId?: string; approvedParameters?: Record<string, string>; approvedSnapshot?: RuntimeActionApprovedSnapshot }> {
+  let parsed: ReturnType<typeof parseCli>;
+  try {
+    parsed = parseCli(parseCommandLine(command));
+  } catch {
+    return {};
+  }
+  if (parsed.command === "notion") {
+    return runtimeNotionActionApprovalContext(projectRoot, parsed);
+  }
+  if (parsed.command === "mcp") {
+    return runtimeMcpActionApprovalContext(projectRoot, parsed, command);
+  }
+  if (parsed.command !== "github") {
+    return {};
+  }
+  const target = resolveGitHubTarget(projectRoot);
+  const owner = process.env.GITHUB_OWNER || target.owner;
+  const repo = process.env.GITHUB_REPO || target.repo || (parsed.subcommand === "create-repo" ? path.basename(projectRoot) : undefined);
+  if (!owner || !repo) {
+    return {};
+  }
+  const approvedTargetId = `${owner}/${repo}`;
+  const existing = existingPendingRuntimeActionApprovalContext(projectRoot, command, approvedTargetId);
+  if (existing) {
+    return existing;
+  }
+  const params: Record<string, string> = {
+    owner,
+    repo,
+    command: parsed.subcommand ?? "unknown"
+  };
+  if (parsed.subcommand === "create-issue") {
+    params.title = optionString(parsed.options, "title") ?? parsed.args.join(" ") ?? "";
+    params.agent = optionString(parsed.options, "agent") ?? "FE";
+    params.label = optionString(parsed.options, "label") ?? "feat";
+    if (options.materializeGitHubArtifacts && parsed.options.live === true) {
+      requireImplementationStage(projectRoot);
+      const issue = createWorkIssue(projectRoot, {
+        workstream: parseWorkstream(params.agent),
+        label: params.label,
+        title: params.title || "FE implementation task",
+        description: optionString(parsed.options, "description"),
+        acceptanceCriteria: splitListOption(optionString(parsed.options, "acceptance")),
+        testRequirement: optionString(parsed.options, "test")
+      });
+      const snapshot = captureGitHubIssueApprovalSnapshot(projectRoot, owner, repo, issue);
+      params.localIssueNumber = String(issue.issueNumber);
+      params.snapshotFingerprint = snapshot.fingerprint;
+      return {
+        approvedTargetId,
+        approvedParameters: params,
+        approvedSnapshot: snapshot
+      };
+    }
+  }
+  if (parsed.subcommand === "create-pr") {
+    params.issue = optionString(parsed.options, "issue") ?? "";
+    params.target = optionString(parsed.options, "target") ?? "dev";
+    if (options.materializeGitHubArtifacts && parsed.options.live === true) {
+      requireImplementationStage(projectRoot);
+      const issueNumber = parseIssueNumber(params.issue);
+      const targetBranch = parsePullRequestTargetBranch(params.target);
+      const existingPr = [...listPullRequests(projectRoot)]
+        .reverse()
+        .find((record) => record.issueNumber === issueNumber && record.targetBranch === targetBranch);
+      const pr = existingPr ?? createPullRequestDraft(projectRoot, issueNumber, targetBranch);
+      const issue = readWorkIssue(projectRoot, pr.issueNumber);
+      const snapshot = captureGitHubPullRequestApprovalSnapshot(projectRoot, owner, repo, pr, issue);
+      params.issue = String(pr.issueNumber);
+      params.target = pr.targetBranch;
+      params.localIssueNumber = String(pr.issueNumber);
+      params.localPrNumber = String(pr.prNumber);
+      params.sourceBranch = pr.sourceBranch;
+      params.snapshotFingerprint = snapshot.fingerprint;
+      return {
+        approvedTargetId,
+        approvedParameters: params,
+        approvedSnapshot: snapshot
+      };
+    }
+  }
+  if (parsed.subcommand === "create-repo") {
+    params.visibility = parseRepoVisibility(parsed.options);
+  }
+  return {
+    approvedTargetId,
+    approvedParameters: params
+  };
+}
+
+function existingPendingRuntimeActionApprovalContext(
+  projectRoot: string,
+  command: string,
+  approvedTargetId: string
+): { approvedTargetId?: string; approvedParameters?: Record<string, string>; approvedSnapshot?: RuntimeActionApprovedSnapshot } | null {
+  const normalized = normalizeApprovalCommand(command);
+  const existing = loadRuntimeActionApprovals(projectRoot).find((record) =>
+    record.status === "pending"
+    && record.normalizedCommand === normalized
+    && record.approvedTargetId === approvedTargetId
+    && record.approvedSnapshot
+  );
+  if (!existing) {
+    return null;
+  }
+  return {
+    approvedTargetId: existing.approvedTargetId,
+    approvedParameters: existing.approvedParameters,
+    approvedSnapshot: existing.approvedSnapshot
+  };
+}
+
+function normalizeApprovalCommand(command: string): string {
+  try {
+    return parseCommandLine(command).join(" ");
+  } catch {
+    return normalizeRuntimeCommand(command);
+  }
+}
+
+function runtimeNotionActionApprovalContext(
+  projectRoot: string,
+  parsed: ReturnType<typeof parseCli>
+): { approvedTargetId?: string; approvedParameters?: Record<string, string> } {
+  if (parsed.options.live !== true) {
+    return {};
+  }
+  if (parsed.subcommand === "setup") {
+    const env = { ...process.env };
+    loadEnvFile(path.join(projectRoot, ".env"), env);
+    const parentPageId = normalizeNotionPageId(env.NOTION_PARENT_PAGE_ID ?? "");
+    if (!parentPageId) {
+      return {};
+    }
+    return {
+      approvedTargetId: `notion-parent:${parentPageId}`,
+      approvedParameters: {
+        command: "setup",
+        parentPageId,
+        title: optionString(parsed.options, "title") ?? "RPH Workspace"
+      }
+    };
+  }
+  if (parsed.subcommand === "sync" || parsed.subcommand === "export-docs") {
+    const workspace = readJsonFileIfExists<{ dashboardPageId?: string }>(notionLiveWorkspaceFile(projectRoot));
+    if (!workspace?.dashboardPageId) {
+      return {};
+    }
+    return {
+      approvedTargetId: `notion-workspace:${workspace.dashboardPageId}`,
+      approvedParameters: {
+        command: parsed.subcommand,
+        dashboardPageId: workspace.dashboardPageId
+      }
+    };
+  }
+  return {};
+}
+
+async function runtimeMcpActionApprovalContext(
+  projectRoot: string,
+  parsed: ReturnType<typeof parseCli>,
+  command: string
+): Promise<{ approvedTargetId?: string; approvedParameters?: Record<string, string>; approvedSnapshot?: RuntimeActionApprovedSnapshot }> {
+  if (parsed.subcommand !== "call") {
+    return {};
+  }
+  const target = parseMcpCallTargetFromParsed(parsed.args, parsed.options);
+  if (!target) {
+    return {};
+  }
+  const serverId = parseMcpServerId(target.server);
+  const toolName = target.tool;
+  const args = parseJsonObjectOption(optionString(parsed.options, "args-json") ?? optionString(parsed.options, "arguments-json") ?? optionString(parsed.options, "args")) ?? {};
+  const approvedTargetId = `mcp:${serverId}.${toolName}`;
+  const existing = existingPendingRuntimeActionApprovalContext(projectRoot, command, approvedTargetId);
+  if (existing) {
+    return existing;
+  }
+  const env = { ...process.env };
+  loadEnvFile(path.join(projectRoot, ".env"), env);
+  let snapshot: RuntimeActionApprovedSnapshot | undefined;
+  let snapshotError: string | undefined;
+  try {
+    snapshot = await captureOperatorMcpToolCallSnapshot({
+      projectRoot,
+      config: readHarnessConfigSnapshot(projectRoot, env),
+      env,
+      serverId,
+      toolName,
+      arguments: args
+    });
+  } catch (error) {
+    snapshotError = error instanceof Error ? error.message : String(error);
+  }
+  return {
+    approvedTargetId,
+    approvedParameters: {
+      command: "call",
+      server: serverId,
+      tool: toolName,
+      argumentsJson: JSON.stringify(args),
+      ...(snapshot ? { snapshotFingerprint: snapshot.fingerprint } : {}),
+      ...(snapshotError ? { snapshotError } : {})
+    },
+    approvedSnapshot: snapshot
+  };
+}
+
+function parseMcpCallTargetFromParsed(
+  args: string[],
+  options: Record<string, string | boolean>
+): { server: string; tool: string } | null {
+  const explicitServer = optionString(options, "server");
+  const explicitTool = optionString(options, "tool") ?? optionString(options, "name");
+  if (explicitServer && explicitTool) {
+    return { server: explicitServer, tool: explicitTool };
+  }
+  const [first, second] = args;
+  if (!first) {
+    return null;
+  }
+  if (first.includes(".") && !second) {
+    return parseMcpApprovalAction(first);
+  }
+  if (first && second) {
+    return { server: first, tool: second };
+  }
+  return null;
+}
+
+function parseMcpApprovalAction(value: string): { server: string; tool: string } | null {
+  const [server, ...toolParts] = value.split(".");
+  const tool = toolParts.join(".");
+  if (!server || !tool) {
+    return null;
+  }
+  return { server, tool };
+}
+
+function isMcpCallCommand(command: string): boolean {
+  try {
+    const parsed = parseCli(parseCommandLine(command));
+    return parsed.command === "mcp" && parsed.subcommand === "call";
+  } catch {
+    return false;
+  }
+}
+
+function isCurrentAutonomousRuntimeCommand(projectRoot: string, command: string): boolean {
+  if (!isRuntimeProjectInitialized(projectRoot) || hasPendingNaturalGate(projectRoot, loadRuntimeSession(projectRoot))) {
+    return false;
+  }
+  if (!isAutonomousLocalCommand(command)) {
+    return false;
+  }
+  const current = selectNextOrchestrationAction(projectRoot);
+  if (current.blocker || !current.command) {
+    return false;
+  }
+  return normalizeRuntimeCommand(current.command) === normalizeRuntimeCommand(command);
+}
+
+function normalizeRuntimeCommand(command: string): string {
+  return command.trim().replace(/\s+/g, " ");
+}
+
+async function approveAndExecuteRuntimeAction(projectRoot: string, id: string, approvedBy: string): Promise<boolean> {
+  const sessionGuard = runtimeActionSessionExecutionBlocker(projectRoot, id);
+  if (sessionGuard) {
+    console.log(`external action blocked: ${id}`);
+    console.log(`reason: ${sessionGuard}`);
+    process.exitCode = 1;
+    return false;
+  }
+  const running = approveAndStartRuntimeAction(projectRoot, id, approvedBy);
+  console.log(`external action approved: ${running.id}`);
+  console.log(`command: ${running.command}`);
+  console.log(`external action executing: ${running.id}`);
+  const sessionId = running.sessionId || resolveRuntimeSessionId(projectRoot);
+  updateRuntimeSession(projectRoot, sessionId, {
+    status: "blocked",
+    blocker: `external action running: ${running.id}`,
+    pendingExternalActionId: running.id,
+    note: `external action running: ${running.command}`
+  });
+  const drift = await runtimeActionApprovalDrift(projectRoot, running);
+  if (drift) {
+    const failed = failRuntimeAction(projectRoot, id, drift);
+    updateRuntimeSession(projectRoot, sessionId, {
+      status: "blocked",
+      blocker: `external action approval drift: ${failed.id}`,
+      pendingExternalActionId: failed.id,
+      note: drift
+    });
+    console.log(`external action blocked: ${failed.id}`);
+    console.log(`reason: ${drift}`);
+    process.exitCode = 1;
+    return false;
+  }
+  const ok = await withRuntimeActionBindingEnv(running, () =>
+    runParsedCommand(projectRoot, parseCli(parseCommandLine(running.command)), false)
+  );
+  if (ok) {
+    const readback = runtimeActionReadbackProof(projectRoot, running);
+    if (readback.readbackStatus === "failed") {
+      const failed = failRuntimeAction(projectRoot, id, "approved command completed but mandatory readback proof was missing or invalid", readback);
+      updateRuntimeSession(projectRoot, sessionId, {
+        status: "blocked",
+        blocker: `external action readback failed: ${failed.id}`,
+        pendingExternalActionId: failed.id,
+        note: `external action readback failed: ${failed.command}`
+      });
+      console.log(`external action readback failed: ${failed.id}`);
+      if (readback.expectedReadback) {
+        console.log(`expected readback: ${readback.expectedReadback}`);
+      }
+      process.exitCode = 1;
+      return false;
+    }
+    const completed = completeRuntimeAction(projectRoot, id, "command completed through approved runtime action", readback);
+    updateRuntimeSession(projectRoot, sessionId, {
+      status: "recovering",
+      blocker: null,
+      pendingExternalActionId: null,
+      note: `external action completed: ${completed.id}`
+    });
+    console.log(`external action completed: ${completed.id}`);
+    if (completed.verifiedTargetId) {
+      console.log(`readback: ${completed.verifiedTargetId}`);
+    }
+    if (completed.readbackArtifactPath) {
+      console.log(`readback file: ${completed.readbackArtifactPath}`);
+    }
+    return true;
+  }
+  const failed = failRuntimeAction(projectRoot, id, "command failed through approved runtime action");
+  updateRuntimeSession(projectRoot, sessionId, {
+    status: "blocked",
+    blocker: `external action failed: ${failed.id}`,
+    pendingExternalActionId: failed.id,
+    note: `external action failed: ${failed.command}`
+  });
+  console.log(`external action failed: ${failed.id}`);
+  process.exitCode = 1;
+  return false;
+}
+
+function runtimeActionSessionExecutionBlocker(projectRoot: string, id: string): string | null {
+  const action = loadRuntimeActionApprovals(projectRoot).find((record) => record.id === id);
+  if (!action) {
+    return `external action not found: ${id}`;
+  }
+  const session = loadRuntimeSession(projectRoot);
+  if (!session) {
+    return "no active runtime session is available for external action approval";
+  }
+  if (action.sessionId && action.sessionId !== session.sessionId) {
+    return `external action belongs to session ${action.sessionId}, but current session is ${session.sessionId}`;
+  }
+  if (session.pendingExternalActionId && session.pendingExternalActionId !== id) {
+    return `external action is not the current pending action for session ${session.sessionId}`;
+  }
+  if (session.waitCondition?.kind !== "external_live_write") {
+    return "current session is not waiting on an external live write";
+  }
+  return null;
+}
+
+async function runtimeActionApprovalDrift(projectRoot: string, action: RuntimeActionApprovalRecord): Promise<string | null> {
+  if (!action.approvedTargetId) {
+    return null;
+  }
+  const current = await runtimeActionApprovalContext(projectRoot, action.command);
+  if (!current.approvedTargetId) {
+    return `approved ${action.target} target ${action.approvedTargetId} could not be resolved at execution time`;
+  }
+  if (current.approvedTargetId !== action.approvedTargetId) {
+    return `approved ${action.target} target drifted from ${action.approvedTargetId} to ${current.approvedTargetId}`;
+  }
+  const snapshotDrift = await runtimeActionApprovedSnapshotDrift(projectRoot, action);
+  if (snapshotDrift) {
+    return snapshotDrift;
+  }
+  return null;
+}
+
+async function runtimeActionApprovedSnapshotDrift(projectRoot: string, action: RuntimeActionApprovalRecord): Promise<string | null> {
+  if (action.target === "mcp") {
+    if (!action.approvedSnapshot || action.approvedSnapshot.kind !== "mcp.tool-call") {
+      return `approved MCP ${action.action} snapshot is missing; re-request approval`;
+    }
+    try {
+      const target = parseMcpApprovalAction(action.action);
+      if (!target) {
+        return `approved MCP action is invalid: ${action.action}`;
+      }
+      const env = { ...process.env };
+      loadEnvFile(path.join(projectRoot, ".env"), env);
+      const current = await currentOperatorMcpToolCallSnapshot({
+        projectRoot,
+        config: readHarnessConfigSnapshot(projectRoot, env),
+        env,
+        serverId: parseMcpServerId(target.server),
+        toolName: target.tool,
+        arguments: parseJsonObjectOption(action.approvedParameters?.argumentsJson) ?? {}
+      });
+      if (current.fingerprint !== action.approvedSnapshot.fingerprint) {
+        return `approved MCP tool-call snapshot drifted for ${action.action}: expected ${action.approvedSnapshot.fingerprint}, got ${current.fingerprint}`;
+      }
+      return null;
+    } catch (error) {
+      return `approved MCP ${action.action} snapshot could not be read: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
+  if (action.target !== "github" || (action.action !== "issue.create" && action.action !== "pr.create")) {
+    return null;
+  }
+  if (!action.approvedSnapshot) {
+    return `approved GitHub ${action.action} snapshot is missing; re-request approval`;
+  }
+  const target = parseApprovedGitHubTarget(action.approvedTargetId);
+  if (!target) {
+    return `approved GitHub target is invalid: ${action.approvedTargetId ?? "missing"}`;
+  }
+  try {
+    if (action.action === "issue.create") {
+      const issueNumber = action.approvedSnapshot.localIssueNumber ?? parseOptionalPositiveInt(action.approvedParameters?.localIssueNumber);
+      if (!issueNumber) {
+        return "approved GitHub issue snapshot is missing localIssueNumber";
+      }
+      const issue = readWorkIssue(projectRoot, issueNumber);
+      const current = currentGitHubIssueApprovalSnapshot(projectRoot, target.owner, target.repo, issue);
+      if (current.fingerprint !== action.approvedSnapshot.fingerprint) {
+        return `approved GitHub issue snapshot drifted for local issue #${issueNumber}: expected ${action.approvedSnapshot.fingerprint}, got ${current.fingerprint}`;
+      }
+      return null;
+    }
+    const prNumber = action.approvedSnapshot.localPrNumber ?? parseOptionalPositiveInt(action.approvedParameters?.localPrNumber);
+    if (!prNumber) {
+      return "approved GitHub PR snapshot is missing localPrNumber";
+    }
+    const pr = readPullRequest(projectRoot, prNumber);
+    const issue = readWorkIssue(projectRoot, pr.issueNumber);
+    const current = currentGitHubPullRequestApprovalSnapshot(projectRoot, target.owner, target.repo, pr, issue);
+    if (current.fingerprint !== action.approvedSnapshot.fingerprint) {
+      return `approved GitHub PR snapshot drifted for local PR #${prNumber}: expected ${action.approvedSnapshot.fingerprint}, got ${current.fingerprint}`;
+    }
+    return null;
+  } catch (error) {
+    return `approved GitHub ${action.action} snapshot could not be read: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
+function parseApprovedGitHubTarget(value: string | undefined): { owner: string; repo: string } | null {
+  const [owner, repo] = (value ?? "").split("/");
+  if (!owner || !repo) {
+    return null;
+  }
+  return { owner, repo };
+}
+
+async function withRuntimeActionBindingEnv<T>(
+  action: RuntimeActionApprovalRecord,
+  run: () => Promise<T>
+): Promise<T> {
+  const previous = {
+    id: process.env.RPH_ACTION_APPROVAL_ID,
+    fingerprint: process.env.RPH_ACTION_APPROVAL_FINGERPRINT,
+    runningAt: process.env.RPH_ACTION_RUNNING_AT,
+    parameters: process.env.RPH_ACTION_APPROVED_PARAMETERS_JSON,
+    snapshot: process.env.RPH_ACTION_APPROVED_SNAPSHOT_JSON
+  };
+  process.env.RPH_ACTION_APPROVAL_ID = action.id;
+  process.env.RPH_ACTION_APPROVAL_FINGERPRINT = action.fingerprint;
+  process.env.RPH_ACTION_RUNNING_AT = action.runningAt ?? new Date().toISOString();
+  if (action.approvedParameters) {
+    process.env.RPH_ACTION_APPROVED_PARAMETERS_JSON = JSON.stringify(action.approvedParameters);
+  } else {
+    delete process.env.RPH_ACTION_APPROVED_PARAMETERS_JSON;
+  }
+  if (action.approvedSnapshot) {
+    process.env.RPH_ACTION_APPROVED_SNAPSHOT_JSON = JSON.stringify(action.approvedSnapshot);
+  } else {
+    delete process.env.RPH_ACTION_APPROVED_SNAPSHOT_JSON;
+  }
+  try {
+    return await run();
+  } finally {
+    restoreOptionalEnv("RPH_ACTION_APPROVAL_ID", previous.id);
+    restoreOptionalEnv("RPH_ACTION_APPROVAL_FINGERPRINT", previous.fingerprint);
+    restoreOptionalEnv("RPH_ACTION_RUNNING_AT", previous.runningAt);
+    restoreOptionalEnv("RPH_ACTION_APPROVED_PARAMETERS_JSON", previous.parameters);
+    restoreOptionalEnv("RPH_ACTION_APPROVED_SNAPSHOT_JSON", previous.snapshot);
+  }
+}
+
+function restoreOptionalEnv(key: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[key];
     return;
   }
-  console.log(`agent action: ${proposal.command}`);
-  const parsed = parseCli(parseCommandLine(proposal.command));
-  await runParsedCommand(projectRoot, parsed, false);
+  process.env[key] = value;
+}
+
+function runtimeApprovedParametersFromEnv(): Record<string, string> {
+  const raw = process.env.RPH_ACTION_APPROVED_PARAMETERS_JSON;
+  if (!raw) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+    return Object.entries(parsed as Record<string, unknown>).reduce<Record<string, string>>((result, [key, value]) => {
+      if (typeof value === "string") {
+        result[key] = value;
+      }
+      return result;
+    }, {});
+  } catch {
+    return {};
+  }
+}
+
+function readJsonFileIfExists<T>(filePath: string): T | null {
+  if (!fs.existsSync(filePath)) {
+    return null;
+  }
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8")) as T;
+  } catch {
+    return null;
+  }
+}
+
+function runtimeActionReadbackProof(
+  projectRoot: string,
+  action: RuntimeActionApprovalRecord
+): RuntimeActionReadbackProof {
+  if (action.target === "notion" && action.action === "workspace.setup.live") {
+    return readbackProofFromJsonFile(
+      action,
+      notionLiveWorkspaceFile(projectRoot),
+      "notion live workspace file",
+      (value) => {
+        const workspace = value as { dashboardReadback?: { id?: string }; dashboardPageId?: string };
+        return workspace.dashboardReadback?.id ?? workspace.dashboardPageId;
+      }
+    );
+  }
+  if (action.target === "notion" && action.action === "workspace.sync.live") {
+    return readbackProofFromJsonFile(
+      action,
+      notionLiveSyncReadbackFile(projectRoot),
+      "notion live sync readback file",
+      (value) => (value as { id?: string }).id
+    );
+  }
+  if (action.target === "github" && action.action === "repo.create") {
+    return readbackProofFromJsonFile(
+      action,
+      githubRepoReadbackFile(projectRoot),
+      "github repo view and push readback file",
+      (value) => {
+        const proof = value as {
+          nameWithOwner?: string;
+          url?: string;
+          existed?: boolean;
+          pushReadbackStatus?: string;
+        };
+        if (!proof.existed && proof.pushReadbackStatus !== "passed") {
+          return undefined;
+        }
+        return proof.nameWithOwner ?? proof.url;
+      }
+    );
+  }
+  if (action.target === "github" && action.action === "labels.apply") {
+    return readbackProofFromJsonFile(
+      action,
+      githubLabelsReadbackFile(projectRoot),
+      "github label list readback file",
+      (value) => {
+        const proof = value as { owner?: string; repo?: string; verified?: boolean; observed?: unknown[] };
+        if (!proof.verified) {
+          return undefined;
+        }
+        return `${proof.owner ?? "unknown"}/${proof.repo ?? "unknown"} labels=${proof.observed?.length ?? 0}`;
+      }
+    );
+  }
+  if (action.target === "github" && action.action === "issue.create") {
+    const issueNumber = action.approvedSnapshot?.localIssueNumber ?? parseOptionalPositiveInt(action.approvedParameters?.localIssueNumber);
+    return readbackProofFromJsonFile(
+      action,
+      issueNumber ? githubIssueReadbackFile(projectRoot, issueNumber) : githubIssueLatestReadbackFile(projectRoot),
+      "github issue view readback file",
+      (value) => {
+        const proof = value as {
+          owner?: string;
+          repo?: string;
+          localIssueNumber?: number;
+          githubIssueNumber?: number | null;
+          verified?: boolean;
+        };
+        if (!proof.verified || !proof.githubIssueNumber) {
+          return undefined;
+        }
+        if (issueNumber && proof.localIssueNumber !== issueNumber) {
+          return undefined;
+        }
+        return `${proof.owner ?? "unknown"}/${proof.repo ?? "unknown"}#${proof.githubIssueNumber}`;
+      }
+    );
+  }
+  if (action.target === "github" && action.action === "pr.create") {
+    const prNumber = action.approvedSnapshot?.localPrNumber ?? parseOptionalPositiveInt(action.approvedParameters?.localPrNumber);
+    return readbackProofFromJsonFile(
+      action,
+      prNumber ? githubPullRequestReadbackFile(projectRoot, prNumber) : githubPullRequestLatestReadbackFile(projectRoot),
+      "github PR view readback file",
+      (value) => {
+        const proof = value as {
+          owner?: string;
+          repo?: string;
+          localPrNumber?: number;
+          githubPrNumber?: number | null;
+          verified?: boolean;
+        };
+        if (!proof.verified || !proof.githubPrNumber) {
+          return undefined;
+        }
+        if (prNumber && proof.localPrNumber !== prNumber) {
+          return undefined;
+        }
+        return `${proof.owner ?? "unknown"}/${proof.repo ?? "unknown"}#${proof.githubPrNumber}`;
+      }
+    );
+  }
+  if (action.target === "mcp") {
+    return readbackProofFromJsonFile(
+      action,
+      mcpToolCallReadbackFile(projectRoot, action.id),
+      "mcp mutable tool call readback file",
+      (value) => {
+        const proof = value as {
+          kind?: string;
+          server?: string;
+          toolName?: string;
+          verified?: boolean;
+          approvedSnapshotFingerprint?: string;
+        };
+        if (proof.kind !== "mcp-tool-call-readback-v1" || !proof.verified) {
+          return undefined;
+        }
+        if (action.approvedSnapshot?.kind !== "mcp.tool-call") {
+          return undefined;
+        }
+        if (proof.server !== action.approvedSnapshot.serverId || proof.toolName !== action.approvedSnapshot.toolName) {
+          return undefined;
+        }
+        if (proof.approvedSnapshotFingerprint !== action.approvedSnapshot.fingerprint) {
+          return undefined;
+        }
+        return `${proof.server}.${proof.toolName}`;
+      }
+    );
+  }
+  return {
+    expectedReadback: `mandatory readback contract missing for approval-gated action ${action.target}:${action.action}`,
+    readbackStatus: "failed"
+  };
+}
+
+function readbackProofFromJsonFile(
+  action: RuntimeActionApprovalRecord,
+  filePath: string,
+  expectedReadback: string,
+  verifier: (value: unknown) => string | undefined
+): RuntimeActionReadbackProof {
+  if (!fs.existsSync(filePath)) {
+    return {
+      expectedReadback,
+      readbackStatus: "failed",
+      readbackArtifactPath: filePath
+    };
+  }
+  try {
+    const value = JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
+    const bindingError = runtimeActionReadbackBindingError(action, value);
+    if (bindingError) {
+      return {
+        expectedReadback: `${expectedReadback}; ${bindingError}`,
+        readbackStatus: "failed",
+        readbackArtifactPath: filePath
+      };
+    }
+    const verifiedTargetId = verifier(value);
+    const record = value && typeof value === "object" ? value as Record<string, unknown> : {};
+    return {
+      expectedReadback,
+      readbackStatus: verifiedTargetId ? "passed" : "failed",
+      readbackArtifactPath: filePath,
+      verifiedTargetId,
+      actionApprovalId: typeof record.actionApprovalId === "string" ? record.actionApprovalId : undefined,
+      approvedFingerprint: typeof record.approvedFingerprint === "string" ? record.approvedFingerprint : undefined,
+      verifiedAt: typeof record.actionVerifiedAt === "string" ? record.actionVerifiedAt : undefined
+    };
+  } catch {
+    return {
+      expectedReadback,
+      readbackStatus: "failed",
+      readbackArtifactPath: filePath
+    };
+  }
+}
+
+function runAgentHandoffProposal(
+  projectRoot: string,
+  sessionId: string,
+  proposal: AgentHandoffProposal | undefined
+): void {
+  if (!proposal) {
+    return;
+  }
+  const state = isRuntimeProjectInitialized(projectRoot) ? loadState(projectRoot) : null;
+  const stage = proposal.stage ?? state?.currentStage;
+  if (!stage) {
+    console.log(`agent proposed handoff: ${proposal.toAgent}`);
+    console.log("handoff: skipped until project is initialized");
+    return;
+  }
+  const packet: HandoffPacket = {
+    fromAgent: proposal.fromAgent ?? (state ? WORKFLOW_STAGES[state.currentStage].ownerAgent : "Orchestrator"),
+    toAgent: proposal.toAgent,
+    stage,
+    summary: proposal.summary,
+    roleContract: agentRoleContract(proposal.toAgent),
+    artifactRefs: proposal.artifactRefs,
+    acceptanceCriteria: proposal.acceptanceCriteria,
+    blockers: proposal.blockers,
+    nextCommand: proposal.nextCommand,
+    resumeCursor: `agent-handoff:${stage}:${proposal.toAgent}`,
+    createdAt: new Date().toISOString()
+  };
+  console.log(`agent proposed handoff: ${packet.fromAgent} -> ${packet.toAgent}`);
+  if (packet.nextCommand) {
+    console.log(`handoff next command: ${packet.nextCommand}`);
+  }
+  const violation = handoffContractViolation(packet);
+  if (violation) {
+    console.log(`handoff rejected: ${violation}`);
+    if (state) {
+      updateRuntimeSession(projectRoot, sessionId, {
+        blocker: `handoff rejected: ${violation}`,
+        note: `agent handoff rejected: ${packet.fromAgent} -> ${packet.toAgent}`
+      });
+    }
+    return;
+  }
+  if (!state) {
+    return;
+  }
+  const record = recordRuntimeHandoff(projectRoot, sessionId, packet);
+  console.log(`handoff queued: ${record.id}`);
+  updateRuntimeSession(projectRoot, sessionId, {
+    handoffPacket: packet,
+    checkpoint: `handoff proposed to ${packet.toAgent}`,
+    note: `agent handoff proposed: ${packet.fromAgent} -> ${packet.toAgent}`
+  });
+}
+
+function hasReadyAiProvider(config: ReturnType<typeof loadHarnessConfig>): boolean {
+  return configuredAiProviders(config).length > 0;
+}
+
+function safeHasReadyAiProvider(projectRoot: string): boolean {
+  try {
+    return hasReadyAiProvider(loadRuntimeChatConfig(projectRoot));
+  } catch {
+    return false;
+  }
+}
+
+function printFreshProjectStatus(projectRoot: string, commandSurface: CommandSurface = "rph"): void {
+  const config = createHarnessConfig(process.env);
+  console.log("RPH project: not initialized");
+  console.log(`root: ${projectRoot}`);
+  console.log("status: setup required");
+  console.log("");
+  console.log(renderSetupGuide(config));
+  console.log("");
+  console.log("next:");
+  console.log(`- ${runtimeSurfaceCommand(commandSurface, "setup auto")}`);
+  console.log(`- ${runtimeSurfaceCommand(commandSurface, "setup auto --live")}`);
+  console.log(`- ${runtimeSurfaceCommand(commandSurface, "pm start")}`);
+}
+
+function printMissingAiAgentGuidance(projectRoot: string, proposedCommand?: string, commandSurface: CommandSurface = "rph"): void {
+  const config = createHarnessConfig(process.env, undefined, loadHarnessConfig(projectRoot));
+  console.log("AI agent is not connected yet.");
+  console.log(`agent proposed command: ${proposedCommand ?? runtimeSurfaceCommand(commandSurface, "setup auto")}`);
+  console.log("");
+  console.log(renderSetupGuide(config));
+  console.log("");
+  console.log("next:");
+  console.log(`- ${runtimeSurfaceCommand(commandSurface, "setup auto")}`);
+  console.log(`- ${runtimeSurfaceCommand(commandSurface, "setup auto --live")}`);
+  console.log(`- ${runtimeSurfaceCommand(commandSurface, "setup auto --from-env --live")}`);
 }
 
 function isReadOnlyAgentCommand(command: string): boolean {
   try {
     const parsed = parseCli(parseCommandLine(command));
-    return ["status", "next", "help"].includes(parsed.command);
+    if (["status", "help"].includes(parsed.command)) {
+      return true;
+    }
+    if (parsed.command === "next") {
+      return !optionBool(parsed.options, "execute");
+    }
+    if (parsed.command === "agent" && ["status", "handoffs"].includes(parsed.subcommand ?? "status")) {
+      return true;
+    }
+    return false;
   } catch {
     return false;
   }
+}
+
+function isLocalAgentCommand(command: string): boolean {
+  try {
+    if (isUserApprovalAgentCommand(command)) {
+      return false;
+    }
+    const parsed = parseCli(parseCommandLine(command));
+    switch (parsed.command) {
+      case "status":
+      case "next":
+      case "help":
+      case "productize":
+      case "pm":
+      case "pd":
+      case "fe":
+      case "be":
+      case "qa":
+        return true;
+      case "agent":
+        return ["run", "continue", "status", "handoffs"].includes(parsed.subcommand ?? "status");
+      case "docs":
+        return ["approve", "list", "show", "diff"].includes(parsed.subcommand ?? "");
+      default:
+        return false;
+    }
+  } catch {
+    return false;
+  }
+}
+
+function isUserApprovalAgentCommand(command: string): boolean {
+  const normalized = command.trim().startsWith("/") ? command.trim() : `/${command.trim()}`;
+  return isUserApprovalCommand(normalized);
 }
 
 function handleProductize(
@@ -793,18 +6327,15 @@ function readPipedStdin(): string {
 function agentChatSystemPrompt(): string {
   return [
     "You are the connected Real Product Harness AI agent inside a terminal runtime.",
-    "Normal user text can be conversation or local workflow intent.",
-    "Stay grounded in project state, approved artifacts, and available slash commands.",
-    "If local action already ran, summarize what changed and the next command.",
+    "Normal user text is conversation; slash-prefixed commands are explicit workflow controls.",
+    "Stay grounded in project state, approved artifacts, available slash commands, and current blockers.",
+    "For mutating work, propose the command or handoff instead of claiming it already ran.",
     "Use Korean by default."
   ].join(" ");
 }
 
 function loadRuntimeChatConfig(projectRoot: string): ReturnType<typeof loadHarnessConfig> {
-  if (isRuntimeProjectInitialized(projectRoot)) {
-    return syncHarnessConfigFromEnv(projectRoot);
-  }
-  return loadHarnessConfig(projectRoot);
+  return readHarnessConfigSnapshot(projectRoot);
 }
 
 function isRuntimeProjectInitialized(projectRoot: string): boolean {
@@ -819,7 +6350,7 @@ function isRuntimeProjectInitialized(projectRoot: string): boolean {
 function resolveRuntimeSessionId(projectRoot: string): string {
   if (isRuntimeProjectInitialized(projectRoot)) {
     const current = loadRuntimeSession(projectRoot);
-    if (current && (current.status === "active" || current.status === "paused")) {
+    if (current && isContinuableRuntimeManifestStatus(current.status)) {
       return current.sessionId;
     }
   }
@@ -879,6 +6410,10 @@ function updateRuntimeContinuation(projectRoot: string, sessionId: string, ok: b
   });
 }
 
+function isContinuableRuntimeManifestStatus(status: RuntimeSessionManifest["status"]): boolean {
+  return status === "active" || status === "paused" || status === "blocked" || status === "recovering";
+}
+
 async function handleInit(projectRoot: string, options: Record<string, string | boolean>): Promise<void> {
   const dryRun = optionBool(options, "dry-run");
   const yes = optionBool(options, "yes");
@@ -914,17 +6449,59 @@ async function handleInit(projectRoot: string, options: Record<string, string | 
   }
 }
 
-function handleStatus(projectRoot: string): void {
+function handleWorkspace(
+  projectRoot: string,
+  subcommand: string | undefined,
+  options: Record<string, string | boolean> = {}
+): void {
+  if (subcommand && subcommand !== "status") {
+    throw new Error(`unsupported workspace command: ${subcommand}. available: workspace [status] [--json]`);
+  }
+  const snapshot = buildOperatorWorkspace(projectRoot);
+  if (optionBool(options, "json")) {
+    console.log(JSON.stringify(snapshot, null, 2));
+    return;
+  }
+  console.log(renderOperatorWorkspace(snapshot));
+}
+
+function handleStatus(projectRoot: string, options: { commandSurface?: "rph" | "slash"; json?: boolean } = {}): void {
+  if (options.json) {
+    console.log(JSON.stringify(buildOperatorWorkspace(projectRoot), null, 2));
+    return;
+  }
+  if (!isRuntimeProjectInitialized(projectRoot)) {
+    printFreshProjectStatus(projectRoot, options.commandSurface ?? "rph");
+    return;
+  }
   requireInitialized(projectRoot);
   const project = loadProject(projectRoot);
   const state = loadState(projectRoot);
   const config = loadHarnessConfig(projectRoot);
   const stage = WORKFLOW_STAGES[state.currentStage];
+  const session = loadRuntimeSession(projectRoot);
+  const advance = workflowAdvanceStatusFromRuntimeQueue(session, state) ?? workflowAdvanceStatus(state);
+  const digestCommand = advance.canAdvance
+    ? advance.nextCommand ?? (advance.nextStage ? recommendedCommand(state, advance.nextStage) : undefined)
+    : commandForWorkflowStage(state.currentStage) ?? advance.nextCommand ?? (advance.nextStage ? recommendedCommand(state, advance.nextStage) : undefined);
+  console.log("RPH status");
+  console.log(`- current: ${stage.id} (${stage.name}) owner=${stage.ownerAgent}`);
+  console.log(`- next: ${digestCommand ?? "none"}`);
+  console.log(`- blocked: ${advance.canAdvance ? "none" : advance.reasons[0] ?? "unknown"}`);
+  console.log(`- chat: rph ask "다음에 뭐 하면 돼?"`);
+  for (const line of runtimeDigestLines(projectRoot, session)) {
+    console.log(line);
+  }
   console.log(`프로젝트: ${project.name}`);
   console.log(`현재 단계: ${stage.id} (${stage.name})`);
   console.log(`담당: ${stage.ownerAgent}`);
   console.log(`AI: ${config.activeAiProvider}`);
   console.log(`MCP: ${configuredMcpServers(config).map((server) => server.id).join(", ") || "none"}`);
+  printHarnessReadiness(projectRoot, config, state, options);
+  printLatestVerifiedTargets(projectRoot);
+  printLatestAgentToolProof(projectRoot);
+  printProofLedgerSummary(projectRoot, { compact: true });
+  printAgentIntegrationEvidence(state);
   console.log(`paused: ${state.paused}`);
   const next = nextStage(state);
   console.log(`다음 단계: ${next ?? "없음"}`);
@@ -975,16 +6552,80 @@ function handleStatus(projectRoot: string): void {
   }
 }
 
-function handleNext(projectRoot: string): void {
+async function handleNext(projectRoot: string, options: Record<string, string | boolean> = {}): Promise<void> {
   requireInitialized(projectRoot);
   const state = loadState(projectRoot);
-  const next = nextStage(state);
+  const session = loadRuntimeSession(projectRoot);
+  const advance = workflowAdvanceStatusFromRuntimeQueue(session, state) ?? workflowAdvanceStatus(state);
+  const next = advance.nextStage;
   if (!next) {
     console.log("다음 단계 없음");
     return;
   }
+  const command = advance.nextCommand ?? recommendedCommand(state, next);
+  const transitionContext = workflowTransitionContext(projectRoot, next);
+  const check = canTransition(state, next, transitionContext);
   console.log(`다음 권장 단계: ${next}`);
-  console.log(`명령어: ${recommendedCommand(state, next)}`);
+  console.log(`명령어: ${command}`);
+  if (!optionBool(options, "execute")) {
+    if (!check.ok) {
+      console.log("실행 대기:");
+      check.reasons.forEach((reason) => console.log(`- ${reason}`));
+    }
+    console.log("stage queue를 실제 진행하려면: /next --execute");
+    return;
+  }
+  if (!check.ok) {
+    console.log("stage queue 실행 차단:");
+    check.reasons.forEach((reason) => console.log(`- ${reason}`));
+    if (session && isContinuableRuntimeManifestStatus(session.status)) {
+      updateRuntimeSession(projectRoot, session.sessionId, {
+        blocker: check.reasons.join("; "),
+        note: `next execution blocked: ${state.currentStage} -> ${next}`
+      });
+    }
+    process.exitCode = 1;
+    return;
+  }
+  const updated = transitionState(state, next, "stage queue advanced by /next --execute", transitionContext);
+  saveState(projectRoot, updated);
+  if (session && isContinuableRuntimeManifestStatus(session.status)) {
+    updateRuntimeSession(projectRoot, session.sessionId, {
+      status: "active",
+      stage: next,
+      blocker: null,
+      checkpoint: `stage advanced to ${next}`,
+      note: `next execution advanced: ${state.currentStage} -> ${next}`
+    });
+  }
+  console.log(`stage queue 실행 완료: ${state.currentStage} -> ${next}`);
+  console.log(`다음 명령어: ${recommendedAgentCommand(updated)}`);
+}
+
+function workflowAdvanceStatusFromRuntimeQueue(
+  session: RuntimeSessionManifest | null,
+  state: ProjectState
+): ReturnType<typeof workflowAdvanceStatus> | null {
+  const queue = session?.stageQueue ?? [];
+  const currentEntryIndex = queue.findIndex((entry) => entry.stage === state.currentStage);
+  const activeDifferentStage = queue.find((entry) => entry.status === "active" && entry.stage !== state.currentStage);
+  const readyAfterCurrent = queue.find((entry, index) =>
+    entry.status === "ready" &&
+    (currentEntryIndex === -1 || index > currentEntryIndex) &&
+    (WORKFLOW_STAGES[state.currentStage].nextStages.includes(entry.stage) || WORKFLOW_STAGES[entry.stage].prerequisites.includes(state.currentStage))
+  );
+  const queued = activeDifferentStage ?? readyAfterCurrent;
+  if (!queued) {
+    return null;
+  }
+  const check = canTransition(state, queued.stage);
+  return {
+    currentStage: state.currentStage,
+    nextStage: queued.stage,
+    nextCommand: queued.nextCommand ?? recommendedCommand(state, queued.stage),
+    canAdvance: check.ok,
+    reasons: check.reasons
+  };
 }
 
 function handlePause(projectRoot: string, paused: boolean): void {
@@ -992,7 +6633,7 @@ function handlePause(projectRoot: string, paused: boolean): void {
   const state = loadState(projectRoot);
   saveState(projectRoot, { ...state, paused });
   const session = loadRuntimeSession(projectRoot);
-  if (session && (session.status === "active" || session.status === "paused")) {
+  if (session && isContinuableRuntimeManifestStatus(session.status)) {
     updateRuntimeSession(projectRoot, session.sessionId, {
       status: paused ? "paused" : "active",
       checkpoint: paused ? "workflow paused" : "workflow resumed",
@@ -1008,7 +6649,7 @@ function handleCancel(projectRoot: string): void {
   const state = loadState(projectRoot);
   saveState(projectRoot, { ...state, paused: true });
   const session = loadRuntimeSession(projectRoot);
-  if (session && (session.status === "active" || session.status === "paused")) {
+  if (session && isContinuableRuntimeManifestStatus(session.status)) {
     updateRuntimeSession(projectRoot, session.sessionId, {
       status: "cancelled",
       pendingAction: null,
@@ -1027,8 +6668,13 @@ async function handleSetup(
   options: Record<string, string | boolean>,
   context: CommandContext = {}
 ): Promise<void> {
+  if (context.runtimeShell) {
+    options = { ...options, commandSurface: "slash" };
+  }
   const initialized = isRuntimeProjectInitialized(projectRoot);
-  if (!initialized && (subcommand === undefined || subcommand === "auto")) {
+  if (!initialized && isReadOnlySetupRequest(subcommand, options)) {
+    // Read-only setup discovery must be safe to run before a project exists.
+  } else if (!initialized && (subcommand === undefined || subcommand === "auto" || subcommand === "repair" || (subcommand === "mcp" && args[0] === "add"))) {
     const projectName = optionString(options, "project-name") ?? (path.basename(projectRoot) || "RPH Project");
     initProject(projectRoot, { projectName });
     console.log(`RPH project initialized: ${projectName}`);
@@ -1059,10 +6705,15 @@ async function handleSetup(
       return;
     }
     case "check": {
-      await runSetupChecks(projectRoot, loadHarnessConfig(projectRoot));
+      await runSetupChecks(projectRoot, loadHarnessConfig(projectRoot), commandSurfaceFromOptions(options));
       return;
     }
-    case "ai": {
+    case "repair": {
+      await runSetupRepair(projectRoot, options, context);
+      return;
+    }
+    case "ai":
+    case "provider": {
       const config = syncHarnessConfigFromEnv(projectRoot);
       const providerId = args[0] ? parseAiProviderId(args[0]) : config.activeAiProvider;
       if (providerId === "auto" || providerId === "none") {
@@ -1075,6 +6726,60 @@ async function handleSetup(
       return;
     }
     case "mcp": {
+      if (args[0] === "add") {
+        const id = args[1];
+        const url = optionString(options, "url");
+        if (!id || !url) {
+          throw new Error("usage: /setup mcp add <id> --url <https://host/mcp> [--auth bearer|x-goog-api-key|none] [--auth-env ENV] [--allow-tool tool.name,other.read] [--probe-tool name] [--probe-args-json '{}']");
+        }
+        const probeTool = optionString(options, "probe-tool");
+        const agentReadOnlyTools = parseToolListOption(optionString(options, "allow-tool") ?? optionString(options, "allow-tools"));
+        const next = addCustomProtocolMcpServer(projectRoot, {
+          id,
+          name: optionString(options, "name"),
+          url,
+          authMode: parseMcpAuthMode(optionString(options, "auth")),
+          authEnvKey: optionString(options, "auth-env") ?? optionString(options, "env"),
+          protocolToolCallProbe: probeTool
+            ? {
+                toolName: probeTool,
+                arguments: parseJsonObjectOption(optionString(options, "probe-args-json") ?? optionString(options, "probe-args"))
+              }
+            : undefined,
+          agentReadOnlyTools,
+          enabled: true
+        });
+        const server = next.mcpServers[parseMcpServerId(id)];
+        if (!server) {
+          throw new Error(`custom MCP server was not saved: ${id}`);
+        }
+        console.log(`Custom protocol MCP server 추가: ${server.id}`);
+        if ((server.agentReadOnlyTools ?? []).length > 0) {
+          console.log(`agent read-only tools: ${(server.agentReadOnlyTools ?? []).join(",")}`);
+        } else {
+          console.log("agent read-only tools: none (mcp.tools.call is blocked until --allow-tool or --probe-tool is configured)");
+        }
+        printMcpStatus(next);
+        if (optionBool(options, "live")) {
+          const checks = [await testMcpConnection(next, server.id)];
+          const filePath = writeLiveConnectionReport(projectRoot, checks);
+          printConnectionChecks(checks);
+          printConnectionProofSteps(checks);
+          printFirstValueActions(checks);
+          printSetupRecoveryHints(checks, commandSurfaceFromOptions(options));
+          console.log(`report: ${filePath}`);
+          assertLiveSetupSucceeded(checks, options);
+          if ((server.agentReadOnlyTools ?? []).length > 0) {
+            const binding = await bindMcpReadOnlyToolContracts(projectRoot, server.id, process.env);
+            console.log(`MCP read-only tool contracts bound: ${server.id}`);
+            console.log(`bound tools: ${binding.boundTools.join(",") || "none"}`);
+            if (binding.missingTools.length > 0) {
+              console.log(`missing allowlisted tools: ${binding.missingTools.join(",")}`);
+            }
+          }
+        }
+        return;
+      }
       const config = syncHarnessConfigFromEnv(projectRoot);
       if (!args[0]) {
         printMcpStatus(config);
@@ -1096,8 +6801,18 @@ async function handleSetup(
       return;
     }
     default:
-      console.log("Setup 명령어: auto | detect | apply | check | ai [openai|anthropic|gemini|local] | mcp [notion|github|figma|stitch] | custom <key> <value>");
+      console.log("Setup 명령어: auto | repair | detect | apply | check | ai/provider [openai|anthropic|gemini|local] | mcp [notion|github|figma|stitch] | mcp add <id> --url <https://host/mcp> | custom <key> <value>");
   }
+}
+
+function isReadOnlySetupRequest(subcommand: string | undefined, options: Record<string, string | boolean>): boolean {
+  if (subcommand === "detect") {
+    return true;
+  }
+  if (subcommand !== undefined && subcommand !== "auto") {
+    return false;
+  }
+  return optionBool(options, "guide") || optionBool(options, "status") || optionBool(options, "non-interactive");
 }
 
 async function printSetupAutoSummary(
@@ -1107,32 +6822,121 @@ async function printSetupAutoSummary(
   const config = createHarnessConfig(process.env, undefined, loadHarnessConfig(projectRoot));
   console.log(renderSetupGuide(config));
   console.log("");
-  console.log("권장 순서: /setup detect -> /setup apply -> /setup check");
+  console.log("권장 순서: rph setup detect -> rph setup apply -> rph setup check");
+  if (isReadOnlySetupRequest("auto", options)) {
+    console.log("guide: 현재 shell env 기준 연결 가능 상태만 표시했습니다. 파일 변경 없음.");
+    console.log("초기화와 값 입력까지 진행하려면 TTY에서 `rph setup auto`를 실행하세요.");
+    return;
+  }
   if (optionBool(options, "live")) {
     console.log("auto --live: env 감지 결과를 적용한 뒤 live check까지 실행합니다.");
     const appliedConfig = syncHarnessConfigFromEnv(projectRoot);
-    await runSetupChecks(projectRoot, appliedConfig);
+    const checks = await runSetupChecks(projectRoot, appliedConfig, commandSurfaceFromOptions(options));
+    await bindVerifiedMcpReadOnlyContracts(projectRoot, checks, options);
+    assertLiveSetupSucceeded(checks, options);
     return;
   }
-  console.log("대화형 연결 마법사로 값 입력까지 진행하려면 TTY에서 `/setup auto`를 실행하세요.");
-  console.log("Live 검증까지 한 번에 하려면: /setup auto --live");
+  console.log("대화형 연결 마법사로 값 입력까지 진행하려면 TTY에서 `rph setup auto`를 실행하세요.");
+  console.log("Live 검증까지 한 번에 하려면: rph setup auto --live");
 }
 
 async function runSetupChecks(
   projectRoot: string,
-  config: ReturnType<typeof loadHarnessConfig>
-): Promise<void> {
+  config: ReturnType<typeof loadHarnessConfig>,
+  commandSurface: CommandSurface = "rph"
+): Promise<ConnectionCheck[]> {
   printConfigSummary(config);
   console.log("");
   console.log("Live connection check");
   const checks = [...await testAllAiConnections(config), ...await testAllMcpConnections(config)];
   if (checks.length === 0) {
-    console.log("- 검사할 configured 연결이 없습니다. 먼저 /setup apply 또는 /setup auto를 실행하세요.");
+    console.log("- 검사할 configured 연결이 없습니다. 먼저 rph setup apply 또는 rph setup auto를 실행하세요.");
+    return [];
+  }
+  const filePath = writeLiveConnectionReport(projectRoot, checks);
+  printConnectionChecks(checks);
+  printConnectionProofSteps(checks);
+  printFirstValueActions(checks);
+  printSetupRecoveryHints(checks, commandSurface);
+  console.log(`report: ${filePath}`);
+  return checks;
+}
+
+async function runSetupRepair(
+  projectRoot: string,
+  options: Record<string, string | boolean>,
+  context: CommandContext = {}
+): Promise<void> {
+  console.log("RPH Setup Repair");
+  const latestChecks = readLatestConnectionChecks(projectRoot);
+  const failures = latestChecks.filter((check) => check.status !== "passed" && (check.kind === "ai" || check.kind === "mcp"));
+  if (failures.length === 0) {
+    console.log("- 최신 live report에 실패한 AI/MCP 연결이 없습니다.");
+    if (shouldRunInteractiveSetup({ ...options, live: true }, context)) {
+      console.log(`launching: ${runtimeSurfaceCommand(commandSurfaceFromOptions(options), "setup auto --live")}`);
+      await runAutoSetupWizard(projectRoot, { ...options, live: true }, context);
+      return;
+    }
+    console.log(`next: ${runtimeSurfaceCommand(commandSurfaceFromOptions(options), "setup auto --live")}`);
     return;
   }
-  const filePath = writeConnectionReport(projectRoot, checks);
-  printConnectionChecks(checks);
-  console.log(`report: ${filePath}`);
+
+  const selectedAi = uniqueConnectionIds(failures.filter((check) => check.kind === "ai").map((check) => parseAiProviderId(check.id)));
+  const selectedMcp = uniqueConnectionIds(failures.filter((check) => check.kind === "mcp").map((check) => parseMcpServerId(check.id)));
+  console.log(`failed connections from latest report: ${failures.map((check) => `${check.kind}:${check.id}`).join(", ")}`);
+  console.log("repair scope: 최신 실패 연결만 재검증합니다. 다른 configured provider로 범위를 넓히지 않습니다.");
+
+  const repairOptions = { ...options, live: true };
+  const fromEnv = optionBool(options, "from-env");
+  const canPrompt = !fromEnv && (Boolean(context.prompter) || Boolean(process.stdin.isTTY && process.stdout.isTTY));
+  if (!fromEnv && !canPrompt) {
+    console.log("repair guide: 현재 세션은 입력 프롬프트를 열 수 없습니다.");
+    console.log("next: env 값을 설정한 뒤 /setup repair --from-env --live");
+    return;
+  }
+
+  await withSetupPrompter(context, fromEnv, async (prompter) => {
+    if (canPrompt) {
+      console.log("");
+      console.log("실패한 연결 값만 다시 입력합니다. Enter는 기존 값을 유지합니다.");
+      const retryValues = await collectRetryEnvValues(prompter, projectRoot, failures);
+      const savedKeys = saveSetupEnvValues(projectRoot, retryValues, ".env 재저장 완료");
+      if (savedKeys.length === 0) {
+        console.log("- 새로 입력한 값이 없어 현재 env/.env 값으로 재검증합니다.");
+      }
+      loadEnvFile(path.join(projectRoot, ".env"));
+    }
+
+    let config = syncHarnessConfigFromEnv(projectRoot);
+    for (const providerId of selectedAi) {
+      config = setAiProviderEnabled(projectRoot, providerId, true);
+    }
+    if (selectedAi[0]) {
+      config = setHarnessConfigValue(projectRoot, "ai.active", selectedAi[0]);
+    }
+    for (const serverId of selectedMcp) {
+      config = setMcpServerEnabled(projectRoot, serverId, true);
+    }
+    config = syncHarnessConfigFromEnv(projectRoot);
+
+    console.log("");
+    console.log("연결 테스트");
+    const checks = await runSelectedConnectionChecksWithRecovery(
+      projectRoot,
+      config,
+      selectedAi,
+      selectedMcp,
+      repairOptions,
+      prompter,
+      canPrompt
+    );
+    await bindVerifiedMcpReadOnlyContracts(projectRoot, checks, repairOptions);
+    assertLiveSetupSucceeded(checks, repairOptions);
+  });
+}
+
+function uniqueConnectionIds<T extends string>(ids: T[]): T[] {
+  return [...new Set(ids)];
 }
 
 function shouldRunInteractiveSetup(options: Record<string, string | boolean>, context: CommandContext): boolean {
@@ -1154,6 +6958,7 @@ async function runAutoSetupWizard(
       ? "AI agent와 MCP를 현재 shell env에서 읽어 fresh .env로 연결합니다."
       : "AI agent와 MCP를 실제로 연결합니다. Enter는 기본값/건너뛰기입니다.");
     console.log("secret 입력은 가능한 경우 화면에 표시하지 않고, RPH는 secret 값을 로그/설정 JSON에 다시 출력하지 않습니다.");
+    console.log("GitHub는 기존 gh 로그인을 감지하면 token 값 대신 GITHUB_TOKEN_SOURCE=gh-cli만 저장합니다.");
     console.log("");
 
     let config = syncHarnessConfigFromEnv(projectRoot);
@@ -1168,13 +6973,8 @@ async function runAutoSetupWizard(
       Object.assign(envValues, await collectMcpEnvValues(prompter, serverId, projectRoot, fromEnv));
     }
 
-    if (Object.keys(envValues).length > 0) {
-      const result = upsertEnvFileValues(path.join(projectRoot, ".env"), envValues);
-      Object.assign(process.env, envValues);
-      const keys = [...new Set([...result.updatedKeys, ...result.appendedKeys])].sort();
-      console.log("");
-      console.log(`.env 저장 완료: ${keys.join(", ")}`);
-    } else {
+    const savedKeys = saveSetupEnvValues(projectRoot, envValues);
+    if (savedKeys.length === 0) {
       console.log("");
       console.log(".env에 새로 저장할 값은 없습니다.");
     }
@@ -1194,18 +6994,75 @@ async function runAutoSetupWizard(
 
     console.log("");
     console.log("연결 테스트");
-    const checks = await runSelectedConnectionChecks(config, selectedAi, selectedMcp, optionBool(options, "live"));
-    if (checks.length > 0) {
-      const filePath = writeConnectionReport(projectRoot, checks);
-      printConnectionChecks(checks);
-      console.log(`report: ${filePath}`);
-    } else {
-      console.log("- 테스트할 연결이 아직 없습니다. AI provider 또는 MCP 값을 입력하면 자동 검증합니다.");
-    }
+    const checks = await runSelectedConnectionChecksWithRecovery(
+      projectRoot,
+      config,
+      selectedAi,
+      selectedMcp,
+      options,
+      prompter,
+      !fromEnv
+    );
+    await bindVerifiedMcpReadOnlyContracts(projectRoot, checks, options);
 
     console.log("");
     console.log("최종 상태");
     console.log(renderSetupGuide(syncHarnessConfigFromEnv(projectRoot)));
+    assertLiveSetupSucceeded(checks, options);
+  });
+}
+
+async function bindVerifiedMcpReadOnlyContracts(
+  projectRoot: string,
+  checks: ConnectionCheck[],
+  options: Record<string, string | boolean>
+): Promise<void> {
+  if (!optionBool(options, "live")) {
+    return;
+  }
+  const config = syncHarnessConfigFromEnv(projectRoot);
+  const mcpChecks = checks.filter((check) => check.kind === "mcp" && check.status === "passed");
+  let boundAny = false;
+  for (const check of mcpChecks) {
+    const serverId = parseMcpServerId(check.id);
+    const server = config.mcpServers[serverId];
+    if (!server || (server.agentReadOnlyTools ?? []).length === 0) {
+      continue;
+    }
+    const binding = await bindMcpReadOnlyToolContracts(projectRoot, serverId, process.env);
+    console.log(`MCP read-only tool contracts bound: ${serverId}`);
+    console.log(`bound tools: ${binding.boundTools.join(",") || "none"}`);
+    if (binding.missingTools.length > 0) {
+      console.log(`missing allowlisted tools: ${binding.missingTools.join(",")} (agent tools/call disabled for missing tools)`);
+    }
+    boundAny = true;
+  }
+  if (boundAny) {
+    const filePath = writeLiveConnectionReport(projectRoot, checks);
+    console.log(`report refreshed after MCP contract binding: ${filePath}`);
+  }
+}
+
+function assertLiveSetupSucceeded(checks: ConnectionCheck[], options: Record<string, string | boolean>): void {
+  if (!optionBool(options, "live")) {
+    return;
+  }
+  const failures = liveSetupFailures(checks, options);
+  if (checks.length === 0) {
+    throw new Error("setup live check failed: no selected or configured connections were tested");
+  }
+  if (failures.length > 0) {
+    throw new Error(`setup live check failed: ${failures.map((check) => `${check.kind}:${check.id} ${check.status} (${check.message})`).join("; ")}`);
+  }
+  console.log("setup live check passed");
+  console.log("이제 일반 텍스트를 입력하면 연결된 AI agent와 대화합니다.");
+  console.log("handoff: runtime ready");
+  console.log(`next: ${runtimeSurfaceCommand(commandSurfaceFromOptions(options), "pm start")}`);
+}
+
+function liveSetupFailures(checks: ConnectionCheck[], options: Record<string, string | boolean>): ConnectionCheck[] {
+  return checks.filter((check) => {
+    return check.status !== "passed" && !(optionBool(options, "allow-missing") && check.status === "skipped" && check.missingEnv.length > 0);
   });
 }
 
@@ -1290,35 +7147,37 @@ async function chooseMcpServers(
 ): Promise<McpServerId[]> {
   const optionValue = optionString(options, "mcp");
   if (optionValue) {
-    return parseMcpSelection(optionValue);
+    return parseMcpSelection(optionValue, config);
   }
   const defaultServers = defaultMcpServers(config, projectRoot);
   console.log("");
   console.log("2. MCP 선택");
-  console.log("  notion, github, figma, stitch 중 연결할 항목을 쉼표로 입력하세요.");
+  console.log("  notion, github, figma, stitch 또는 추가된 custom id를 쉼표로 입력하세요.");
+  console.log("  새 protocol MCP 서버는 `/setup mcp add <id> --url <https://host/mcp>`로 먼저 등록합니다.");
   console.log("  all = 전체, none = 건너뛰기");
   const answer = await askText(prompter, "MCP", defaultServers.join(","));
-  return parseMcpSelection(answer);
+  return parseMcpSelection(answer, config);
 }
 
 async function collectAiEnvValues(
   prompter: SetupPrompter,
   providerId: AiProviderId,
-  writeExistingEnv = false
+  writeExistingEnv = false,
+  promptExistingEnv = false
 ): Promise<Record<string, string>> {
   const definition = AI_PROVIDER_DEFINITIONS[providerId];
   const values: Record<string, string> = {};
   console.log("");
   console.log(`AI 연결: ${definition.name}`);
   for (const key of definition.envKeys) {
-    if (process.env[key]) {
+    if (process.env[key] && !promptExistingEnv) {
       console.log(`- ${key}: 이미 설정됨`);
       if (writeExistingEnv) {
         values[key] = process.env[key] ?? "";
       }
       continue;
     }
-    const answer = await askEnvValue(prompter, key, "");
+    const answer = await askEnvValue(prompter, key, process.env[key] ?? "");
     if (answer) {
       values[key] = answer;
     }
@@ -1342,22 +7201,32 @@ async function collectMcpEnvValues(
   prompter: SetupPrompter,
   serverId: McpServerId,
   projectRoot: string,
-  writeExistingEnv = false
+  writeExistingEnv = false,
+  promptExistingEnv = false
 ): Promise<Record<string, string>> {
-  const definition = MCP_SERVER_DEFINITIONS[serverId];
+  const config = syncHarnessConfigFromEnv(projectRoot);
+  const definition = config.mcpServers[serverId];
+  if (!definition) {
+    throw new Error(`unknown MCP server: ${serverId}`);
+  }
   const values: Record<string, string> = {};
   const discovered = serverId === "github" ? discoverGitHubEnv(projectRoot) : {};
   console.log("");
   console.log(`MCP 연결: ${definition.name}`);
   for (const key of definition.envKeys) {
-    if (process.env[key]) {
+    if (process.env[key] && !promptExistingEnv) {
       console.log(`- ${key}: 이미 설정됨`);
       if (writeExistingEnv) {
         values[key] = process.env[key] ?? "";
       }
       continue;
     }
-    const defaultValue = discovered[key] ?? "";
+    if (serverId === "github" && key === "GITHUB_TOKEN" && discovered.GITHUB_TOKEN_SOURCE === "gh-cli") {
+      console.log("- GITHUB_TOKEN: GitHub CLI 인증 감지; token 값은 .env에 저장하지 않고 실행 시 임시 사용");
+      values.GITHUB_TOKEN_SOURCE = "gh-cli";
+      continue;
+    }
+    const defaultValue = process.env[key] ?? discovered[key] ?? "";
     if (defaultValue) {
       console.log(`- ${key}: 로컬 환경에서 기본값 감지`);
     }
@@ -1372,12 +7241,8 @@ async function collectMcpEnvValues(
 async function runSelectedConnectionChecks(
   config: ReturnType<typeof loadHarnessConfig>,
   selectedAi: AiProviderId[],
-  selectedMcp: McpServerId[],
-  includeAllConfigured: boolean
+  selectedMcp: McpServerId[]
 ) {
-  if (includeAllConfigured) {
-    return [...await testAllAiConnections(config), ...await testAllMcpConnections(config)];
-  }
   const checks = [];
   for (const providerId of selectedAi) {
     checks.push(await testAiConnection(config, providerId));
@@ -1386,6 +7251,103 @@ async function runSelectedConnectionChecks(
     checks.push(await testMcpConnection(config, serverId));
   }
   return checks;
+}
+
+async function runSelectedConnectionChecksWithRecovery(
+  projectRoot: string,
+  initialConfig: ReturnType<typeof loadHarnessConfig>,
+  selectedAi: AiProviderId[],
+  selectedMcp: McpServerId[],
+  options: Record<string, string | boolean>,
+  prompter: SetupPrompter,
+  canPromptRetry: boolean
+): Promise<ConnectionCheck[]> {
+  const maxAttempts = optionBool(options, "live") && canPromptRetry ? 3 : 1;
+  let config = initialConfig;
+  let checks: ConnectionCheck[] = [];
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    checks = await runSelectedConnectionChecks(config, selectedAi, selectedMcp);
+    printSelectedConnectionCheckReport(projectRoot, checks, commandSurfaceFromOptions(options));
+    const failures = liveSetupFailures(checks, options);
+    if (!optionBool(options, "live") || failures.length === 0 || attempt === maxAttempts) {
+      return checks;
+    }
+
+    console.log("");
+    console.log(`live check 재시도 준비 (${attempt}/${maxAttempts - 1})`);
+    console.log("실패한 연결 값을 다시 입력하세요. Enter는 기존 값을 유지합니다.");
+    const retryValues = await collectRetryEnvValues(prompter, projectRoot, failures);
+    const savedKeys = saveSetupEnvValues(projectRoot, retryValues, ".env 재저장 완료");
+    if (savedKeys.length === 0) {
+      console.log("- 새로 입력한 값이 없어 기존 값으로 재시도합니다.");
+    }
+    loadEnvFile(path.join(projectRoot, ".env"));
+    config = syncHarnessConfigFromEnv(projectRoot);
+    for (const providerId of selectedAi) {
+      config = setAiProviderEnabled(projectRoot, providerId, true);
+    }
+    if (selectedAi[0]) {
+      config = setHarnessConfigValue(projectRoot, "ai.active", selectedAi[0]);
+    }
+    for (const serverId of selectedMcp) {
+      config = setMcpServerEnabled(projectRoot, serverId, true);
+    }
+    config = syncHarnessConfigFromEnv(projectRoot);
+    console.log("");
+    console.log("연결 테스트 재시도");
+  }
+  return checks;
+}
+
+function printSelectedConnectionCheckReport(
+  projectRoot: string,
+  checks: ConnectionCheck[],
+  commandSurface: CommandSurface = "rph"
+): void {
+  if (checks.length === 0) {
+    console.log("- 테스트할 연결이 아직 없습니다. AI provider 또는 MCP 값을 입력하면 자동 검증합니다.");
+    return;
+  }
+  const filePath = writeLiveConnectionReport(projectRoot, checks);
+  printConnectionChecks(checks);
+  printConnectionProofSteps(checks);
+  printFirstValueActions(checks);
+  printSetupRecoveryHints(checks, commandSurface);
+  console.log(`report: ${filePath}`);
+}
+
+async function collectRetryEnvValues(
+  prompter: SetupPrompter,
+  projectRoot: string,
+  failures: ConnectionCheck[]
+): Promise<Record<string, string>> {
+  const values: Record<string, string> = {};
+  const seen = new Set<string>();
+  for (const check of failures) {
+    const key = `${check.kind}:${check.id}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    if (check.kind === "ai") {
+      Object.assign(values, await collectAiEnvValues(prompter, parseAiProviderId(check.id), true, true));
+    } else if (check.kind === "mcp") {
+      Object.assign(values, await collectMcpEnvValues(prompter, parseMcpServerId(check.id), projectRoot, true, true));
+    }
+  }
+  return values;
+}
+
+function saveSetupEnvValues(projectRoot: string, envValues: Record<string, string>, message = ".env 저장 완료"): string[] {
+  if (Object.keys(envValues).length === 0) {
+    return [];
+  }
+  const result = upsertEnvFileValues(path.join(projectRoot, ".env"), envValues);
+  Object.assign(process.env, envValues);
+  const keys = [...new Set([...result.updatedKeys, ...result.appendedKeys])].sort();
+  console.log("");
+  console.log(`${message}: ${keys.join(", ")}`);
+  return keys;
 }
 
 async function askText(prompter: SetupPrompter, label: string, defaultValue: string): Promise<string> {
@@ -1473,13 +7435,13 @@ function defaultMcpServers(config: ReturnType<typeof loadHarnessConfig>, project
   return discovered.GITHUB_OWNER && discovered.GITHUB_REPO ? ["github", "notion"] : ["notion", "github"];
 }
 
-function parseMcpSelection(value: string): McpServerId[] {
+function parseMcpSelection(value: string, config?: ReturnType<typeof loadHarnessConfig>): McpServerId[] {
   const normalized = value.trim().toLowerCase();
   if (!normalized || ["none", "skip", "later", "no", "n"].includes(normalized)) {
     return [];
   }
   if (normalized === "all") {
-    return Object.keys(MCP_SERVER_DEFINITIONS) as McpServerId[];
+    return Object.keys(config?.mcpServers ?? MCP_SERVER_DEFINITIONS) as McpServerId[];
   }
   const seen = new Set<McpServerId>();
   for (const item of normalized.split(",").map((part) => part.trim()).filter(Boolean)) {
@@ -1490,9 +7452,9 @@ function parseMcpSelection(value: string): McpServerId[] {
 
 function discoverGitHubEnv(projectRoot: string): Record<string, string> {
   const values: Record<string, string> = {};
-  const token = runCapture("gh", ["auth", "token"], projectRoot);
-  if (token) {
-    values.GITHUB_TOKEN = token;
+  const ghBinary = githubCliBinary();
+  if (runStatus(ghBinary, ["auth", "status", "--hostname", "github.com"], projectRoot)) {
+    values.GITHUB_TOKEN_SOURCE = "gh-cli";
   }
   const remote = runCapture("git", ["config", "--get", "remote.origin.url"], projectRoot);
   const parsed = remote ? parseGitHubRemote(remote) : null;
@@ -1501,6 +7463,11 @@ function discoverGitHubEnv(projectRoot: string): Record<string, string> {
     values.GITHUB_REPO = parsed.repo;
   }
   return values;
+}
+
+function runStatus(command: string, args: string[], cwd: string): boolean {
+  const result = spawnSync(command, args, { cwd, encoding: "utf8", stdio: ["ignore", "ignore", "ignore"] });
+  return result.status === 0;
 }
 
 function runCapture(command: string, args: string[], cwd: string): string {
@@ -1546,26 +7513,30 @@ async function handleAi(
   switch (subcommand) {
     case undefined:
     case "status":
-      printAiStatus(config);
+      printAiStatus(config, projectRoot);
+      printLatestVerifiedTargets(projectRoot);
       return;
     case "enable": {
       const providerId = parseAiProviderId(args[0]);
       const next = setAiProviderEnabled(projectRoot, providerId, true);
       console.log(`AI provider 활성화: ${providerId}`);
-      printAiStatus(next);
+      printAiStatus(next, projectRoot);
       return;
     }
     case "disable": {
       const providerId = parseAiProviderId(args[0]);
       const next = setAiProviderEnabled(projectRoot, providerId, false);
       console.log(`AI provider 비활성화: ${providerId}`);
-      printAiStatus(next);
+      printAiStatus(next, projectRoot);
       return;
     }
     case "test": {
       const checks = args[0] ? [await testAiConnection(config, parseAiProviderId(args[0]))] : await testAllAiConnections(config);
-      const filePath = writeConnectionReport(projectRoot, checks);
+      const filePath = writeLiveConnectionReport(projectRoot, checks);
       printConnectionChecks(checks);
+      printConnectionProofSteps(checks);
+      printFirstValueActions(checks);
+      printSetupRecoveryHints(checks);
       console.log(`report: ${filePath}`);
       return;
     }
@@ -1586,6 +7557,7 @@ async function handleAi(
         kind: "prompt",
         id: "ad-hoc"
       }));
+      printAiProviderFallbackNotice(result);
       console.log(result.text);
       console.log(`ai_run: ${recordPath}`);
       return;
@@ -1595,14 +7567,76 @@ async function handleAi(
   }
 }
 
-async function handleMcp(projectRoot: string, subcommand: string | undefined, args: string[]): Promise<void> {
+async function handleMcp(
+  projectRoot: string,
+  subcommand: string | undefined,
+  args: string[],
+  options: Record<string, string | boolean>
+): Promise<void> {
   requireInitialized(projectRoot);
   const config = syncHarnessConfigFromEnv(projectRoot);
   switch (subcommand) {
     case undefined:
     case "status":
       printMcpStatus(config);
+      printLatestVerifiedTargets(projectRoot);
       return;
+    case "tools": {
+      const server = optionString(options, "server") ?? args[0] ?? "all";
+      if (server !== "all" && optionBool(options, "bind")) {
+        const result = await bindMcpReadOnlyToolContracts(projectRoot, parseMcpServerId(server), process.env);
+        console.log(`MCP read-only tool contracts bound: ${server}`);
+        console.log(`bound tools: ${result.boundTools.join(",") || "none"}`);
+        if (result.missingTools.length > 0) {
+          console.log(`missing allowlisted tools: ${result.missingTools.join(",")}`);
+        }
+        printMcpStatus(result.config);
+        return;
+      }
+      if (server !== "all" && !optionBool(options, "agent")) {
+        const output = await listOperatorMcpTools({
+          projectRoot,
+          config,
+          env: process.env,
+          serverId: parseMcpServerId(server)
+        });
+        console.log(output);
+        return;
+      }
+      if (optionBool(options, "discover")) {
+        throw new Error("usage: /mcp tools <server> --discover");
+      }
+      const output = await runAgentFabricTool({
+        projectRoot,
+        config,
+        env: process.env,
+        name: "mcp.tools.list",
+        args: { server }
+      });
+      console.log(output ?? "{}");
+      return;
+    }
+    case "call": {
+      const dottedTarget = args[0] && !args[1] ? parseMcpApprovalAction(args[0]) : null;
+      const server = optionString(options, "server") ?? dottedTarget?.server ?? args[0];
+      const toolName = optionString(options, "tool") ?? optionString(options, "name") ?? dottedTarget?.tool ?? args[1];
+      if (!server || !toolName) {
+        console.log("usage: /mcp call <server> <tool> --read-only --args-json '{}' 또는 /mcp call <server>.<tool> --args-json '{}'");
+        process.exitCode = 2;
+        return;
+      }
+      const output = await callOperatorMcpTool({
+        projectRoot,
+        config,
+        env: process.env,
+        serverId: parseMcpServerId(server),
+        toolName,
+        arguments: parseJsonObjectOption(optionString(options, "args-json") ?? optionString(options, "arguments-json") ?? optionString(options, "args")) ?? {},
+        readOnly: optionBool(options, "read-only") || optionBool(options, "readOnly")
+      });
+      console.log(output);
+      return;
+    }
     case "enable": {
       const serverId = parseMcpServerId(args[0]);
       const next = setMcpServerEnabled(projectRoot, serverId, true);
@@ -1619,17 +7653,143 @@ async function handleMcp(projectRoot: string, subcommand: string | undefined, ar
     }
     case "test": {
       const checks = args[0] ? [await testMcpConnection(config, parseMcpServerId(args[0]))] : await testAllMcpConnections(config);
-      const filePath = writeConnectionReport(projectRoot, checks);
+      const filePath = writeLiveConnectionReport(projectRoot, checks);
       printConnectionChecks(checks);
+      printConnectionProofSteps(checks);
+      printFirstValueActions(checks);
+      printSetupRecoveryHints(checks);
       console.log(`report: ${filePath}`);
       return;
     }
     default:
-      console.log("MCP 명령어: status | enable <server> | disable <server> | test [server]");
+      throw new Error(`unsupported MCP command: ${subcommand ?? "(empty)"}. available: status | tools [server] | tools <server> --discover | call <server> <tool> --read-only --args-json '{}' | enable <server> | disable <server> | test [server]`);
   }
 }
 
-async function handleDoctor(projectRoot: string, options: Record<string, string | boolean>): Promise<void> {
+async function handleLive(
+  projectRoot: string,
+  subcommand: string | undefined,
+  args: string[],
+  options: Record<string, string | boolean>
+): Promise<void> {
+  const target = liveTargetFromArgs(subcommand, args, options);
+  if (!target) {
+    console.log("Live proof commands");
+    console.log("  rph live ai:openai");
+    console.log("  rph live ai:anthropic");
+    console.log("  rph live ai:gemini");
+    console.log("  rph live mcp:stitch");
+    console.log("  rph live target mcp:github");
+    console.log("");
+    console.log("Runtime slash form:");
+    console.log("  /live ai:openai");
+    console.log("  /live mcp:stitch");
+    return;
+  }
+  if (!isRuntimeProjectInitialized(projectRoot)) {
+    const projectName = optionString(options, "project-name") ?? (path.basename(projectRoot) || "RPH Project");
+    initProject(projectRoot, { projectName });
+    console.log(`RPH project initialized: ${projectName}`);
+  }
+
+  let config = syncHarnessConfigFromEnv(projectRoot);
+  if (target.kind === "ai") {
+    config = setAiProviderEnabled(projectRoot, target.id, true);
+    config = setHarnessConfigValue(projectRoot, "ai.active", target.id);
+  } else {
+    config = setMcpServerEnabled(projectRoot, target.id, true);
+  }
+  config = syncHarnessConfigFromEnv(projectRoot);
+  console.log(`Live target check: ${target.kind}:${target.id}`);
+  const checks = target.kind === "ai"
+    ? [await testAiConnection(config, target.id)]
+    : [await testMcpConnection(config, target.id)];
+  const filePath = writeLiveConnectionReport(projectRoot, checks, {
+    command: `rph live ${target.kind}:${target.id}`,
+    selectedTargets: [`${target.kind}:${target.id}`],
+    runner: "cli",
+    source: "live"
+  });
+  printConnectionChecks(checks);
+  printConnectionProofSteps(checks);
+  printFirstValueActions(checks);
+  printSetupRecoveryHints(checks);
+  console.log(`report: ${filePath}`);
+  if (checks.some((check) => check.status !== "passed")) {
+    process.exitCode = 1;
+  }
+}
+
+function liveTargetFromArgs(
+  subcommand: string | undefined,
+  args: string[],
+  options: Record<string, string | boolean>
+): { kind: "ai"; id: AiProviderId } | { kind: "mcp"; id: McpServerId } | null {
+  const raw = optionString(options, "target")
+    ?? (subcommand === "target" ? args[0] : subcommand)
+    ?? args[0];
+  if (!raw) {
+    return null;
+  }
+  const [kind, id] = raw.split(":");
+  if (kind === "ai") {
+    return { kind, id: parseAiProviderId(id) };
+  }
+  if (kind === "mcp") {
+    return { kind, id: parseMcpServerId(id) };
+  }
+  throw new Error(`invalid live target: ${raw}. use ai:<provider> or mcp:<server>`);
+}
+
+function handleProofs(
+  projectRoot: string,
+  subcommand: string | undefined,
+  args: string[],
+  options: Record<string, string | boolean>
+): void {
+  requireInitialized(projectRoot);
+  switch (subcommand) {
+    case undefined:
+    case "status":
+      printProofLedgerSummary(projectRoot, { limit: parseOptionalPositiveInt(optionString(options, "limit")) ?? 8 });
+      return;
+    case "events": {
+      const limit = parseOptionalPositiveInt(optionString(options, "limit")) ?? parseOptionalPositiveInt(args[0]) ?? 20;
+      const events = readProofLedgerEvents(projectRoot).slice(-limit).reverse();
+      if (events.length === 0) {
+        console.log("Proof ledger: empty");
+        return;
+      }
+      console.log(`Proof ledger events latest=${events.length}`);
+      for (const event of events) {
+        console.log(`- ${formatProofLedgerEvent(event)}`);
+      }
+      return;
+    }
+    default:
+      throw new Error(`unsupported proofs command: ${subcommand ?? "(empty)"}. available: status | events [--limit N]`);
+  }
+}
+
+async function handleDoctor(
+  projectRoot: string,
+  subcommand: string | undefined,
+  _args: string[],
+  options: Record<string, string | boolean>
+): Promise<void> {
+  switch (subcommand) {
+    case "install":
+      printInstallDoctor(projectRoot);
+      return;
+    case "shell":
+      printShellDoctor(projectRoot);
+      return;
+    case undefined:
+    case "status":
+      break;
+    default:
+      throw new Error(`unsupported doctor command: ${subcommand}. available: doctor [--live] | doctor install | doctor shell`);
+  }
   requireInitialized(projectRoot);
   const config = syncHarnessConfigFromEnv(projectRoot);
   console.log(renderStatusLine("runtime config loaded", "configured"));
@@ -1639,9 +7799,317 @@ async function handleDoctor(projectRoot: string, options: Record<string, string 
     return;
   }
   const checks = [...await testAllAiConnections(config), ...await testAllMcpConnections(config)];
-  const filePath = writeConnectionReport(projectRoot, checks);
+  const filePath = writeLiveConnectionReport(projectRoot, checks);
   printConnectionChecks(checks);
+  printConnectionProofSteps(checks);
+  printFirstValueActions(checks);
+  printSetupRecoveryHints(checks);
   console.log(`report: ${filePath}`);
+}
+
+function handleUpdate(options: Record<string, string | boolean>): void {
+  const sourceRoot = findCliSourceRoot();
+  if (!sourceRoot) {
+    throw new Error("cannot locate RPH source checkout with install.sh. Run the public installer again or set RPH_SOURCE_ROOT.");
+  }
+  const installScript = path.join(sourceRoot, "install.sh");
+  const command = `bash ${quoteShellArg(installScript)}`;
+  if (optionBool(options, "dry-run")) {
+    console.log("RPH update plan");
+    console.log(`- source: ${sourceRoot}`);
+    console.log(`- command: ${command}`);
+    return;
+  }
+  console.log("RPH update");
+  console.log(`- source: ${sourceRoot}`);
+  console.log(`- command: ${command}`);
+  const result = spawnSync("bash", [installScript], {
+    cwd: sourceRoot,
+    env: process.env,
+    stdio: "inherit"
+  });
+  if (result.status !== 0) {
+    throw new Error(`rph update failed with exit code ${result.status ?? "unknown"}`);
+  }
+}
+
+function printInstallDoctor(projectRoot: string): void {
+  const layout = installLayout();
+  const wrapper = readTextIfExists(layout.wrapperPath);
+  const wrapperTarget = wrapper ? extractWrapperTarget(wrapper) : null;
+  const wrapperTargetExists = wrapperTarget ? fs.existsSync(wrapperTarget) : false;
+  const wrapperTargetInInstallDir = wrapperTarget ? isPathInside(wrapperTarget, layout.installDir) : false;
+  const initText = readTextIfExists(layout.initPath);
+  const completionExists = fs.existsSync(layout.completionPath);
+  const profile = detectShellProfile(layout);
+  const profileText = profile.path ? readTextIfExists(profile.path) : null;
+  const workspaceJson = runInstalledJsonProbe(layout.wrapperPath, ["workspace", "--json"], projectRoot);
+  const statusJson = runInstalledJsonProbe(layout.wrapperPath, ["status", "--json"], projectRoot);
+  const installHead = gitHead(layout.installDir);
+  const issues = [
+    fs.existsSync(layout.wrapperPath) ? null : "installed wrapper is missing",
+    wrapperTargetExists ? null : "installed wrapper target is missing",
+    wrapperTarget ? (wrapperTargetInInstallDir ? null : "installed wrapper target is outside install dir") : null,
+    fs.existsSync(layout.initPath) ? null : "shell init file is missing",
+    initText?.includes("function /workspace()") ? null : "shell init is missing /workspace helper",
+    completionExists ? null : "zsh completion file is missing",
+    workspaceJson.ok ? null : "installed rph workspace --json is not current",
+    statusJson.ok ? null : "installed rph status --json is not current"
+  ].filter((item): item is string => Boolean(item));
+
+  console.log("RPH install doctor");
+  console.log(`- install_dir: ${layout.installDir} git=${fs.existsSync(path.join(layout.installDir, ".git")) ? "yes" : "no"} head=${installHead ?? "unknown"}`);
+  console.log(`- wrapper: ${layout.wrapperPath} present=${yesNo(fs.existsSync(layout.wrapperPath))}`);
+  console.log(`- wrapper_target: ${wrapperTarget ?? "unknown"} present=${yesNo(wrapperTargetExists)} current_install=${yesNo(wrapperTargetInInstallDir)}`);
+  console.log(`- shell_init: ${layout.initPath} present=${yesNo(fs.existsSync(layout.initPath))} workspace_helper=${yesNo(Boolean(initText?.includes("function /workspace()")))}`);
+  console.log(`- completion: ${layout.completionPath} present=${yesNo(completionExists)}`);
+  console.log(`- profile_hook: ${profile.path ?? "unknown"} present=${yesNo(Boolean(profileText?.includes("# >>> rph init >>>")))}`);
+  console.log(`- workspace-json=${workspaceJson.ok ? "ok" : `failed reason=${workspaceJson.reason}`}`);
+  console.log(`- status-json=${statusJson.ok ? "ok" : `failed reason=${statusJson.reason}`}`);
+  if (issues.length > 0) {
+    console.log("Issues:");
+    for (const issue of issues) {
+      console.log(`- ${issue}`);
+    }
+    console.log("next=rph update");
+  } else {
+    console.log("next=none");
+  }
+  if (!profileText?.includes("# >>> rph init >>>")) {
+    console.log(`shell: source "${layout.initPath}"`);
+  }
+}
+
+function printShellDoctor(projectRoot = process.cwd()): void {
+  const layout = installLayout();
+  const initText = readTextIfExists(layout.initPath);
+  const profile = detectShellProfile(layout);
+  const profileText = profile.path ? readTextIfExists(profile.path) : null;
+  const pathHasBin = (process.env.PATH ?? "").split(path.delimiter).includes(layout.binDir);
+  const resolvedRph = resolveCommandFromPath(layout.binName);
+  const commandShadowed = Boolean(resolvedRph && path.resolve(resolvedRph) !== path.resolve(layout.wrapperPath));
+  const zshProbe = runShellHelperJsonProbe(layout.initPath, "zsh", projectRoot);
+  const bashProbe = runShellHelperJsonProbe(layout.initPath, "bash", projectRoot);
+  const helpers = ["/setup", "/pm", "/status", "/workspace", "/agent"]
+    .map((helper) => `${helper}=${yesNo(Boolean(initText?.includes(`function ${helper}()`)))}`)
+    .join(" ");
+
+  console.log("RPH shell doctor");
+  console.log(`- shell: ${process.env.SHELL ?? "unknown"}`);
+  console.log(`- bin_dir: ${layout.binDir} in_path=${yesNo(pathHasBin)}`);
+  console.log(`- command: ${layout.binName} resolved=${resolvedRph ?? "missing"} expected=${layout.wrapperPath} shadowed=${yesNo(commandShadowed)}`);
+  console.log(`- init: ${layout.initPath} present=${yesNo(Boolean(initText))}`);
+  console.log(`- slash_helpers: ${helpers}`);
+  console.log(`- profile_hook: ${profile.path ?? "unknown"} present=${yesNo(Boolean(profileText?.includes("# >>> rph init >>>")))}`);
+  console.log(`- zsh-workspace-json=${zshProbe.ok ? "ok" : `failed reason=${zshProbe.reason}`}`);
+  console.log(`- bash-workspace-json=${bashProbe.ok ? "ok" : `failed reason=${bashProbe.reason}`}`);
+  if (!initText?.includes("function /workspace()")) {
+    console.log(fs.existsSync(layout.initPath) ? `next=source "${layout.initPath}"` : "next=rph update");
+  } else if (!pathHasBin || commandShadowed) {
+    console.log(`next=source "${layout.initPath}"`);
+  } else if (!profileText?.includes("# >>> rph init >>>")) {
+    console.log("next=rph update");
+  } else if (!zshProbe.ok && !bashProbe.ok) {
+    console.log(`next=source "${layout.initPath}"`);
+  } else {
+    console.log("next=none");
+  }
+}
+
+function resolveCommandFromPath(command: string): string | null {
+  const pathValue = process.env.PATH ?? "";
+  for (const dir of pathValue.split(path.delimiter)) {
+    if (!dir) {
+      continue;
+    }
+    const candidate = path.join(dir, command);
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return candidate;
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+function installLayout(env: NodeJS.ProcessEnv = process.env): {
+  home: string;
+  installDir: string;
+  binDir: string;
+  configDir: string;
+  binName: string;
+  wrapperPath: string;
+  initPath: string;
+  completionPath: string;
+} {
+  const home = env.HOME || os.homedir();
+  const installDir = env.RPH_INSTALL_DIR || path.join(home, ".real-product-harness");
+  const binDir = env.RPH_BIN_DIR || path.join(home, ".local", "bin");
+  const configDir = env.RPH_CONFIG_DIR || path.join(home, ".config", "rph");
+  const binName = env.RPH_BIN_NAME || "rph";
+  return {
+    home,
+    installDir,
+    binDir,
+    configDir,
+    binName,
+    wrapperPath: path.join(binDir, binName),
+    initPath: path.join(configDir, "init.sh"),
+    completionPath: path.join(configDir, "completion.zsh")
+  };
+}
+
+function detectShellProfile(layout: ReturnType<typeof installLayout>): { path: string | null } {
+  const explicit = process.env.RPH_SHELL_PROFILE;
+  if (explicit) {
+    return { path: explicit };
+  }
+  const shell = process.env.SHELL ?? "";
+  if (shell.endsWith("zsh")) {
+    return { path: path.join(layout.home, ".zshrc") };
+  }
+  if (shell.endsWith("bash")) {
+    return { path: path.join(layout.home, ".bashrc") };
+  }
+  const zsh = path.join(layout.home, ".zshrc");
+  if (fs.existsSync(zsh)) {
+    return { path: zsh };
+  }
+  const bash = path.join(layout.home, ".bashrc");
+  if (fs.existsSync(bash)) {
+    return { path: bash };
+  }
+  return { path: zsh };
+}
+
+function readTextIfExists(filePath: string): string | null {
+  try {
+    return fs.existsSync(filePath) ? fs.readFileSync(filePath, "utf8") : null;
+  } catch {
+    return null;
+  }
+}
+
+function extractWrapperTarget(wrapperText: string): string | null {
+  const match = wrapperText.match(/exec\s+node\s+"([^"]+)"/);
+  return match?.[1] ?? null;
+}
+
+function runInstalledJsonProbe(wrapperPath: string, args: string[], cwd: string): { ok: boolean; reason: string } {
+  if (!fs.existsSync(wrapperPath)) {
+    return { ok: false, reason: "wrapper-missing" };
+  }
+  const result = spawnSync(wrapperPath, args, {
+    cwd,
+    env: process.env,
+    encoding: "utf8",
+    timeout: 15_000,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  if (result.status !== 0) {
+    return { ok: false, reason: `exit-${result.status ?? "unknown"}` };
+  }
+  try {
+    const parsed = JSON.parse(result.stdout) as { schemaVersion?: unknown };
+    return parsed.schemaVersion === "rph-operator-workspace-v0"
+      ? { ok: true, reason: "ok" }
+      : { ok: false, reason: "schema-mismatch" };
+  } catch {
+    return { ok: false, reason: "not-json" };
+  }
+}
+
+function runShellHelperJsonProbe(initPath: string, shellName: "zsh" | "bash", cwd: string): { ok: boolean; reason: string } {
+  if (!fs.existsSync(initPath)) {
+    return { ok: false, reason: "init-missing" };
+  }
+  if (!runStatus(shellName, ["--version"], cwd)) {
+    return { ok: false, reason: `${shellName}-missing` };
+  }
+  const result = spawnSync(shellName, ["-lc", `source ${quoteShellArg(initPath)}; /workspace --json`], {
+    cwd,
+    env: process.env,
+    encoding: "utf8",
+    timeout: 15_000,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  if (result.status !== 0) {
+    return { ok: false, reason: `exit-${result.status ?? "unknown"}` };
+  }
+  try {
+    const parsed = JSON.parse(result.stdout) as { schemaVersion?: unknown };
+    return parsed.schemaVersion === "rph-operator-workspace-v0"
+      ? { ok: true, reason: "ok" }
+      : { ok: false, reason: "schema-mismatch" };
+  } catch {
+    return { ok: false, reason: "not-json" };
+  }
+}
+
+function gitHead(cwd: string): string | null {
+  if (!fs.existsSync(path.join(cwd, ".git"))) {
+    return null;
+  }
+  const result = spawnSync("git", ["rev-parse", "--short", "HEAD"], {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"]
+  });
+  return result.status === 0 ? result.stdout.trim() : null;
+}
+
+function findCliSourceRoot(): string | null {
+  const starts = [
+    process.env.RPH_SOURCE_ROOT,
+    process.cwd(),
+    typeof __dirname === "string" ? __dirname : undefined,
+    process.argv[1] ? path.dirname(process.argv[1]) : undefined
+  ].filter((item): item is string => Boolean(item));
+  for (const start of starts) {
+    const found = findAncestorWithInstallScript(path.resolve(start));
+    if (found) {
+      return found;
+    }
+  }
+  return null;
+}
+
+function findAncestorWithInstallScript(start: string): string | null {
+  let current = start;
+  for (let depth = 0; depth < 10; depth += 1) {
+    const installScript = path.join(current, "install.sh");
+    const packagePath = path.join(current, "package.json");
+    if (fs.existsSync(installScript) && fs.existsSync(packagePath)) {
+      try {
+        const pkg = JSON.parse(fs.readFileSync(packagePath, "utf8")) as { name?: string };
+        if (pkg.name === "real-product-harness") {
+          return current;
+        }
+      } catch {
+        return null;
+      }
+    }
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return null;
+    }
+    current = parent;
+  }
+  return null;
+}
+
+function isPathInside(candidate: string, parent: string): boolean {
+  const relative = path.relative(path.resolve(parent), path.resolve(candidate));
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function yesNo(value: boolean): "yes" | "no" {
+  return value ? "yes" : "no";
+}
+
+function quoteShellArg(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 function printConfigSummary(config: ReturnType<typeof loadHarnessConfig>): void {
@@ -1656,7 +8124,7 @@ function printConfigSummary(config: ReturnType<typeof loadHarnessConfig>): void 
   printMcpStatus(config);
 }
 
-function printAiStatus(config: ReturnType<typeof loadHarnessConfig>): void {
+function printAiStatus(config: ReturnType<typeof loadHarnessConfig>, projectRoot?: string): void {
   console.log("AI Providers");
   for (const provider of Object.values(config.aiProviders)) {
     const status = provider.configured ? "configured" : "missing";
@@ -1664,25 +8132,521 @@ function printAiStatus(config: ReturnType<typeof loadHarnessConfig>): void {
     const missing = provider.missingEnv.length > 0 ? ` missing=${provider.missingEnv.join(",")}` : "";
     console.log(`- ${renderStatusLine(provider.id, status)} ${enabled} model=${provider.model}${missing}`);
   }
+  if (projectRoot) {
+    printLatestAiProviderOutcome(projectRoot);
+  }
+}
+
+function printLatestAiProviderOutcome(projectRoot: string): void {
+  const outcome = readLatestAiProviderOutcome(projectRoot);
+  if (!outcome) {
+    return;
+  }
+  const fallback = formatAiProviderFallback(outcome);
+  console.log("Latest AI provider outcome");
+  console.log(`- source=${outcome.source} id=${outcome.id} provider=${outcome.providerId} at=${outcome.at}`);
+  if (outcome.providerAttempts && outcome.providerAttempts.length > 0) {
+    const attempts = outcome.providerAttempts
+      .map((attempt) => `${attempt.providerId}:${attempt.status}`)
+      .join(" -> ");
+    console.log(`- attempts=${attempts}`);
+  }
+  if (fallback) {
+    console.log(`- ${fallback}`);
+  }
+}
+
+function printHarnessReadiness(
+  projectRoot: string,
+  config: ReturnType<typeof loadHarnessConfig>,
+  state: ProjectState,
+  options: { commandSurface?: "rph" | "slash" } = {}
+): void {
+  const checks = readTrustedConnectionChecks(projectRoot);
+  const proofTrust = readConnectionReportTrust(projectRoot);
+  const lastReport = readConnectionReport(projectRoot);
+  const passedAi = checks.filter((check) => check.kind === "ai" && check.status === "passed");
+  const passedMcp = checks.filter((check) => check.kind === "mcp" && check.status === "passed");
+  const failed = checks.filter((check) => check.status === "failed");
+  const chatConfigured = configuredAiProviders(config).length > 0 && config.activeAiProvider !== "none";
+  const status = state.paused
+    ? "blocked"
+    : !chatConfigured
+      ? "needs-setup"
+      : failed.length > 0
+        ? "degraded"
+        : passedAi.length > 0
+          ? "ready"
+          : "configured";
+  const chat = passedAi.length > 0 ? "verified" : chatConfigured ? "configured" : "missing";
+  const tools = passedMcp.length > 0
+    ? `verified:${passedMcp.map((check) => check.id).join(",")}`
+    : configuredMcpServers(config).length > 0
+      ? "configured"
+      : "none";
+  console.log("Harness readiness");
+  console.log(`- status=${status} chat=${chat} tools=${tools}`);
+  console.log(`- live_verification=${proofTrust.trusted ? "current" : "not-current"}`);
+  if (!proofTrust.trusted && proofTrust.reason && proofTrust.reason !== "missing-report") {
+    console.log(`- why=${connectionProofTrustMessage(proofTrust.reason)}`);
+  }
+  console.log(`- next=${harnessReadinessNextCommand(status, chatConfigured, checks, options.commandSurface ?? "rph")}`);
+  if (!proofTrust.trusted && proofTrust.reason && proofTrust.reason !== "missing-report") {
+    const age = proofTrust.ageMs === undefined ? "" : ` ageMs=${proofTrust.ageMs}`;
+    console.log(`- connection_proof=not-current reason=${connectionProofTrustLabel(proofTrust.reason)}${age}`);
+  }
+  if (failed.length > 0) {
+    console.log(`- degraded_checks=${failed.map((check) => `${check.kind}:${check.id}`).join(",")}`);
+  }
+  const lastKnown = !proofTrust.trusted
+    ? (lastReport?.checks ?? []).filter((check) => check.status === "passed")
+    : [];
+  if (lastKnown.length > 0) {
+    console.log("Last known verification (not current)");
+    for (const check of lastKnown) {
+      console.log(`- ${check.kind}:${check.id} verified_by=${check.readiness?.provenStage ?? check.identity?.verifiedBy ?? check.firstActionProof?.verifiedBy ?? "unknown"}`);
+    }
+  }
+}
+
+function harnessReadinessNextCommand(
+  status: string,
+  chatConfigured: boolean,
+  checks: ConnectionCheck[],
+  surface: "rph" | "slash"
+): string {
+  const command = (value: string) => surface === "rph" ? `rph ${value.replace(/^\//, "")}` : value;
+  if (status === "blocked") {
+    return `${command("/resume")} 또는 ${command("/agent status")}`;
+  }
+  if (!chatConfigured) {
+    return command("/setup auto");
+  }
+  if (!checks.some((check) => check.kind === "ai" && check.status === "passed")) {
+    return command("/doctor --live");
+  }
+  if (checks.some((check) => check.status === "failed")) {
+    return command("/doctor --live");
+  }
+  return surface === "rph"
+    ? "rph \"다음에 뭐 하면 돼?\" 또는 rph agent run --steps 1"
+    : "일반 텍스트로 AI agent와 대화, 또는 /agent run --steps 1";
+}
+
+function connectionProofTrustMessage(reason: NonNullable<ReturnType<typeof readConnectionReportTrust>["reason"]>): string {
+  switch (reason) {
+    case "non-live-source":
+      return "Saved connection evidence came from a non-live run, so it is kept as history only.";
+    case "missing-fingerprint":
+      return "Saved connection evidence is missing the current config fingerprint.";
+    case "config-mismatch":
+      return "Saved connection evidence was produced for a different AI/MCP config.";
+    case "stale-report":
+      return "Saved connection evidence is older than the current trust window.";
+    case "invalid-date":
+      return "Saved connection evidence has an invalid timestamp.";
+    case "missing-report":
+      return "No live connection evidence has been saved yet.";
+  }
+}
+
+function connectionProofTrustLabel(reason: NonNullable<ReturnType<typeof readConnectionReportTrust>["reason"]>): string {
+  return reason.replace(/-/g, " ");
+}
+
+function printLatestAgentToolProof(projectRoot: string): void {
+  const session = loadRuntimeSession(projectRoot);
+  const toolCalls = [...(session?.toolTrace ?? []), ...(session?.activeTurn?.toolCalls ?? [])];
+  const latest = [...toolCalls].reverse().find((call) => call.status === "succeeded" && isExternalAgentReadTool(call.name));
+  if (!latest) {
+    return;
+  }
+  console.log("Latest agent tool proof");
+  console.log(`- ${latest.name} at=${latest.completedAt ?? latest.requestedAt} ${formatAgentToolProof(latest)}`);
+}
+
+function printProofLedgerSummary(
+  projectRoot: string,
+  options: { compact?: boolean; limit?: number } = {}
+): void {
+  const latest = readProofLedgerLatest(projectRoot);
+  if (!latest) {
+    if (!options.compact) {
+      console.log("Proof ledger: empty");
+    }
+    return;
+  }
+  const limit = options.limit ?? (options.compact ? 4 : 8);
+  const events = Object.values(latest.latestBySubject)
+    .sort((left, right) => right.at.localeCompare(left.at))
+    .slice(0, limit);
+  console.log("Proof ledger");
+  console.log(`- events=${latest.eventCount} passed=${latest.counts.passed} failed=${latest.counts.failed} blocked=${latest.counts.blocked} merged=${latest.counts.merged}`);
+  for (const event of events) {
+    console.log(`- ${formatProofLedgerEvent(event)}`);
+  }
+  if (latest.latestFailures.length > 0) {
+    console.log(`- attention=${latest.latestFailures.map((event) => event.subject).join(",")}`);
+  }
+}
+
+function printAgentIntegrationEvidence(state: ProjectState): void {
+  const evidence = state.evidence?.agentIntegration;
+  if (!evidence?.required) {
+    return;
+  }
+  console.log("Agent integration evidence");
+  console.log(`- status=${evidence.status} merged=${evidence.mergedRunIds.length}/${evidence.runIds.length} failed=${evidence.failedRunIds.length}`);
+  console.log(`- summary=${evidence.summary}`);
+  if (evidence.latestProofId) {
+    console.log(`- proof=${evidence.latestProofId}`);
+  }
+}
+
+function formatProofLedgerEvent(event: ProofLedgerEvent): string {
+  const trust = event.trust ? ` trust=${event.trust}` : "";
+  const target = event.targetId ? ` target=${event.targetId}` : "";
+  return `${event.kind} ${event.subject} status=${event.status}${trust}${target} at=${event.at} ${summarizeValue(event.summary, 120)}`;
+}
+
+function isExternalAgentReadTool(name: string): boolean {
+  return name === "mcp.tools.list"
+    || name === "mcp.tools.call"
+    || name === "github.repo.read"
+    || name === "notion.page.read"
+    || name === "figma.file.summary"
+    || name === "stitch.tools.list"
+    || name === "stitch.tools.call";
+}
+
+function formatAgentToolProof(call: AgentToolCall): string {
+  const parsed = parseObservation(call.observation);
+  if (parsed && call.name.endsWith(".tools.call")) {
+    const toolName = stringField(parsed.toolName) || "unknown-tool";
+    const content = summarizeMcpContent(parsed.content);
+    return `tool=${toolName} result=${content || summarizeValue(parsed.structuredContent ?? parsed.result ?? parsed)}`;
+  }
+  if (parsed && call.name.endsWith(".tools.list")) {
+    const tools = Array.isArray(parsed.tools) ? parsed.tools.length : 0;
+    const server = stringField(parsed.server) || "mcp";
+    return `server=${server} tools=${tools}`;
+  }
+  if (parsed && call.name === "github.repo.read") {
+    return `repo=${stringField(parsed.fullName) || "unknown"} visibility=${stringField(parsed.visibility) || "unknown"}`;
+  }
+  if (parsed && call.name === "notion.page.read") {
+    const properties = Array.isArray(parsed.properties) ? parsed.properties.length : 0;
+    return `page=${stringField(parsed.id) || "unknown"} archived=${String(parsed.archived ?? "unknown")} properties=${properties}`;
+  }
+  if (parsed && call.name === "figma.file.summary") {
+    return `file=${stringField(parsed.name) || "unknown"} version=${stringField(parsed.version) || "unknown"}`;
+  }
+  return `result=${summarizeValue(call.observation ?? "no observation")}`;
+}
+
+function parseObservation(value: string | undefined): Record<string, unknown> | null {
+  if (!value) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function summarizeMcpContent(value: unknown): string {
+  if (!Array.isArray(value)) {
+    return "";
+  }
+  const text = value
+    .map((item) => item && typeof item === "object" ? stringField((item as Record<string, unknown>).text) : "")
+    .filter(Boolean)
+    .join(" ");
+  return summarizeValue(text);
+}
+
+function stringField(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function summarizeValue(value: unknown, max = 160): string {
+  const text = typeof value === "string" ? value : JSON.stringify(value ?? "");
+  const compact = text.replace(/\s+/g, " ").trim();
+  const redacted = compact.replace(/(Bearer|token|api[_-]?key|secret)[^,\s}]*/gi, "$1=<redacted>");
+  return redacted.length > max ? `${redacted.slice(0, max - 3)}...` : redacted;
+}
+
+function redactTargetUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    for (const key of url.searchParams.keys()) {
+      url.searchParams.set(key, "<redacted>");
+    }
+    return url.toString();
+  } catch {
+    return value;
+  }
 }
 
 function printMcpStatus(config: ReturnType<typeof loadHarnessConfig>): void {
-  console.log("MCP Servers");
+  console.log("MCP / Adapter Connectors");
   for (const server of Object.values(config.mcpServers)) {
+    const policy = summarizeMcpPolicyForServer(config, server.id);
     const status = server.configured ? "configured" : "missing";
     const enabled = server.enabled ? "enabled" : "disabled";
     const missing = server.missingEnv.length > 0 ? ` missing=${server.missingEnv.join(",")}` : "";
-    const target = server.url ?? server.command ?? "-";
-    console.log(`- ${renderStatusLine(server.id, status)} ${enabled} ${server.transport} ${target}${missing}`);
+    const target = server.url ? redactTargetUrl(server.url) : server.command ?? "-";
+    const protocol = server.kind === "mcp-server" ? "protocol-mcp" : "rest-adapter";
+    const auth = server.kind === "mcp-server" ? ` authMode=${server.authMode ?? "none"}${server.authEnvKey ? ` authEnv=${server.authEnvKey}` : ""}` : "";
+    const readOnlyTools = Array.isArray(policy.agentReadOnlyTools) ? (policy.agentReadOnlyTools as string[]) : [];
+    console.log(`- ${renderStatusLine(server.id, status)} ${enabled} ${protocol} ${server.transport} ${target}${auth}${missing}`);
+    console.log(`  policy=${String(policy.kind)} state=${String(policy.state)} requiredTrust=${String(policy.requiredTrust)} readOnlyTools=${readOnlyTools.join(",") || "none"} fingerprint=${String(policy.configFingerprint)}`);
+    console.log(`  next=${mcpStatusNextAction(server, policy)}`);
   }
+  console.log("MCP policy");
+  console.log("- allowed: rph mcp tools <server>, rph mcp call <server> <tool> --read-only --args-json '{}'");
+  console.log("- agent: use rph mcp tools <server> --agent to see the filtered agent allowlist; agent calls remain policy-limited");
+  console.log("- blocked: mutable or unclassified MCP tool calls from AI agent proposals");
+  console.log("- note: multiple configured protocol MCP servers require explicit server selection");
 }
 
-function printConnectionChecks(checks: Awaited<ReturnType<typeof testAllAiConnections>>): void {
+function mcpStatusNextAction(
+  server: ReturnType<typeof loadHarnessConfig>["mcpServers"][string],
+  policy: Record<string, unknown>
+): string {
+  if (!server.enabled) {
+    return `rph mcp enable ${server.id}`;
+  }
+  if (!server.configured || server.missingEnv.length > 0) {
+    return `rph setup auto --live --ai none --mcp ${server.id}`;
+  }
+  if (server.kind !== "mcp-server") {
+    return `rph mcp test ${server.id}`;
+  }
+  const readOnlyTools = Array.isArray(policy.agentReadOnlyTools) ? policy.agentReadOnlyTools : [];
+  if (policy.allowToolsList !== true) {
+    return `rph setup auto --live --ai none --mcp ${server.id}`;
+  }
+  if (readOnlyTools.length === 0) {
+    return `rph mcp tools ${server.id} --discover (then allow read-only calls with rph setup mcp add ... --allow-tool <tool>)`;
+  }
+  return `rph mcp tools ${server.id} 또는 rph mcp call ${server.id} <tool> --read-only --args-json '{}'`;
+}
+
+function printConnectionChecks(checks: ConnectionCheck[]): void {
   for (const check of checks) {
     const missing = check.missingEnv.length > 0 ? ` missing=${check.missingEnv.join(",")}` : "";
     const endpoint = check.endpoint ? ` endpoint=${check.endpoint}` : "";
-    console.log(`- ${renderStatusLine(`${check.kind}:${check.id}`, check.status)} ${check.message}${missing}${endpoint}`);
+    const trust = connectionTrustLabel(check);
+    const policy = check.policy ? ` policy=${check.policy.kind}:${check.policy.state}${check.policy.satisfied ? ":satisfied" : ":unsatisfied"}` : "";
+    console.log(`- ${renderStatusLine(`${check.kind}:${check.id}`, check.status)} trust=${trust} ${check.message}${missing}${endpoint}${policy}`);
   }
+  printConnectionVerifiedTargets(checks);
+  printConnectionFirstActionProofs(checks);
+}
+
+function printConnectionVerifiedTargets(checks: ConnectionCheck[]): void {
+  const entries = checks
+    .filter((check) => check.status === "passed" && check.identity)
+    .map((check) => `- ${check.kind}:${check.id} ${formatConnectionIdentity(check.identity!)}`);
+  if (entries.length === 0) {
+    return;
+  }
+  console.log("");
+  console.log("Verified targets");
+  entries.forEach((entry) => console.log(entry));
+}
+
+function printLatestVerifiedTargets(projectRoot: string): void {
+  const checks = readTrustedConnectionChecks(projectRoot);
+  if (checks.length === 0) {
+    return;
+  }
+  printConnectionVerifiedTargets(checks);
+  printConnectionFirstActionProofs(checks);
+}
+
+function readLatestConnectionChecks(projectRoot: string): ConnectionCheck[] {
+  const filePath = connectionReportFile(projectRoot);
+  if (!fs.existsSync(filePath)) {
+    return [];
+  }
+  try {
+    const report = JSON.parse(fs.readFileSync(filePath, "utf8")) as { checks?: unknown };
+    return Array.isArray(report.checks)
+      ? report.checks.filter(isConnectionCheckLike)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function isConnectionCheckLike(value: unknown): value is ConnectionCheck {
+  return value !== null
+    && typeof value === "object"
+    && typeof (value as { id?: unknown }).id === "string"
+    && typeof (value as { kind?: unknown }).kind === "string"
+    && typeof (value as { status?: unknown }).status === "string"
+    && typeof (value as { message?: unknown }).message === "string"
+    && Array.isArray((value as { requiredEnv?: unknown }).requiredEnv)
+    && Array.isArray((value as { missingEnv?: unknown }).missingEnv)
+    && typeof (value as { checkedAt?: unknown }).checkedAt === "string";
+}
+
+function formatConnectionIdentity(identity: NonNullable<ConnectionCheck["identity"]>): string {
+  return `${identity.label} type=${identity.type} target_id=${identity.targetId} verified_by=${identity.verifiedBy}`;
+}
+
+function printConnectionFirstActionProofs(checks: ConnectionCheck[]): void {
+  const entries = checks
+    .filter((check) => check.status === "passed" && check.firstActionProof)
+    .map((check) => `- ${check.kind}:${check.id} ${formatFirstActionProof(check.firstActionProof!)}`);
+  if (entries.length === 0) {
+    return;
+  }
+  console.log("");
+  console.log("First action verified");
+  entries.forEach((entry) => console.log(entry));
+}
+
+function formatFirstActionProof(proof: NonNullable<ConnectionCheck["firstActionProof"]>): string {
+  const endpoint = proof.endpoint ? ` endpoint=${proof.endpoint}` : "";
+  return `${proof.label} | detail=${proof.action} target_id=${proof.targetId} verified_by=${proof.verifiedBy}${endpoint}`;
+}
+
+function printConnectionProofSteps(checks: ConnectionCheck[]): void {
+  const entries = checks
+    .filter((check) => check.readiness?.stages.length)
+    .map((check) => {
+      const trust = humanConnectionTrust(check);
+      const stages = check.readiness?.stages
+        .map((stage) => `${stage.stage}=${stage.status}`)
+        .join(" -> ");
+      return `- ${check.kind}:${check.id} ${trust}: ${stages}`;
+    });
+  if (entries.length === 0) {
+    return;
+  }
+  console.log("");
+  console.log("Proof steps");
+  entries.forEach((entry) => console.log(entry));
+}
+
+function humanConnectionTrust(check: ConnectionCheck): string {
+  switch (check.readiness?.mode) {
+    case "protocol-ready":
+      return "verified through protocol action";
+    case "protocol-partial":
+      return "credential verified; protocol action failed";
+    case "adapter-write-ready":
+      return "credential, target, and external write channel verified";
+    case "adapter-partial":
+      return "credential verified; external write channel failed";
+    case "adapter-ready":
+      return "credential and target verified";
+    default:
+      return "not verified";
+  }
+}
+
+function printFirstValueActions(checks: ConnectionCheck[]): void {
+  const actions = checks
+    .filter((check) => check.status === "passed")
+    .map(firstValueActionForCheck)
+    .filter((action): action is string => Boolean(action));
+  if (actions.length === 0) {
+    return;
+  }
+  console.log("");
+  console.log("Ready actions");
+  actions.forEach((action) => console.log(`- ${action}`));
+  console.log("- workflow: /pm start 또는 제품 아이디어를 그냥 입력");
+}
+
+function firstValueActionForCheck(check: ConnectionCheck): string | null {
+  if (check.kind === "ai") {
+    return `ai:${check.id} chat: /ai run --provider ${check.id} --prompt "제품 요구사항 5개 정리해줘"`;
+  }
+  switch (check.id) {
+    case "notion":
+      return "mcp:notion first write/readback: /notion setup --live";
+    case "github":
+      return "mcp:github first repo action: /github setup-labels";
+    case "figma":
+      return "mcp:figma first read: 연결된 agent가 figma.file.summary 도구로 파일을 요약할 수 있음";
+    case "stitch":
+      return "mcp:stitch first MCP proof: 연결된 agent가 mcp.tools.list 또는 readOnly mcp.tools.call 사용 가능";
+    default:
+      return `mcp:${check.id} first MCP proof: 연결된 agent가 mcp.tools.list 또는 readOnly mcp.tools.call 사용 가능`;
+  }
+}
+
+function connectionTrustLabel(check: ConnectionCheck): string {
+  const mode = check.readiness?.mode ?? "unverified";
+  const stage = check.readiness?.provenStage ?? "none";
+  return `${mode}:${stage}`;
+}
+
+function printSetupRecoveryHints(checks: ConnectionCheck[], commandSurface: CommandSurface = "rph"): void {
+  const failing = checks.filter((check) => check.status !== "passed");
+  if (failing.length === 0) {
+    console.log(`next: 일반 텍스트로 AI agent와 대화하거나 ${runtimeSurfaceCommand(commandSurface, "pm start")}`);
+    return;
+  }
+  console.log("");
+  console.log("Recovery hints");
+  console.log(`repair: ${runtimeSurfaceCommand(commandSurface, "setup repair --live")}`);
+  for (const check of failing) {
+    console.log(`- ${check.kind}:${check.id}`);
+    console.log(`  cause: ${setupFailureCause(check)}`);
+    console.log(`  next: ${setupNextAction(check, commandSurface)}`);
+    console.log(`  retry: ${setupRetryCommand(check, commandSurface)}`);
+  }
+}
+
+function setupFailureCause(check: ConnectionCheck): string {
+  if (check.missingEnv.length > 0) {
+    return `missing ${check.missingEnv.join(", ")}`;
+  }
+  const failedStage = check.readiness?.stages.find((stage) => stage.status === "failed");
+  if (failedStage) {
+    return `${failedStage.stage} failed: ${failedStage.message}`;
+  }
+  return check.message;
+}
+
+function setupNextAction(check: ConnectionCheck, commandSurface: CommandSurface = "rph"): string {
+  if (check.missingEnv.length > 0) {
+    return `.env에 ${check.missingEnv.join(", ")} 추가 또는 ${runtimeSurfaceCommand(commandSurface, "setup auto")}로 다시 입력`;
+  }
+  const failedStage = check.readiness?.stages.find((stage) => stage.status === "failed");
+  if (failedStage?.stage === "credential-probe") {
+    return "credential 값과 base URL을 확인한 뒤 다시 live check";
+  }
+  if (failedStage?.stage === "external-write") {
+    return "gh CLI 설치/auth/저장소 write 권한을 확인한 뒤 다시 live check";
+  }
+  if (failedStage?.stage === "protocol-tool-call") {
+    return "quota/model 권한 또는 provider generation endpoint 상태 확인";
+  }
+  if (failedStage?.stage === "protocol-tools-list") {
+    return "MCP 서버 URL, token, protocol handshake 설정 확인";
+  }
+  return "연결 값 수정 후 live check 재실행";
+}
+
+function setupRetryCommand(check: ConnectionCheck, commandSurface: CommandSurface = "rph"): string {
+  if (check.kind === "ai") {
+    return `${runtimeSurfaceCommand(commandSurface, `setup auto --live --ai ${check.id} --mcp none`)}`;
+  }
+  if (check.kind === "mcp") {
+    return `${runtimeSurfaceCommand(commandSurface, `setup auto --live --ai none --mcp ${check.id}`)}`;
+  }
+  return runtimeSurfaceCommand(commandSurface, "setup auto --live");
 }
 
 function parseAiProviderId(value: string | undefined): AiProviderId {
@@ -1693,10 +8657,49 @@ function parseAiProviderId(value: string | undefined): AiProviderId {
 }
 
 function parseMcpServerId(value: string | undefined): McpServerId {
-  if (value === "notion" || value === "github" || value === "figma" || value === "stitch") {
-    return value;
+  const normalized = value?.trim().toLowerCase() ?? "";
+  if (/^[a-z0-9][a-z0-9_-]{1,62}$/.test(normalized)) {
+    return normalized;
   }
-  throw new Error(`invalid MCP server: ${value ?? "(empty)"}. allowed: notion, github, figma, stitch`);
+  throw new Error(`invalid MCP server: ${value ?? "(empty)"}. use a known id or a custom id added with /setup mcp add`);
+}
+
+function parseMcpAuthMode(value: string | undefined): "none" | "x-goog-api-key" | "bearer" | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "none" || normalized === "bearer" || normalized === "x-goog-api-key") {
+    return normalized;
+  }
+  if (normalized === "x-api-key" || normalized === "google-api-key") {
+    return "x-goog-api-key";
+  }
+  throw new Error(`invalid MCP auth mode: ${value}. allowed: bearer, x-goog-api-key, none`);
+}
+
+function parseJsonObjectOption(value: string | undefined): Record<string, unknown> | undefined {
+  if (!value) {
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`invalid JSON object option: ${message}`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("invalid JSON object option: expected an object");
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function parseToolListOption(value: string | undefined): string[] {
+  if (!value) {
+    return [];
+  }
+  return [...new Set(value.split(",").map((item) => item.trim()).filter(Boolean))].sort();
 }
 
 async function handlePm(
@@ -1770,7 +8773,7 @@ function pmStart(projectRoot: string): void {
   saveState(projectRoot, next);
   console.log("PM 워크플로우 시작");
   console.log(`현재 단계: ${next.currentStage}`);
-  console.log("설정 확인: /setup auto --live");
+  console.log("설정 확인: rph setup auto --live");
   console.log("다음: /pm interview");
 }
 
@@ -2178,6 +9181,34 @@ function handleQa(
       console.log(`report: ${report.reportPath}`);
       return;
     }
+    case "security": {
+      const prNumber = parseIssueNumber(optionString(options, "pr"));
+      const report = optionBool(options, "auto")
+        ? runQaSecurityScan(projectRoot, prNumber)
+        : recordQaSecurityReview(
+            projectRoot,
+            prNumber,
+            parseQaRiskStatus(optionString(options, "status")),
+            optionString(options, "finding")
+          );
+      console.log(`security status: ${report.securityStatus}`);
+      console.log(`report: ${report.reportPath}`);
+      return;
+    }
+    case "accessibility": {
+      const prNumber = parseIssueNumber(optionString(options, "pr"));
+      const report = optionBool(options, "auto")
+        ? runQaAccessibilityScan(projectRoot, prNumber)
+        : recordQaAccessibilityReview(
+            projectRoot,
+            prNumber,
+            parseQaRiskStatus(optionString(options, "status")),
+            optionString(options, "finding")
+          );
+      console.log(`accessibility status: ${report.accessibilityStatus}`);
+      console.log(`report: ${report.reportPath}`);
+      return;
+    }
     case "report": {
       const report = finalizeQaReport(projectRoot, parseIssueNumber(optionString(options, "pr")));
       console.log(`QA report finalized: PR #${report.prNumber}`);
@@ -2186,7 +9217,7 @@ function handleQa(
       return;
     }
     default:
-      console.log("QA 명령어: review --pr <n> | conflicts --pr <n> | test --pr <n> | report --pr <n>");
+      console.log("QA 명령어: review --pr <n> | conflicts --pr <n> | test --pr <n> | security --pr <n> (--auto|--status <clear|risk>) | accessibility --pr <n> (--auto|--status <clear|risk>) | report --pr <n>");
   }
 }
 
@@ -2209,6 +9240,7 @@ async function handleNotion(
         });
         console.log(`Notion live workspace 생성: ${applied.filePath}`);
         console.log(`dashboard: ${applied.workspace.dashboardUrl ?? applied.workspace.dashboardPageId}`);
+        console.log(`readback: ${applied.workspace.dashboardReadback.id}`);
         console.log(`databases: ${Object.keys(applied.workspace.databaseIds).length}`);
       } else {
         console.log("Notion MCP/API 쓰기는 /notion setup --live에서만 실행");
@@ -2226,6 +9258,7 @@ async function handleNotion(
       if (optionBool(options, "live")) {
         const synced = await syncNotionPayloadLive(projectRoot);
         console.log(`Notion live sync 완료: ${synced.synced} records summarized`);
+        console.log(`readback: ${synced.readback.id}`);
       } else {
         console.log("Notion 반영은 /notion sync --live에서만 실행");
       }
@@ -2274,7 +9307,7 @@ function workIssueCreate(
   workstream: Workstream,
   args: string[],
   options: Record<string, string | boolean>
-): void {
+): ReturnType<typeof createWorkIssue> {
   requireImplementationStage(projectRoot);
   const title = optionString(options, "title") ?? (args.join(" ") || `${workstream} implementation task`);
   const issue = createWorkIssue(projectRoot, {
@@ -2288,37 +9321,61 @@ function workIssueCreate(
   console.log(`로컬 issue 생성: #${issue.issueNumber} ${issue.title}`);
   console.log(`브랜치: ${issue.branchName}`);
   console.log(`GitHub dry-run: gh issue create --title "${issue.title}" --label ${issue.label}`);
+  return issue;
 }
 
 function workIssueStart(projectRoot: string, options: Record<string, string | boolean>): void {
   requireImplementationStage(projectRoot);
   const issueNumber = parseIssueNumber(optionString(options, "issue"));
   const issue = markIssueInProgress(projectRoot, issueNumber);
+  const execution = optionBool(options, "execute")
+    ? prepareIssueBranch(projectRoot, issue.branchName)
+    : {
+        status: "prepared" as const,
+        evidence: ["Issue marked in progress; branch execution not requested."],
+        nextCommands: [
+          `git switch -c ${issue.branchName}`,
+          `${issue.assigneeAgent === "FE" ? "/fe" : "/be"} pr --issue ${issue.issueNumber}`
+        ]
+      };
+  const record = createWorkExecutionRecord(projectRoot, issueNumber, execution);
   console.log(`작업 시작 기록: #${issue.issueNumber}`);
   console.log(`브랜치: ${issue.branchName}`);
-  console.log(`명령어: git switch -c ${issue.branchName}`);
+  console.log(`execution: ${record.filePath}`);
+  if (execution.status === "branch-ready") {
+    console.log("branch ready");
+  } else if (execution.status === "blocked") {
+    console.log("branch execution blocked");
+    process.exitCode = 1;
+  } else {
+    console.log(`명령어: git switch -c ${issue.branchName}`);
+    console.log("실제 브랜치 준비까지 하려면: --execute");
+  }
 }
 
-function workPrDraft(projectRoot: string, options: Record<string, string | boolean>): void {
+function workPrDraft(projectRoot: string, options: Record<string, string | boolean>): ReturnType<typeof createPullRequestDraft> {
   requireImplementationStage(projectRoot);
   const issueNumber = parseIssueNumber(optionString(options, "issue"));
-  const target = optionString(options, "target") ?? "dev";
-  if (!["dev", "release", "main"].includes(target)) {
-    throw new Error("PR target must be dev, release, or main");
-  }
-  const pr = createPullRequestDraft(projectRoot, issueNumber, target as "dev" | "release" | "main");
+  const target = parsePullRequestTargetBranch(optionString(options, "target"));
+  const pr = createPullRequestDraft(projectRoot, issueNumber, target);
   console.log(`PR draft 기록: issue #${pr.issueNumber}`);
   console.log(`source: ${pr.sourceBranch}`);
   console.log(`target: ${pr.targetBranch}`);
   console.log(`dry-run: ${pr.dryRunCommand}`);
+  return pr;
 }
 
 function beDeployDev(projectRoot: string, options: Record<string, string | boolean>): void {
   requireImplementationStage(projectRoot);
   const provider = optionString(options, "provider") ?? "local";
-  const deployment = createDevDeploymentPlan(projectRoot, provider);
+  const deployment = createDevDeploymentPlan(projectRoot, provider, optionBool(options, "execute") && provider === "local" ? "deployed" : "planned");
   console.log(`dev deploy hook 생성: ${deployment.filePath}`);
-  console.log("외부 배포는 사용자 승인 전 실행하지 않음");
+  if (deployment.status === "deployed") {
+    console.log("local dev deployment recorded");
+  } else {
+    console.log("외부 배포는 사용자 승인 전 실행하지 않음");
+    console.log("local deployment evidence까지 기록하려면: /be deploy-dev --provider local --execute");
+  }
 }
 
 function parseFeTarget(value: string | undefined): DocumentId {
@@ -2373,6 +9430,21 @@ function parseIssueNumber(value: string | undefined): number {
   return issueNumber;
 }
 
+function parsePullRequestTargetBranch(value: string | undefined): "dev" | "release" | "main" {
+  const target = value ?? "dev";
+  if (target === "dev" || target === "release" || target === "main") {
+    return target;
+  }
+  throw new Error("PR target must be dev, release, or main");
+}
+
+function parseQaRiskStatus(value: string | undefined): "clear" | "risk" {
+  if (value === "clear" || value === "risk") {
+    return value;
+  }
+  throw new Error("usage: --status <clear|risk>");
+}
+
 function parseWorkstream(value: string): Workstream {
   const normalized = value.toUpperCase();
   if (normalized === "FE" || normalized === "BE") {
@@ -2381,11 +9453,78 @@ function parseWorkstream(value: string): Workstream {
   throw new Error("agent must be FE or BE");
 }
 
+function parseRepoVisibility(options: Record<string, string | boolean>): "private" | "public" {
+  const wantsPublic = optionBool(options, "public");
+  const wantsPrivate = optionBool(options, "private");
+  if (wantsPublic && wantsPrivate) {
+    throw new Error("usage: choose only one of --public or --private");
+  }
+  if (wantsPrivate) {
+    return "private";
+  }
+  return "public";
+}
+
+function prepareIssueBranch(
+  projectRoot: string,
+  branchName: string
+): { status: "branch-ready" | "blocked"; evidence: string[]; nextCommands: string[] } {
+  const inside = spawnSync("git", ["rev-parse", "--is-inside-work-tree"], {
+    cwd: projectRoot,
+    encoding: "utf8"
+  });
+  if (inside.status !== 0 || inside.stdout.trim() !== "true") {
+    return {
+      status: "blocked",
+      evidence: ["git worktree not detected; branch was not created"],
+      nextCommands: [`git init`, `git switch -c ${branchName}`]
+    };
+  }
+  const existing = spawnSync("git", ["rev-parse", "--verify", branchName], {
+    cwd: projectRoot,
+    encoding: "utf8"
+  });
+  const args = existing.status === 0 ? ["switch", branchName] : ["switch", "-c", branchName];
+  const switched = spawnSync("git", args, {
+    cwd: projectRoot,
+    encoding: "utf8"
+  });
+  if (switched.status !== 0) {
+    return {
+      status: "blocked",
+      evidence: [`git ${args.join(" ")} failed: ${(switched.stderr || switched.stdout).trim()}`],
+      nextCommands: [`git switch -c ${branchName}`]
+    };
+  }
+  return {
+    status: "branch-ready",
+    evidence: [`git ${args.join(" ")} succeeded`],
+    nextCommands: [
+      "implement acceptance criteria",
+      "pnpm run lint && pnpm test && pnpm run build",
+      "create PR draft with /fe pr --issue <n> or /be pr --issue <n>"
+    ]
+  };
+}
+
 function requireImplementationStage(projectRoot: string): void {
   const state = loadState(projectRoot);
-  if (!["IMPLEMENTATION", "QA_REVIEW", "READY_FOR_RELEASE"].includes(state.currentStage)) {
-    throw new Error(`implementation work blocked. current stage must be IMPLEMENTATION. current: ${state.currentStage}`);
+  if (!["IMPLEMENTATION", "QA_REVIEW", "READY_FOR_RELEASE", "RELEASE_APPROVED"].includes(state.currentStage)) {
+    throw new Error(`implementation work blocked. current stage must be IMPLEMENTATION/QA_REVIEW/READY_FOR_RELEASE/RELEASE_APPROVED. current: ${state.currentStage}`);
   }
+}
+
+function requireGitHubLiveWriteTarget(projectRoot: string): { owner: string; repo: string } {
+  const resolved = resolveGitHubTarget(projectRoot);
+  const target = normalizeGitHubRepoTarget(resolved.owner, resolved.repo);
+  if (!target.owner || !target.repo || target.warnings.length > 0) {
+    throw new Error(`GitHub target is not valid: ${target.warnings[0] ?? "set GITHUB_OWNER/GITHUB_REPO or configure origin"}`);
+  }
+  const readiness = checkGitHubCliWriteReadiness(target.owner, target.repo, process.env);
+  if (!readiness.ok) {
+    throw new Error(`GitHub write channel is not ready: ${readiness.message}`);
+  }
+  return { owner: target.owner, repo: target.repo };
 }
 
 function handleGitHub(
@@ -2396,6 +9535,7 @@ function handleGitHub(
 ): void {
   switch (subcommand) {
     case "create-repo": {
+      const visibility = parseRepoVisibility(options);
       const repoTarget = resolveGitHubTarget(projectRoot);
       const owner = process.env.GITHUB_OWNER || repoTarget.owner;
       const repo = process.env.GITHUB_REPO || repoTarget.repo || path.basename(projectRoot);
@@ -2409,54 +9549,55 @@ function handleGitHub(
       );
       if (!env.valid || !owner || !repo) {
         console.log(`[dry-run] 누락 env: ${env.missing.join(", ")}`);
-        console.log(`실행할 명령: gh repo create ${owner ?? "<owner>"}/${repo ?? "<repo>"} --private --source . --remote origin --push`);
+        console.log(`실행할 명령: gh repo create ${owner ?? "<owner>"}/${repo ?? "<repo>"} ${visibility === "private" ? "--private" : "--public"} --source . --remote origin --push`);
         return;
       }
       const result = createGitHubRepo(projectRoot, owner, repo, {
-        visibility: "private",
+        visibility,
         push: true
       });
       if (!result.ok) {
         throw new Error(result.message);
       }
-      console.log(result.existed ? "GitHub repo 이미 존재" : "GitHub repo 생성 완료");
-      if (result.url) {
-        console.log(result.url);
-      }
-      return;
-    }
+	      console.log(result.existed ? "GitHub repo 이미 존재" : "GitHub repo 생성 완료");
+	      if (result.url) {
+	        console.log(result.url);
+	      }
+	      if (result.readback) {
+	        console.log(`readback: ${result.readback.nameWithOwner}`);
+	        console.log(`readback file: ${githubRepoReadbackFile(projectRoot)}`);
+	      }
+	      return;
+	    }
     case "setup-labels": {
-      const repoTarget = resolveGitHubTarget(projectRoot);
-      const env = validateEnv(
-        {
-          ...process.env,
-          GITHUB_OWNER: repoTarget.owner,
-          GITHUB_REPO: repoTarget.repo
-        },
-        GITHUB_ENV_KEYS
-      );
       const result = setupGitHubLabels(projectRoot);
       console.log("GitHub label 설정 파일 생성");
       console.log(`labels: ${result.labels.length}`);
-      if (!env.valid) {
-        console.log(`[dry-run] 누락 env: ${env.missing.join(", ")}`);
+      let liveTarget: { owner: string; repo: string };
+      try {
+        liveTarget = requireGitHubLiveWriteTarget(projectRoot);
+      } catch (error) {
+        console.log(`[dry-run] ${error instanceof Error ? error.message : String(error)}`);
         console.log("실행할 명령:");
         result.commands.forEach((command) => console.log(`- ${command}`));
-      } else {
-        const owner = repoTarget.owner;
-        const repo = repoTarget.repo;
-        if (!owner || !repo) {
-          throw new Error("GITHUB_OWNER/GITHUB_REPO missing after env validation");
-        }
-        const applied = applyGitHubLabels(owner, repo, result.labels);
-        const failed = applied.filter((item) => !item.ok);
-        applied.forEach((item) => console.log(`- ${item.label}: ${item.ok ? "applied" : item.message}`));
-        if (failed.length > 0) {
-          throw new Error(`GitHub label apply failed: ${failed.map((item) => item.label).join(", ")}`);
-        }
+        return;
       }
-      return;
-    }
+      {
+        const { owner, repo } = liveTarget;
+	        const { applied, readback } = applyGitHubLabelsWithReadback(projectRoot, owner, repo, result.labels);
+	        const failed = applied.filter((item) => !item.ok);
+	        applied.forEach((item) => console.log(`- ${item.label}: ${item.ok ? "applied" : item.message}`));
+	        if (failed.length > 0) {
+	          throw new Error(`GitHub label apply failed: ${failed.map((item) => item.label).join(", ")}`);
+	        }
+	        if (!readback.verified) {
+	          throw new Error(`GitHub label readback failed: missing=${readback.missing.join(",") || "none"} mismatched=${readback.mismatched.map((item) => item.name).join(",") || "none"}`);
+	        }
+	        console.log(`readback: ${owner}/${repo} labels=${readback.observed.length}`);
+	        console.log(`readback file: ${githubLabelsReadbackFile(projectRoot)}`);
+	      }
+	      return;
+	    }
     case "setup-templates": {
       const files = writeGitHubTemplates(projectRoot);
       console.log("GitHub template 생성");
@@ -2472,12 +9613,75 @@ function handleGitHub(
     }
     case "create-issue": {
       requireInitialized(projectRoot);
-      workIssueCreate(projectRoot, parseWorkstream(optionString(options, "agent") ?? "FE"), args, options);
+      const approvedParams = runtimeApprovedParametersFromEnv();
+      const approvedIssueNumber = optionBool(options, "live")
+        ? parseOptionalPositiveInt(approvedParams.localIssueNumber)
+        : undefined;
+      const issue = approvedIssueNumber
+        ? readWorkIssue(projectRoot, approvedIssueNumber)
+        : workIssueCreate(projectRoot, parseWorkstream(optionString(options, "agent") ?? "FE"), args, options);
+      if (approvedIssueNumber) {
+        console.log(`승인된 로컬 issue snapshot 사용: #${issue.issueNumber} ${issue.title}`);
+      }
+      if (!optionBool(options, "live")) {
+        console.log("mode: dry-run");
+        console.log("실제 GitHub issue 생성까지 하려면: --live");
+        return;
+      }
+      const repoTarget = requireGitHubLiveWriteTarget(projectRoot);
+      const { ok, message, readback } = createGitHubIssueWithReadback(projectRoot, repoTarget.owner, repoTarget.repo, issue);
+      linkWorkIssueToGitHub(projectRoot, issue.issueNumber, {
+        githubIssueNumber: readback.githubIssueNumber ?? undefined,
+        githubUrl: readback.url,
+        githubReadbackStatus: ok ? "passed" : "failed",
+        githubReadbackReason: readback.reason ?? message
+      });
+      if (!ok) {
+        throw new Error(message);
+      }
+      console.log(`GitHub issue 생성 완료: #${readback.githubIssueNumber}`);
+      if (readback.url) {
+        console.log(readback.url);
+      }
+      console.log(`readback: ${repoTarget.owner}/${repoTarget.repo}#${readback.githubIssueNumber}`);
+      console.log(`readback file: ${githubIssueReadbackFile(projectRoot, issue.issueNumber)}`);
       return;
     }
     case "create-pr": {
       requireInitialized(projectRoot);
-      workPrDraft(projectRoot, options);
+      const approvedParams = runtimeApprovedParametersFromEnv();
+      const approvedPrNumber = optionBool(options, "live")
+        ? parseOptionalPositiveInt(approvedParams.localPrNumber)
+        : undefined;
+      const pr = approvedPrNumber
+        ? readPullRequest(projectRoot, approvedPrNumber)
+        : workPrDraft(projectRoot, options);
+      if (approvedPrNumber) {
+        console.log(`승인된 로컬 PR snapshot 사용: #${pr.prNumber} issue #${pr.issueNumber}`);
+      }
+      if (!optionBool(options, "live")) {
+        console.log("mode: dry-run");
+        console.log("실제 GitHub PR 생성까지 하려면: --live");
+        return;
+      }
+      const issue = readWorkIssue(projectRoot, pr.issueNumber);
+      const repoTarget = requireGitHubLiveWriteTarget(projectRoot);
+      const { ok, message, readback } = createGitHubPullRequestWithReadback(projectRoot, repoTarget.owner, repoTarget.repo, pr, issue);
+      linkPullRequestToGitHub(projectRoot, pr.prNumber, {
+        githubPrNumber: readback.githubPrNumber ?? undefined,
+        githubUrl: readback.url,
+        githubReadbackStatus: ok ? "passed" : "failed",
+        githubReadbackReason: readback.reason ?? message
+      });
+      if (!ok) {
+        throw new Error(message);
+      }
+      console.log(`GitHub PR 생성 완료: #${readback.githubPrNumber}`);
+      if (readback.url) {
+        console.log(readback.url);
+      }
+      console.log(`readback: ${repoTarget.owner}/${repoTarget.repo}#${readback.githubPrNumber}`);
+      console.log(`readback file: ${githubPullRequestReadbackFile(projectRoot, pr.prNumber)}`);
       return;
     }
     case "sync": {
@@ -2501,6 +9705,17 @@ function handleGitHub(
       console.log("main merge는 사용자 승인 전 실행하지 않음");
       return;
     }
+    case "release-approve": {
+      requireInitialized(projectRoot);
+      const id = optionString(options, "id") ?? args[0];
+      if (!id) {
+        throw new Error("usage: /github release-approve --id <release-id> [--by <name>]");
+      }
+      const plan = approveReleasePlan(projectRoot, id, optionString(options, "by") ?? "user");
+      console.log(`release approved: ${plan.id}`);
+      console.log(`plan: ${plan.filePath}`);
+      return;
+    }
     case "hotfix-plan": {
       requireInitialized(projectRoot);
       const title = optionString(options, "title") ?? (args.join(" ") || "Critical hotfix");
@@ -2510,7 +9725,7 @@ function handleGitHub(
       return;
     }
     default:
-      console.log("GitHub 명령어: create-repo | setup-labels | setup-templates | setup-branches | create-issue | create-pr | sync | release-plan | hotfix-plan");
+      console.log("GitHub 명령어: create-repo [--public|--private] | setup-labels | setup-templates | setup-branches | create-issue [--live] | create-pr [--live] | sync | release-plan | release-approve | hotfix-plan");
   }
 }
 
@@ -2587,20 +9802,59 @@ async function bodyFromOptions(
   const result = await generateAiText(config, {
     providerId: provider ? parseAiProviderId(provider) : undefined,
     prompt: request.prompt,
-    system: [
-      "You are Real Product Harness, a role-separated product delivery agent runtime.",
-      "Return only the requested markdown body. Do not include YAML frontmatter.",
-      "Be concrete, implementation-ready, and preserve approval-gate wording where relevant.",
-      "Use Korean by default unless the product context is clearly English."
-    ].join(" "),
+    system: aiBodySystemPrompt(projectRoot, request),
     maxOutputTokens: parseOptionalPositiveInt(optionString(options, "max-tokens")) ?? 2400
   });
   const recordPath = writeAiRunRecord(projectRoot, createAiRunRecord(result, request.command, request.prompt, {
     kind: request.kind,
     id: request.id
   }));
+  printAiProviderFallbackNotice(result);
   console.log(`ai_run: ${recordPath}`);
   return sanitizeGeneratedMarkdown(result.text);
+}
+
+function printAiProviderFallbackNotice(result: Parameters<typeof formatAiProviderFallback>[0]): void {
+  const notice = formatAiProviderFallback(result);
+  if (notice) {
+    console.log(notice);
+  }
+}
+
+function aiBodySystemPrompt(projectRoot: string, request: AiBodyRequest): string {
+  const lane = latestAgentLaneRun(projectRoot);
+  const expectedRole = roleForAiBodyRequest(request);
+  const lanePrompt = lane?.status === "running" && lane.role === expectedRole
+    ? [
+        lane.systemPrompt,
+        `Lane run: ${lane.id}`,
+        `Lane acceptance: ${lane.acceptanceCriteria.join("; ") || "none"}`,
+        `Lane artifacts: ${lane.artifactRefs.join(", ") || "none"}`
+      ].join("\n")
+    : "";
+  return [
+    lanePrompt,
+    "You are Real Product Harness, a role-separated product delivery agent runtime.",
+    "Return only the requested markdown body. Do not include YAML frontmatter.",
+    "Be concrete, implementation-ready, and preserve approval-gate wording where relevant.",
+    "Use Korean by default unless the product context is clearly English."
+  ].filter(Boolean).join("\n");
+}
+
+function roleForAiBodyRequest(request: AiBodyRequest): AgentRole {
+  if (request.kind === "pm-document") {
+    return "PM";
+  }
+  if (request.kind === "pd-artifact") {
+    return "PD";
+  }
+  if (request.command.startsWith("/fe")) {
+    return "FE";
+  }
+  if (request.command.startsWith("/be")) {
+    return "BE";
+  }
+  return "Orchestrator";
 }
 
 function bodyFromFileOptions(options: Record<string, string | boolean>): string | undefined {
@@ -2687,6 +9941,17 @@ function parseOptionalPositiveInt(value: string | undefined): number | undefined
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1) {
     throw new Error(`expected positive integer, got: ${value}`);
+  }
+  return parsed;
+}
+
+function parseOptionalNonNegativeInt(value: string | undefined): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(`expected non-negative integer, got: ${value}`);
   }
   return parsed;
 }
@@ -3019,7 +10284,7 @@ function renderHelp(topic?: string): string {
   const suggestion = suggestCommand(normalizedTopic, Object.keys(HELP_TOPIC_LINES));
   return [
     `unknown help topic: ${normalizedTopic}`,
-    suggestion ? `Try: help ${suggestion}` : "Available topics: runtime, productize, setup, ai, mcp, pm, pd, fe, be, qa, notion, docs, github",
+    suggestion ? `Try: help ${suggestion}` : "Available topics: runtime, productize, setup, agent, workspace, ai, mcp, live, proofs, pm, pd, fe, be, qa, notion, docs, github",
     "",
     renderGeneralHelp()
   ].join("\n");
@@ -3036,97 +10301,51 @@ function renderGeneralHelp(): string {
   return [
     "real-product-harness",
     "",
-    "Run `rph` to enter the runtime. Plain text chats with the connected AI agent; slash commands control workflow state.",
-    "For one-shot natural language, use `rph ask \"이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘\"`.",
-    "For the fastest execution package, use `rph /productize \"<product idea>\"`.",
-    "",
-    "Entry UX:",
+    "Primary flows:",
+    "  rph start",
+    "    Setup-first entrypoint. In a fresh TTY it opens the runtime and offers live setup before workflow work.",
+    "  rph setup auto --live",
+    "    Connect AI/MCP credentials, apply config, and verify live connections.",
+    "  rph live ai:openai",
+    "    Verify one provider or MCP target without running the full live matrix.",
+    "  rph status",
+    "    Show the active workflow, runtime graph digest, blockers, and next safe command.",
+    "  rph workspace",
+    "    Show one operator view of runtime, readiness, approvals, artifacts, PR/QA blockers, and next action.",
+    "  rph doctor install",
+    "    Diagnose stale installed wrappers, shell init, completion, and JSON operator command support.",
+    "  rph update",
+    "    Rerun the installer from the current source checkout.",
+    "  rph agent graph status",
+    "    Inspect the execution graph behind the current agent runtime.",
     "  rph",
+    "    Enter the runtime. Plain text chats with the connected AI agent; slash commands control workflow state.",
+    "  rph /pm start",
+    "    Start the PM workflow directly.",
+    "",
+    "Natural language:",
     "  rph ask <message>",
+    "  rph ask --execute <message>",
+    "  rph ask --execute --loop <message>",
     "  rph /productize <product idea>",
-    "  rph help [topic]",
-    "  rph version",
-    "  rph --version",
     "",
-    "One-shot slash commands:",
-    "  /init [--yes] [--project-name <name>] [--obsidian-vault <path>]",
-    "  /status",
-    "  /next",
-    "  /pause | /resume | /cancel",
-    "  /productize <product idea>",
-    "  /setup auto [--live|--guide|--from-env|--non-interactive]",
-    "  /setup detect | apply | check",
-    "  /setup ai [openai|anthropic|gemini|local]",
-    "  /setup mcp [notion|github|figma|stitch]",
-    "  /settings show | sync | set <key> <value>",
-    "  /ai status | test [provider] | enable <provider> | disable <provider> | run --prompt <text>",
-    "  /mcp status | test [server] | enable <server> | disable <server>",
-    "  /doctor [--live]",
+    "Installed shell slash helpers:",
+    "  /setup auto --live",
     "  /pm start",
-    "  /pm interview [docId]",
-    "  /pm draft <docId> [--file <markdown>] [--ai] [--provider <provider>] [--summary <text>]",
-    "  /pm revise <docId> [--from <version>] [--file <markdown>] [--summary <text>]",
-    "  /pm approve <docId> [--by <name>]",
-    "  /pm diff <docId> <fromVersion> <toVersion>",
-    "  /pm rollback <docId> --to <version>",
-    "  /pm finalize",
-    "  /pd start",
-    "  /pd references [--ai]",
-    "  /pd directions [--ai]",
-    "  /pd landing-preview [--ai]",
-    "  /pd design-system [--ai]",
-    "  /pd pages [--ai]",
-    "  /pd show <artifactId> [version]",
-    "  /pd revise <artifactId> [--from <version>] [--file <markdown>] [--summary <text>]",
-    "  /pd approve <artifactId> [--by <name>]",
-    "  /pd export obsidian <artifactId|all> --path <vaultProjectPath>",
-    "  /pd finalize",
-    "  /fe spec [--ai]",
-    "  /fe approve <spec|sprint-plan> [--by <name>]",
-    "  /fe sprint-plan [--ai]",
-    "  /fe issue-create [--title <title>] [--label <label>]",
-    "  /fe work --issue <number>",
-    "  /fe pr --issue <number> [--target <dev|release|main>]",
-    "  /be spec [--ai]",
-    "  /be api-contract [--ai]",
-    "  /be approve <spec|api-contract|sprint-plan> [--by <name>]",
-    "  /be sprint-plan [--ai]",
-    "  /be issue-create [--title <title>] [--label <label>]",
-    "  /be work --issue <number>",
-    "  /be deploy-dev [--provider <provider>]",
-    "  /be pr --issue <number> [--target <dev|release|main>]",
-    "  /qa review --pr <number>",
-    "  /qa conflicts --pr <number>",
-    "  /qa test --pr <number>",
-    "  /qa report --pr <number>",
-    "  /notion plan",
-    "  /notion setup [--live] [--title <title>]",
-    "  /notion sync [--live]",
-    "  /docs list",
-    "  /docs show <docId> [version]",
-    "  /docs diff <docId> <fromVersion> <toVersion>",
-    "  /docs rollback <docId> --to <version>",
-    "  /docs approve <docId> [--by <name>]",
-    "  /docs export obsidian <docId|all> --path <vaultProjectPath>",
-    "  /docs export notion",
-    "  /github create-repo",
-    "  /github setup-labels",
-    "  /github setup-templates",
-    "  /github setup-branches",
-    "  /github create-issue --agent <FE|BE> --title <title>",
-    "  /github create-pr --issue <number>",
-    "  /github sync",
-    "  /github release-plan --version <version>",
-    "  /github hotfix-plan --title <title>",
+    "  /agent run --steps 5",
+    "  /mcp tools stitch",
+    "  /workspace",
     "",
-    "Runtime-only slash commands:",
-    "  /project <path>",
-    "  /pwd",
-    "  /exit",
-    "  /agent status | clear",
-    "  /chat status | clear",
+    "Topic help:",
+    "  rph help setup",
+    "  rph help agent",
+    "  rph help doctor",
+    "  rph help live",
+    "  rph help runtime",
+    "  rph help mcp",
+    "  rph help pm",
     "",
-    "Topics: runtime, productize, setup, ai, mcp, pm, pd, fe, be, qa, notion, docs, github",
+    "All topics: runtime, productize, setup, agent, workspace, doctor, ai, mcp, live, proofs, pm, pd, fe, be, qa, notion, docs, github",
     "",
     `Document IDs: ${DOCUMENT_IDS.map((docId) => `${docId}(${DOCUMENT_TITLES[docId]})`).join(", ")}`,
     `Design Artifact IDs: ${DESIGN_ARTIFACT_IDS.map((artifactId) => `${artifactId}(${DESIGN_ARTIFACT_TITLES[artifactId]})`).join(", ")}`

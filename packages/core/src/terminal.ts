@@ -38,8 +38,8 @@ export function renderRuntimeHero(projectRoot: string, sessionId: string, config
     `${paint("ai", "gray", color)} ${activeAi}`,
     `${paint("mcp", "gray", color)} ${mcpEnabled}`,
     "",
-    `${paint("chat", "gray", color)} type a message to talk to the AI agent`,
-    `${paint("cmd", "gray", color)} /setup auto  /doctor  /pm start  /agent status  /exit`
+    `${paint("chat", "gray", color)} plain text chats with the AI agent`,
+    `${paint("cmd", "gray", color)} /status  /next  /agent status  /pm start  /exit`
   ].join("\n");
 }
 

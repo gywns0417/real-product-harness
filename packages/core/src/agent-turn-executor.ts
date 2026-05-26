@@ -1,9 +1,13 @@
 import { buildAiChatPrompt, generateAiText } from "./ai";
+import { loadRuntimeActionApprovals } from "./agent-action-approvals";
+import { activeCustomAgentExecutionProfile, renderActiveCustomAgentPrompt } from "./agent-catalog";
+import { renderAgentRoleContractCatalog } from "./agent-role-contracts";
+import { READ_ONLY_AGENT_TOOLS, renderReadOnlyAgentToolCatalog, runAgentFabricTool } from "./agent-tool-fabric";
 import { assembleAgentContext, renderAgentContextBundle } from "./context-assembler";
 import { loadState } from "./project";
 import { loadRuntimeSession, recordAgentTurnState } from "./agent-runtime";
 import { nowIso } from "./time";
-import { WORKFLOW_STAGES, nextStage } from "./workflow";
+import { WORKFLOW_STAGES, nextStage, workflowAdvanceStatus } from "./workflow";
 import {
   AgentHandoffProposal,
   AgentToolCall,
@@ -17,18 +21,7 @@ import {
 
 const MAX_AGENT_TOOL_STEPS = 3;
 
-const READ_ONLY_TOOLS: AgentToolName[] = [
-  "runtime.get_context",
-  "workflow.get_status",
-  "workflow.get_next",
-  "workflow.can_advance",
-  "artifacts.list",
-  "artifacts.get",
-  "approvals.pending",
-  "issues.list",
-  "prs.list",
-  "qa.list"
-];
+const READ_ONLY_TOOLS: AgentToolName[] = READ_ONLY_AGENT_TOOLS.map((tool) => tool.name);
 
 export interface AgentTurnExecutorInput {
   projectRoot: string;
@@ -50,19 +43,21 @@ export interface AgentTurnExecutorResult {
 
 export async function executeAgentTurn(input: AgentTurnExecutorInput): Promise<AgentTurnExecutorResult> {
   const startedAt = nowIso();
+  const executionProfile = activeCustomAgentExecutionProfile(input.projectRoot);
   const turn: AgentTurnState = {
     id: `agent_turn_${Date.now()}`,
     userInput: input.userInput,
     status: "running",
     startedAt,
     updatedAt: startedAt,
+    executionProfile,
     toolCalls: []
   };
   recordAgentTurnState(input.projectRoot, input.sessionId, turn);
 
   try {
     const context = agentTurnContext(input.projectRoot);
-    const prompt = buildAgentTurnPrompt(input.userInput, input.history ?? [], context);
+    const prompt = buildAgentTurnPrompt(input.projectRoot, input.userInput, input.history ?? [], context);
     turn.promptPreview = preview(prompt);
     recordAgentTurnState(input.projectRoot, input.sessionId, turn);
 
@@ -72,6 +67,7 @@ export async function executeAgentTurn(input: AgentTurnExecutorInput): Promise<A
       result = await generateAiText(input.config, {
         prompt: currentPrompt,
         system: input.system ?? agentTurnSystemPrompt(),
+        executionProfile,
         maxOutputTokens: input.maxOutputTokens ?? 1800,
         temperature: 0
       }, input.env);
@@ -89,7 +85,7 @@ export async function executeAgentTurn(input: AgentTurnExecutorInput): Promise<A
       if (turn.toolCalls.length >= MAX_AGENT_TOOL_STEPS) {
         throw new Error(`agent tool call limit reached (${MAX_AGENT_TOOL_STEPS})`);
       }
-      const toolCall = executeReadOnlyTool(input.projectRoot, turn.id, action.tool, action.args ?? {});
+      const toolCall = await executeReadOnlyTool(input, turn.id, turn.toolCalls.length + 1, action.tool, action.args ?? {});
       turn.toolCalls = [...turn.toolCalls, toolCall];
       turn.updatedAt = nowIso();
       recordAgentTurnState(input.projectRoot, input.sessionId, turn);
@@ -117,6 +113,7 @@ async function parseOrRepairAction(
   const repaired = await generateAiText(input.config, {
     prompt: buildActionRepairPrompt(prompt, result.text, parsed.error),
     system: input.system ?? agentTurnSystemPrompt(),
+    executionProfile: activeCustomAgentExecutionProfile(input.projectRoot),
     maxOutputTokens: input.maxOutputTokens ?? 1800,
     temperature: 0
   }, input.env);
@@ -188,6 +185,10 @@ function completeTurn(
 ): AgentTurnExecutorResult {
   turn.status = waiting ? "waiting" : "complete";
   turn.finalResponse = finalText.trim();
+  turn.providerId = result.providerId;
+  turn.model = result.model;
+  turn.providerAttempts = result.providerAttempts;
+  turn.providerFallback = result.providerFallback;
   turn.updatedAt = nowIso();
   recordAgentTurnState(projectRoot, sessionId, turn);
   return {
@@ -198,15 +199,21 @@ function completeTurn(
   };
 }
 
-function buildAgentTurnPrompt(userInput: string, history: AiChatMessage[], context: string): string {
+function buildAgentTurnPrompt(projectRoot: string, userInput: string, history: AiChatMessage[], context: string): string {
   return [
     buildAiChatPrompt(userInput, history, context),
     "",
     "Agent turn contract:",
     "Return JSON when you need harness context, workflow state, command proposal, wait, or handoff.",
     'Schema: {"assistant_text":"short text","action":{"type":"respond|tool_call|wait|command|handoff","tool":"tool.name","args":{},"message":"final user-facing text","command":"/status","safeToAutoRun":false,"reason":"why","handoff":{"toAgent":"PM","summary":"handoff brief","stage":"PM_PRODUCT_DEFINITION_DRAFT","artifactRefs":["document:product-definition"],"acceptanceCriteria":["..."],"blockers":[],"nextCommand":"/pm draft product-definition --ai"}}}',
-    `Read-only tools: ${READ_ONLY_TOOLS.join(", ")}.`,
+    "Role contracts:",
+    renderAgentRoleContractCatalog(),
+    "Active custom TOML agent:",
+    renderActiveCustomAgentPrompt(projectRoot),
+    "Read-only tools:",
+    renderReadOnlyAgentToolCatalog(),
     "Use tools until grounded, then respond, wait, propose a command, or propose a handoff.",
+    "For external live writes such as /notion setup --live, /notion sync --live, /github create-repo, or /github setup-labels, propose a command action. The runtime will create an explicit external action approval request instead of auto-running it.",
     "Do not mark mutating commands safeToAutoRun unless they are read-only inspection commands such as /status or /next."
   ].join("\n");
 }
@@ -327,22 +334,23 @@ function findFirstJsonObject(text: string): string | null {
   return text.slice(start);
 }
 
-function executeReadOnlyTool(
-  projectRoot: string,
+async function executeReadOnlyTool(
+  input: AgentTurnExecutorInput,
   turnId: string,
+  sequence: number,
   name: string,
   args: Record<string, unknown>
-): AgentToolCall {
+): Promise<AgentToolCall> {
   const requestedAt = nowIso();
   const call: AgentToolCall = {
-    id: `${turnId}_tool_${Date.now()}`,
+    id: `${turnId}_tool_${sequence}_${Date.now()}`,
     name,
     args,
     status: "requested",
     requestedAt
   };
   try {
-    call.observation = runReadOnlyTool(projectRoot, name, args);
+    call.observation = await runReadOnlyTool(input, name, args);
     call.status = "succeeded";
   } catch (error) {
     call.status = "failed";
@@ -352,7 +360,18 @@ function executeReadOnlyTool(
   return call;
 }
 
-function runReadOnlyTool(projectRoot: string, name: string, args: Record<string, unknown> = {}): string {
+async function runReadOnlyTool(input: AgentTurnExecutorInput, name: string, args: Record<string, unknown> = {}): Promise<string> {
+  const fabricObservation = await runAgentFabricTool({
+    projectRoot: input.projectRoot,
+    config: input.config,
+    env: input.env ?? process.env,
+    name,
+    args
+  });
+  if (fabricObservation !== null) {
+    return fabricObservation;
+  }
+  const projectRoot = input.projectRoot;
   switch (name) {
     case "runtime.get_context":
       return agentTurnContext(projectRoot);
@@ -380,13 +399,15 @@ function runReadOnlyTool(projectRoot: string, name: string, args: Record<string,
     }
     case "workflow.can_advance": {
       const state = loadState(projectRoot);
-      const next = nextStage(state);
+      const advance = workflowAdvanceStatus(state);
       return JSON.stringify({
         currentStage: state.currentStage,
         currentStageName: WORKFLOW_STAGES[state.currentStage].name,
         ownerAgent: WORKFLOW_STAGES[state.currentStage].ownerAgent,
-        nextStage: next,
-        canAdvance: Boolean(next),
+        nextStage: advance.nextStage,
+        nextCommand: advance.nextCommand,
+        canAdvance: advance.canAdvance,
+        blockers: advance.reasons,
         waitCondition: loadRuntimeSession(projectRoot)?.waitCondition ?? null
       }, null, 2);
     }
@@ -424,6 +445,13 @@ function runReadOnlyTool(projectRoot: string, name: string, args: Record<string,
       return JSON.stringify({
         stage: state.currentStage,
         pending: [...documents, ...designArtifacts]
+      }, null, 2);
+    }
+    case "actions.pending": {
+      return JSON.stringify({
+        pending: loadRuntimeActionApprovals(projectRoot).filter((record) =>
+          record.status === "pending" || record.status === "approved" || record.status === "running" || record.status === "failed"
+        )
       }, null, 2);
     }
     case "issues.list": {

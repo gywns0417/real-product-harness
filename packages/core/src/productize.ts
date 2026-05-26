@@ -168,6 +168,100 @@ function shortTitle(idea: string): string {
   return idea.length > 54 ? `${idea.slice(0, 51).trim()}...` : idea;
 }
 
+interface IdeaProfile {
+  targetUser: string;
+  sourceInput: string;
+  transformedOutput: string;
+  workflow: string[];
+  records: string[];
+  primaryMetric: string;
+  risk: string;
+  competitorFrame: string;
+  apiResources: string[];
+}
+
+function analyzeIdea(idea: string): IdeaProfile {
+  const normalized = idea.toLowerCase();
+  if (includesAny(normalized, ["회의록", "meeting", "액션아이템", "action item"])) {
+    return {
+      targetUser: "회의 후속 조치를 놓치기 쉬운 팀 리더와 PM",
+      sourceInput: "회의 녹취, 회의록, 참석자 발언",
+      transformedOutput: "액션아이템, 담당자, 마감일, 후속 알림",
+      workflow: ["회의록 업로드", "결정/할 일 추출", "담당자 확인", "마감일 추적", "후속 회의 전 미완료 항목 점검"],
+      records: ["Meeting", "Transcript", "Decision", "ActionItem", "Assignee", "DueDate"],
+      primaryMetric: "회의 후 24시간 안에 담당자가 확정된 액션아이템 비율",
+      risk: "AI가 발언 의도를 잘못 해석해 잘못된 담당자나 마감일을 제안할 수 있음",
+      competitorFrame: "Otter, Fireflies, Notion AI, Linear의 회의/작업 추적 흐름",
+      apiResources: ["meetings", "transcripts", "action-items", "assignees", "follow-ups"]
+    };
+  }
+  if (includesAny(normalized, ["인터뷰", "interview", "인사이트", "태그"])) {
+    return {
+      targetUser: "고객 인터뷰를 반복적으로 분석하는 PM과 UX 리서처",
+      sourceInput: "인터뷰 원문, 메모, 녹취 요약",
+      transformedOutput: "태그, 인사이트, 근거 인용, 기회 영역",
+      workflow: ["인터뷰 원문 수집", "발화 단위 태깅", "반복 패턴 묶기", "인사이트 근거 확인", "제품 기회로 승격"],
+      records: ["Interview", "Quote", "Tag", "Insight", "Opportunity", "Evidence"],
+      primaryMetric: "검증 가능한 인용 근거가 붙은 인사이트 비율",
+      risk: "소수 인터뷰를 과잉 일반화하거나 근거 없는 태그를 생성할 수 있음",
+      competitorFrame: "Dovetail, Condens, Notion AI, Airtable 리서치 저장소",
+      apiResources: ["interviews", "quotes", "tags", "insights", "opportunities"]
+    };
+  }
+  if (includesAny(normalized, ["피드백", "feedback", "리뷰", "문의"])) {
+    return {
+      targetUser: "고객 피드백을 기능 우선순위로 연결해야 하는 CS/PM 팀",
+      sourceInput: "고객 피드백, 리뷰, 지원 티켓, 문의 로그",
+      transformedOutput: "주제 클러스터, 심각도, 요청 기능, 우선순위 후보",
+      workflow: ["피드백 수집", "중복/주제 클러스터링", "심각도 산정", "기능 요청 연결", "릴리스 후보 선정"],
+      records: ["Feedback", "Customer", "Theme", "Severity", "FeatureRequest", "RoadmapCandidate"],
+      primaryMetric: "중복 피드백이 하나의 실행 가능한 기능 후보로 정리되는 비율",
+      risk: "목소리가 큰 고객의 요청이 전체 우선순위를 왜곡할 수 있음",
+      competitorFrame: "Canny, Productboard, Zendesk, Intercom 피드백 흐름",
+      apiResources: ["feedback", "customers", "themes", "feature-requests", "roadmap-candidates"]
+    };
+  }
+  if (includesAny(normalized, ["채용", "지원자", "면접", "recruit", "hiring"])) {
+    return {
+      targetUser: "지원자 검증과 면접 운영을 반복하는 채용 담당자와 창업팀",
+      sourceInput: "지원서, 이력서, 과제, 면접 메모",
+      transformedOutput: "검증 항목, 리스크, 면접 질문, 합격/보류 근거",
+      workflow: ["지원자 자료 수집", "검증 기준 매핑", "리스크 표시", "면접 질문 생성", "평가 근거 기록"],
+      records: ["Candidate", "Application", "Evidence", "RiskFlag", "InterviewQuestion", "Evaluation"],
+      primaryMetric: "평가 근거가 명시된 후보자 판정 비율",
+      risk: "편향된 데이터나 부정확한 추론이 후보자 평가에 영향을 줄 수 있음",
+      competitorFrame: "Greenhouse, Lever, Ashby, Metaview 채용 운영 흐름",
+      apiResources: ["candidates", "applications", "evidence", "risk-flags", "evaluations"]
+    };
+  }
+  return {
+    targetUser: "아이디어를 빠르게 실행 패키지로 바꿔야 하는 제품 오너",
+    sourceInput: "사용자가 제공한 원문 아이디어와 초기 업무 맥락",
+    transformedOutput: "검토 가능한 제품 정의, 요구사항, 화면, 기능, FE/BE 실행 항목",
+    workflow: ["아이디어 입력", "핵심 사용자/문제 추출", "산출물 생성", "승인 게이트 확인", "FE/BE 실행 준비"],
+    records: ["Idea", "Problem", "User", "Requirement", "Artifact", "WorkItem"],
+    primaryMetric: "첫 세션에서 승인 가능한 실행 산출물까지 도달한 비율",
+    risk: "도메인 정보가 부족하면 산출물이 일반적인 실행 패키지에 머무를 수 있음",
+    competitorFrame: "Notion, Linear, GitHub Projects, agentic coding shell의 작업 전환 흐름",
+    apiResources: ["ideas", "problems", "requirements", "artifacts", "work-items"]
+  };
+}
+
+function includesAny(value: string, needles: string[]): boolean {
+  return needles.some((needle) => value.includes(needle.toLowerCase()));
+}
+
+function bullets(items: string[]): string[] {
+  return items.map((item) => `- ${item}`);
+}
+
+function resourceTitle(resource: string): string {
+  return resource
+    .split("-")
+    .map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`)
+    .join("");
+}
+
 function ownerForDocument(docId: DocumentId): "PM" | "FE" | "BE" {
   if (docId.startsWith("fe-")) {
     return "FE";
@@ -222,6 +316,7 @@ function moveToReviewStage(state: ProjectState, reason: string): ProjectState {
 }
 
 function documentBody(docId: DocumentId, idea: string): string {
+  const profile = analyzeIdea(idea);
   switch (docId) {
     case "product-definition":
       return [
@@ -237,7 +332,20 @@ function documentBody(docId: DocumentId, idea: string): string {
         `사용자는 ${idea}를 떠올린 뒤 제품 정의, 요구사항, 화면, 기능, FE/BE 명세, QA 기준을 매번 수동으로 쪼개야 합니다.`,
         "이 MVP는 그 첫 실행 패키지를 한 번에 만들어 검토와 승인으로 바로 이어지게 합니다.",
         "",
+        "## 도메인 특화 가정",
+        `- 주요 사용자: ${profile.targetUser}`,
+        `- 원천 입력: ${profile.sourceInput}`,
+        `- 변환 결과: ${profile.transformedOutput}`,
+        `- 핵심 성공 지표: ${profile.primaryMetric}`,
+        "",
+        "## 핵심 업무 흐름",
+        ...bullets(profile.workflow),
+        "",
+        "## 핵심 데이터 객체",
+        ...bullets(profile.records),
+        "",
         "## 주요 사용자",
+        `- ${profile.targetUser}`,
         "- 아이디어를 빠르게 제품 실행안으로 바꿔야 하는 창업자",
         "- 기획, 디자인, FE, BE, QA 흐름을 동시에 관리하는 1인 또는 소규모 팀",
         "- 승인 전까지는 자동 실행을 막고, 검토 가능한 산출물을 원하는 제품 오너",
@@ -265,6 +373,7 @@ function documentBody(docId: DocumentId, idea: string): string {
         "",
         "## 리스크와 대응",
         "- 산출물이 과하게 일반적일 수 있음: 사용자 승인과 revision 명령으로 보정",
+        `- 도메인 리스크: ${profile.risk}`,
         "- 외부 integration이 준비되지 않을 수 있음: 로컬 draft와 dry-run 명령으로 대체",
         "- 자동 실행 오해 가능성: merge/deploy는 명시 승인 전 차단"
       ].join("\n");
@@ -276,6 +385,8 @@ function documentBody(docId: DocumentId, idea: string): string {
         idea,
         "",
         "## 유사 제품군",
+        `분석 프레임: ${profile.competitorFrame}`,
+        "",
         "| 제품군 | 사용자가 얻는 가치 | 참고할 점 | 차별화 기회 |",
         "| --- | --- | --- | --- |",
         "| Notion/문서 워크스페이스 | 지식과 문서 정리 | 낮은 진입장벽 | 실행 이슈/QA까지 연결 부족 |",
@@ -313,10 +424,13 @@ function documentBody(docId: DocumentId, idea: string): string {
         "",
         "## 비즈니스 요구사항",
         "- 사용자는 자연어 한 번으로 제품 실행 패키지를 생성할 수 있어야 합니다.",
+        `- 사용자는 ${profile.sourceInput}을 ${profile.transformedOutput}로 바꿀 수 있어야 합니다.`,
+        `- 사용자는 ${profile.primaryMetric}을 확인할 수 있어야 합니다.`,
         "- 생성된 문서, 디자인 산출물, 이슈, PR draft, QA report는 서로 연결되어야 합니다.",
         "- 승인 전 merge, deploy, credential-gated write는 실행되지 않아야 합니다.",
         "",
         "## 기능 요구사항",
+        ...bullets(profile.workflow.map((step) => `${step} 단계 지원`)),
         "- 제품 정의, 요구사항, 화면 정의, 기능 정의 자동 생성",
         "- 디자인 레퍼런스, 방향, 랜딩, 디자인 시스템, 페이지 설계 자동 생성",
         "- FE spec, BE spec, API contract, sprint plan 자동 생성",
@@ -335,7 +449,8 @@ function documentBody(docId: DocumentId, idea: string): string {
         "",
         "## S-001 Runtime Dashboard",
         "- 목적: 현재 stage, 산출물, 이슈, PR, QA 상태를 한 화면에서 확인",
-        "- 주요 사용자: 제품 오너, PM, FE/BE 담당자",
+        `- 주요 사용자: ${profile.targetUser}`,
+        `- 주요 도메인 데이터: ${profile.records.slice(0, 4).join(", ")}`,
         "- 주요 상태: uninitialized, setup-ready, package-generated, approval-blocked, qa-blocked",
         "- 주요 액션: 다음 명령 복사, 문서 보기, 승인 시작, QA report 보기",
         "",
@@ -355,8 +470,8 @@ function documentBody(docId: DocumentId, idea: string): string {
         "## F-001 Productize Golden Path",
         "- 기능 설명: 한 문장 아이디어를 실행 패키지로 변환",
         "- 사용자 스토리: 제품 오너로서 아이디어를 입력하면 검토 가능한 산출물과 FE/BE 작업 초안을 받고 싶다.",
-        "- 입력값: 제품 아이디어 문장",
-        "- 출력값: 문서, 디자인 산출물, 이슈, PR draft, QA report, deployment plan, next commands",
+        `- 입력값: ${profile.sourceInput}`,
+        `- 출력값: ${profile.transformedOutput}, 문서, 디자인 산출물, 이슈, PR draft, QA report, deployment plan, next commands`,
         "- 예외 흐름: 빈 아이디어는 usage error 반환",
         "- 권한 조건: 로컬 파일 생성은 허용, 외부 write는 별도 승인 필요",
         "- 테스트 기준: 생성 파일 존재, placeholder 없음, PR/QA 상태 연결",
@@ -375,6 +490,7 @@ function documentBody(docId: DocumentId, idea: string): string {
         "",
         "## 주요 컴포넌트",
         "- RuntimeStatusHeader: stage, owner agent, configured provider 상태",
+        `- DomainSignalPanel: ${profile.primaryMetric}와 ${profile.records.slice(0, 3).join("/")} 상태`,
         "- ArtifactList: 문서와 디자인 산출물 목록, status badge, version link",
         "- NextActionPanel: 다음 command, approval blocker, safe action 표시",
         "- WorkQueue: FE/BE issue, PR draft, QA status 표시",
@@ -397,6 +513,7 @@ function documentBody(docId: DocumentId, idea: string): string {
         `${idea} MVP의 productize package를 읽고 안전하게 command action을 제안하는 API를 제공합니다.`,
         "",
         "## 도메인 모델",
+        ...profile.records.map((record) => `- ${record}: ${idea} 도메인의 핵심 업무 객체`),
         "- RuntimeState: project, stage, owner, paused, next action",
         "- Artifact: document/design id, version, status, file path, markdown body",
         "- WorkItem: issue number, stream, branch, acceptance criteria",
@@ -417,10 +534,19 @@ function documentBody(docId: DocumentId, idea: string): string {
       return [
         "# API Contract",
         "",
+        "## Domain Resources",
+        ...profile.apiResources.map((resource) => `- ${resourceTitle(resource)}: ${profile.sourceInput}에서 ${profile.transformedOutput}로 이어지는 ${resource} 리소스`),
+        "",
         "## GET /api/runtime/status",
         "- 설명: 현재 project, stage, owner, paused, configured providers, next action 반환",
         "- 성공 응답: `{ project, workflow, providers, nextAction, blockers }`",
         "",
+        ...profile.apiResources.flatMap((resource) => [
+          `## GET /api/domain/${resource}`,
+          `- 설명: ${idea} MVP의 ${resource} 목록과 검토 상태 반환`,
+          `- 성공 응답: \`{ items: ${resourceTitle(resource)}[], metric: "${profile.primaryMetric}" }\``,
+          ""
+        ]),
         "## GET /api/artifacts",
         "- 설명: 문서와 디자인 산출물 index 반환",
         "- 성공 응답: `{ documents: ArtifactSummary[], designArtifacts: ArtifactSummary[] }`",
@@ -471,6 +597,7 @@ function documentBody(docId: DocumentId, idea: string): string {
 }
 
 function designArtifactBody(artifactId: DesignArtifactId, idea: string): string {
+  const profile = analyzeIdea(idea);
   switch (artifactId) {
     case "references":
       return [
@@ -486,6 +613,8 @@ function designArtifactBody(artifactId: DesignArtifactId, idea: string): string 
         "",
         "## 선택 기준",
         `- ${idea} 사용자가 첫 세션에서 실행 가능한 결과를 확인할 수 있어야 합니다.`,
+        `- ${profile.sourceInput}에서 ${profile.transformedOutput}로 이어지는 도메인 흐름이 보여야 합니다.`,
+        `- 핵심 지표 ${profile.primaryMetric}을 화면에서 확인할 수 있어야 합니다.`,
         "- 명령어 지식이 없어도 다음 액션이 보여야 합니다.",
         "- 자동화와 승인 게이트가 동시에 보여야 합니다."
       ].join("\n");
@@ -520,7 +649,7 @@ function designArtifactBody(artifactId: DesignArtifactId, idea: string): string 
         "",
         "## First View",
         "- 좌측: 입력한 아이디어와 생성 상태",
-        "- 중앙: 생성된 artifact package",
+        `- 중앙: ${profile.records.slice(0, 3).join(", ")} 중심 artifact package`,
         "- 우측: 다음 승인/QA 액션",
         "",
         "## CTA",
@@ -551,6 +680,7 @@ function designArtifactBody(artifactId: DesignArtifactId, idea: string): string 
         "## Components",
         "- StageBadge: current, blocked, ready states",
         "- ArtifactCard: id, title, status, version, owner",
+        `- DomainMetricCard: ${profile.primaryMetric}`,
         "- CommandButton: safe action proposal with copy affordance",
         "- QaStatusRow: requirement, design, API, security, accessibility, test",
         "- ApprovalBanner: explains gated actions without hiding next step"
@@ -561,7 +691,7 @@ function designArtifactBody(artifactId: DesignArtifactId, idea: string): string 
         "",
         "## Runtime Dashboard",
         "- 목적: productize package의 전체 상태를 한눈에 제공",
-        "- 컴포넌트: StageBadge, ArtifactCard grid, WorkQueue, QaStatusPanel, NextActionPanel",
+        `- 컴포넌트: StageBadge, DomainMetricCard, ${profile.records.slice(0, 3).join("/")} summary, ArtifactCard grid, WorkQueue, QaStatusPanel, NextActionPanel`,
         "- 반응형: 모바일에서는 Artifact/Work/QA 탭 전환",
         "",
         "## Artifact Review",

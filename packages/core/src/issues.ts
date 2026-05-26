@@ -5,7 +5,8 @@ import {
   issueIndexFile,
   pullRequestFile,
   pullRequestIndexFile,
-  pullRequestNumberFile
+  pullRequestNumberFile,
+  workExecutionFile
 } from "./paths";
 import { readJson, readJsonIfExists, writeJson, writeText } from "./fs";
 import { createBranchName, normalizeLabel } from "./github";
@@ -19,6 +20,7 @@ import {
   Workstream
 } from "./types";
 import { newId, nowIso } from "./time";
+import { updateWorkflowEvidence } from "./project";
 
 export interface CreateWorkIssueInput {
   workstream: Workstream;
@@ -31,6 +33,18 @@ export interface CreateWorkIssueInput {
   relatedApis?: string[];
   testRequirement?: string;
   qaChecklist?: string[];
+}
+
+export interface WorkExecutionRecord {
+  issueNumber: number;
+  workstream: Workstream;
+  branchName: string;
+  status: "prepared" | "branch-ready" | "blocked";
+  filePath: string;
+  evidence: string[];
+  nextCommands: string[];
+  createdAt: string;
+  updatedAt: string;
 }
 
 export function createWorkIssue(projectRoot: string, input: CreateWorkIssueInput): WorkIssue {
@@ -93,6 +107,37 @@ export function markIssueInProgress(projectRoot: string, issueNumber: number): W
   });
 }
 
+export function createWorkExecutionRecord(
+  projectRoot: string,
+  issueNumber: number,
+  input: {
+    status: WorkExecutionRecord["status"];
+    evidence?: string[];
+    nextCommands?: string[];
+  }
+): WorkExecutionRecord {
+  const issue = readWorkIssue(projectRoot, issueNumber);
+  const now = nowIso();
+  const record: WorkExecutionRecord = {
+    issueNumber,
+    workstream: issue.assigneeAgent,
+    branchName: issue.branchName,
+    status: input.status,
+    filePath: workExecutionFile(projectRoot, issueNumber),
+    evidence: input.evidence ?? [],
+    nextCommands: input.nextCommands ?? [
+      `git switch ${issue.branchName}`,
+      "implement acceptance criteria",
+      "pnpm run lint && pnpm test && pnpm run build",
+      `/fe pr --issue ${issue.issueNumber} or /be pr --issue ${issue.issueNumber}`
+    ],
+    createdAt: now,
+    updatedAt: now
+  };
+  writeText(record.filePath, renderWorkExecutionRecord(issue, record));
+  return record;
+}
+
 export function createPullRequestDraft(
   projectRoot: string,
   issueNumber: number,
@@ -148,14 +193,61 @@ export function updatePullRequest(projectRoot: string, record: PullRequestRecord
   return record;
 }
 
-export function createDevDeploymentPlan(projectRoot: string, provider = "local"): DeploymentRecord {
+export function linkWorkIssueToGitHub(
+  projectRoot: string,
+  issueNumber: number,
+  input: {
+    githubIssueNumber?: number;
+    githubUrl?: string | null;
+    githubReadbackStatus: "passed" | "failed";
+    githubReadbackReason?: string;
+  }
+): WorkIssue {
+  const issue = readWorkIssue(projectRoot, issueNumber);
+  return updateIssue(projectRoot, {
+    ...issue,
+    githubIssueNumber: input.githubIssueNumber,
+    githubUrl: input.githubUrl,
+    githubReadbackStatus: input.githubReadbackStatus,
+    githubReadbackReason: input.githubReadbackReason,
+    updatedAt: nowIso()
+  });
+}
+
+export function linkPullRequestToGitHub(
+  projectRoot: string,
+  prNumber: number,
+  input: {
+    githubPrNumber?: number;
+    githubUrl?: string | null;
+    githubReadbackStatus: "passed" | "failed";
+    githubReadbackReason?: string;
+  }
+): PullRequestRecord {
+  const record = readPullRequest(projectRoot, prNumber);
+  return updatePullRequest(projectRoot, {
+    ...record,
+    githubPrNumber: input.githubPrNumber,
+    githubUrl: input.githubUrl,
+    githubReadbackStatus: input.githubReadbackStatus,
+    githubReadbackReason: input.githubReadbackReason,
+    status: input.githubReadbackStatus === "passed" ? "ready" : record.status,
+    updatedAt: nowIso()
+  });
+}
+
+export function createDevDeploymentPlan(
+  projectRoot: string,
+  provider = "local",
+  status: DeploymentRecord["status"] = "planned"
+): DeploymentRecord {
   const now = nowIso();
   const filePath = deploymentPlanFile(projectRoot, "dev");
   const record: DeploymentRecord = {
     id: newId("deployment"),
     environment: "dev",
     provider,
-    status: "planned",
+    status,
     approvalRequired: true,
     fallback: "local dev server",
     filePath,
@@ -164,6 +256,16 @@ export function createDevDeploymentPlan(projectRoot: string, provider = "local")
   };
   writeText(filePath, renderDeploymentPlan(record));
   writeJson(path.join(projectRoot, ".rph", "deployments", "dev-deployment-plan.json"), record);
+  updateWorkflowEvidence(projectRoot, (evidence) => ({
+    ...evidence,
+    deployment: {
+      environment: record.environment,
+      provider: record.provider,
+      status: record.status,
+      filePath: record.filePath,
+      updatedAt: record.updatedAt
+    }
+  }));
   return record;
 }
 
@@ -212,6 +314,32 @@ function renderPullRequestBody(issue: WorkIssue): string {
     "",
     "## User Approval Required",
     "yes"
+  ].join("\n");
+}
+
+function renderWorkExecutionRecord(issue: WorkIssue, record: WorkExecutionRecord): string {
+  return [
+    `# Work Execution: #${issue.issueNumber} ${issue.title}`,
+    "",
+    `- workstream: ${record.workstream}`,
+    `- status: ${record.status}`,
+    `- branch: ${record.branchName}`,
+    `- updated_at: ${record.updatedAt}`,
+    "",
+    "## Acceptance Criteria",
+    ...issue.acceptanceCriteria.map((item) => `- ${item}`),
+    "",
+    "## QA Requirement",
+    issue.testRequirement,
+    "",
+    "## Evidence",
+    ...(record.evidence.length > 0 ? record.evidence.map((item) => `- ${item}`) : ["- No runtime evidence recorded yet."]),
+    "",
+    "## Next Commands",
+    ...record.nextCommands.map((item) => `- ${item}`),
+    "",
+    "## Merge Gate",
+    "User approval remains required before merge or external deployment."
   ].join("\n");
 }
 

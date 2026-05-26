@@ -13,7 +13,22 @@ if (!fs.existsSync(cliEntry)) {
   fail(`CLI dist entry not found: ${cliEntry}. Run pnpm run build first.`);
 }
 
-const result = spawnSync(process.execPath, [cliEntry, "ask", `이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: ${idea}`], {
+const conversational = spawnSync(process.execPath, [cliEntry, "ask", `이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: ${idea}`], {
+  cwd: tmpRoot,
+  encoding: "utf8"
+});
+
+if (conversational.status !== 0) {
+  fail(`conversational ask failed\nstdout:\n${conversational.stdout}\nstderr:\n${conversational.stderr}`);
+}
+if (!conversational.stdout.includes("agent proposed command: /productize")) {
+  fail(`conversational ask did not propose /productize\nstdout:\n${conversational.stdout}\nstderr:\n${conversational.stderr}`);
+}
+if (fs.existsSync(path.join(tmpRoot, ".rph", "golden-path", "latest.md"))) {
+  fail("conversational ask generated a golden path without --execute");
+}
+
+const result = spawnSync(process.execPath, [cliEntry, "ask", "--execute", `이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: ${idea}`], {
   cwd: tmpRoot,
   encoding: "utf8"
 });

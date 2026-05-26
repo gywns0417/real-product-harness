@@ -8,10 +8,14 @@ export interface ParsedCommand {
 export const TOP_LEVEL_COMMANDS = [
   "help",
   "version",
+  "update",
+  "start",
+  "go",
   "shell",
   "runtime",
   "init",
   "status",
+  "workspace",
   "next",
   "pause",
   "resume",
@@ -23,6 +27,8 @@ export const TOP_LEVEL_COMMANDS = [
   "chat",
   "ai",
   "mcp",
+  "live",
+  "proofs",
   "doctor",
   "productize",
   "pm",
@@ -42,6 +48,22 @@ const COMMAND_ALIASES: Record<string, string> = {
   "--version": "version"
 };
 
+const BOOLEAN_OPTIONS = new Set([
+  "execute",
+  "loop",
+  "live",
+  "guide",
+  "from-env",
+  "allow-missing",
+  "non-interactive",
+  "auto",
+  "public",
+  "private",
+  "json",
+  "dry-run",
+  "force"
+]);
+
 export function parseCli(argv: string[]): ParsedCommand {
   const normalizedArgv = normalizeCliArgv(argv);
   const [command = "help", subcommandCandidate, ...rest] = normalizedArgv;
@@ -55,7 +77,9 @@ export function parseCli(argv: string[]): ParsedCommand {
     if (token.startsWith("--")) {
       const key = token.slice(2);
       const next = argsAndOptions[index + 1];
-      if (next && !next.startsWith("--")) {
+      if (BOOLEAN_OPTIONS.has(key)) {
+        options[key] = true;
+      } else if (next && !next.startsWith("--")) {
         options[key] = next;
         index += 1;
       } else {
@@ -75,7 +99,14 @@ export function normalizeCliArgv(argv: string[]): string[] {
   }
   const [first, ...rest] = normalizedArgv;
   const alias = COMMAND_ALIASES[first];
-  return alias ? [alias, ...rest] : normalizedArgv;
+  if (alias) {
+    return [alias, ...rest];
+  }
+  const nestedHelpIndex = normalizedArgv.findIndex((token, index) => index > 0 && COMMAND_ALIASES[token] === "help");
+  if (nestedHelpIndex > 0) {
+    return ["help", first, ...normalizedArgv.slice(1, nestedHelpIndex)];
+  }
+  return normalizedArgv;
 }
 
 export function normalizeSlashArgv(argv: string[]): string[] {

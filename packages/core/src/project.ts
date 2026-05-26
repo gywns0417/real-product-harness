@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { approvalsFile, designApprovalsFile, githubDir, harnessConfigFile, interviewsDir, issueIndexFile, projectFile, pullRequestIndexFile, rphDir, setupChoicesFile, stateFile } from "./paths";
 import { ensureDir, fileExists, readJson, writeJson, writeText } from "./fs";
-import { Project, ProjectState, SetupChoices } from "./types";
+import { ConnectionCheck, ConnectionReportProvenance, Project, ProjectState, SetupChoices, WorkflowEvidence } from "./types";
 import { newId, nowIso } from "./time";
 import { initializeHarnessConfig } from "./settings";
 
@@ -98,6 +98,77 @@ export function saveState(projectRoot: string, state: ProjectState): void {
   writeJson(stateFile(projectRoot), state);
 }
 
+export function updateWorkflowEvidence(
+  projectRoot: string,
+  updater: (evidence: WorkflowEvidence) => WorkflowEvidence
+): ProjectState {
+  const state = loadState(projectRoot);
+  const updatedAt = nowIso();
+  const next: ProjectState = {
+    ...state,
+    evidence: updater(state.evidence ?? {}),
+    updatedAt
+  };
+  saveState(projectRoot, next);
+  return next;
+}
+
+export function recordLiveVerificationEvidence(
+  projectRoot: string,
+  checks: ConnectionCheck[],
+  reportPath: string,
+  options: {
+    source?: ConnectionReportProvenance["source"];
+    configFingerprint?: string;
+    checkedAt?: string;
+  } = {}
+): ProjectState {
+  const source = options.source ?? "live";
+  const passedTargets = checks.filter((check) => check.status === "passed").map(formatConnectionTarget).sort();
+  const failedTargets = checks.filter((check) => check.status === "failed").map(formatConnectionTarget).sort();
+  const skippedTargets = checks.filter((check) => check.status === "skipped").map(formatConnectionTarget).sort();
+  const checkedAt = options.checkedAt
+    ?? latestConnectionCheckTime(checks)
+    ?? nowIso();
+  const status: NonNullable<WorkflowEvidence["liveVerification"]>["status"] =
+    source !== "live"
+      ? "not-current"
+      : failedTargets.length > 0
+        ? "failed"
+        : skippedTargets.length > 0 || passedTargets.length === 0
+          ? "missing"
+          : "current";
+
+  return updateWorkflowEvidence(projectRoot, (evidence) => ({
+    ...evidence,
+    liveVerification: {
+      status,
+      source,
+      passedTargets,
+      failedTargets,
+      skippedTargets,
+      reportPath,
+      configFingerprint: options.configFingerprint,
+      checkedAt,
+      updatedAt: nowIso()
+    }
+  }));
+}
+
+function formatConnectionTarget(check: ConnectionCheck): string {
+  return `${check.kind}:${check.id}`;
+}
+
+function latestConnectionCheckTime(checks: ConnectionCheck[]): string | null {
+  const valid = checks
+    .map((check) => Date.parse(check.checkedAt))
+    .filter((timestamp) => !Number.isNaN(timestamp));
+  if (valid.length === 0) {
+    return null;
+  }
+  return new Date(Math.max(...valid)).toISOString();
+}
+
 export function requireInitialized(projectRoot: string): void {
   if (!fs.existsSync(projectFile(projectRoot)) || !fs.existsSync(stateFile(projectRoot))) {
     throw new Error("RPH project not initialized. Run `rph`, then /init");
@@ -119,6 +190,7 @@ function envExample(): string {
     "LOCAL_AI_BASE_URL=",
     "LOCAL_AI_MODEL=",
     "GITHUB_TOKEN=",
+    "GITHUB_TOKEN_SOURCE=",
     "GITHUB_OWNER=",
     "GITHUB_REPO=",
     "NOTION_TOKEN=",

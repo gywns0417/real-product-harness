@@ -52,6 +52,9 @@ export function prepareEngineeringDocumentState(state: ProjectState, docId: Docu
   if (state.currentStage === flow.stage) {
     return state;
   }
+  if (isEngineeringFanOutSiblingStage(state.currentStage, flow.stage)) {
+    return { ...state, currentStage: flow.stage };
+  }
   return transitionState(state, flow.stage, `${docId} started`);
 }
 
@@ -79,6 +82,15 @@ export function approveEngineeringDocument(projectRoot: string, docId: DocumentI
 }
 
 export function advanceAfterEngineeringApproval(state: ProjectState, docId: DocumentId): ProjectState {
+  if (
+    ["PD_APPROVED", "FE_SPEC", "BE_SPEC"].includes(state.currentStage) &&
+    [FE_SPEC_DOC, BE_SPEC_DOC, API_CONTRACT_DOC].includes(docId) &&
+    isApproved(state, FE_SPEC_DOC) &&
+    isApproved(state, BE_SPEC_DOC) &&
+    isApproved(state, API_CONTRACT_DOC)
+  ) {
+    return transitionState(state, "SPRINT_PLANNING", "FE/BE specification fan-in approved");
+  }
   if (state.currentStage === "FE_SPEC" && docId === FE_SPEC_DOC && isApproved(state, FE_SPEC_DOC)) {
     return transitionState(state, "BE_SPEC", "FE technical specification approved");
   }
@@ -115,4 +127,11 @@ export function canFinalizeSprintPlans(state: ProjectState): { ok: boolean; miss
 
 function isApproved(state: ProjectState, docId: DocumentId): boolean {
   return state.documents[docId]?.status === "approved";
+}
+
+function isEngineeringFanOutSiblingStage(
+  currentStage: ProjectState["currentStage"],
+  targetStage: EngineeringDocumentWorkflow["stage"]
+): boolean {
+  return targetStage !== "SPRINT_PLANNING" && ["PD_APPROVED", "FE_SPEC", "BE_SPEC"].includes(currentStage);
 }

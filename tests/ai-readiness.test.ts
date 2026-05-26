@@ -75,6 +75,7 @@ describe("AI readiness", () => {
     const result = await testAiConnection(config, "openai", env);
 
     expect(result.status).toBe("failed");
+    expect(result.readiness?.mode).toBe("protocol-partial");
     expect(result.readiness?.provenStage).toBe("credential-probe");
     expect(result.readiness?.stages.find((stage) => stage.stage === "protocol-tool-call")?.status).toBe("failed");
   });

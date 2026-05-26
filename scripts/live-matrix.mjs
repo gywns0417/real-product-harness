@@ -3,63 +3,102 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 
 const repoRoot = path.resolve(new URL("..", import.meta.url).pathname);
 const cliEntry = path.join(repoRoot, "dist", "apps", "cli", "src", "index.js");
+const settingsEntry = path.join(repoRoot, "dist", "packages", "core", "src", "settings.js");
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rph-live-matrix-"));
 const env = { ...process.env, ...readDotEnv(path.join(repoRoot, ".env")) };
 const configuredOnly = process.argv.includes("--configured-only");
+const validateReportIndex = process.argv.indexOf("--validate-report");
+const validateReportPath = validateReportIndex >= 0 ? process.argv[validateReportIndex + 1] : null;
 
-if (!fs.existsSync(cliEntry)) {
+if (!validateReportPath && !fs.existsSync(cliEntry)) {
   fail(`CLI dist entry not found: ${cliEntry}. Run pnpm run build first.`);
 }
-
-const result = spawnSync(process.execPath, [
-  cliEntry,
-  "setup",
-  "auto",
-  "--from-env",
-  "--live",
-  "--ai",
-  "all",
-  "--mcp",
-  "all"
-], {
-  cwd: tmpRoot,
-  env,
-  encoding: "utf8"
-});
-
-if (result.status !== 0) {
-  fail(`live matrix command failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+if (!fs.existsSync(settingsEntry)) {
+  fail(`settings dist entry not found: ${settingsEntry}. Run pnpm run build first.`);
 }
 
-const reportPath = path.join(tmpRoot, ".rph", "connections", "latest.json");
+const require = createRequire(import.meta.url);
+const {
+  AI_PROVIDER_DEFINITIONS,
+  MCP_SERVER_DEFINITIONS
+} = require(settingsEntry);
+const required = buildRequiredMatrix(AI_PROVIDER_DEFINITIONS, MCP_SERVER_DEFINITIONS);
+
+const result = validateReportPath
+  ? { status: 0, stdout: "", stderr: "" }
+  : spawnSync(process.execPath, [
+    cliEntry,
+    "setup",
+    "auto",
+    "--from-env",
+    "--live",
+    ...(configuredOnly ? ["--allow-missing"] : []),
+    "--ai",
+    "all",
+    "--mcp",
+    "all"
+  ], {
+    cwd: tmpRoot,
+    env,
+    encoding: "utf8"
+  });
+
+const reportPath = validateReportPath ? path.resolve(validateReportPath) : path.join(tmpRoot, ".rph", "connections", "latest.json");
 if (!fs.existsSync(reportPath)) {
-  fail(`connection report missing: ${reportPath}\nstdout:\n${result.stdout}`);
+  fail(`connection report missing: ${reportPath}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
 }
 
 const report = JSON.parse(fs.readFileSync(reportPath, "utf8"));
-removeTempSecretFiles(tmpRoot);
+if (!validateReportPath) {
+  removeTempSecretFiles(tmpRoot);
+}
 const checks = Array.isArray(report.checks) ? report.checks : [];
-const required = [
-  ["ai", "openai", "protocol-tool-call"],
-  ["ai", "anthropic", "protocol-tool-call"],
-  ["ai", "gemini", "protocol-tool-call"],
-  ["ai", "local", "protocol-tool-call"],
-  ["mcp", "notion", "credential-probe"],
-  ["mcp", "github", "credential-probe"],
-  ["mcp", "figma", "credential-probe"],
-  ["mcp", "stitch", "protocol-tools-list"]
-];
+const onboardingProof = Array.isArray(report.onboardingProof) ? report.onboardingProof : [];
+const requiredKeys = new Set(required.map(([kind, id]) => matrixKey(kind, id)));
 
 const failures = [];
+if (!report.provenance || typeof report.provenance !== "object") {
+  failures.push("connection report provenance missing");
+} else {
+  if (!["live", "mock", "imported"].includes(report.provenance.source)) {
+    failures.push(`connection report provenance source invalid: ${report.provenance.source ?? "missing"}`);
+  }
+  if (!Array.isArray(report.provenance.selectedTargets)) {
+    failures.push("connection report provenance selectedTargets missing");
+  }
+  if (report.provenance.checkedTargetCount !== checks.length) {
+    failures.push(`connection report provenance checkedTargetCount mismatch value=${report.provenance.checkedTargetCount ?? "missing"} expected=${checks.length}`);
+  }
+}
+if (result.status !== 0) {
+  failures.push(`setup auto exited ${result.status}; stderr=${result.stderr.trim() || "none"}`);
+}
+for (const check of checks) {
+  if (!requiredKeys.has(matrixKey(check.kind, check.id))) {
+    failures.push(`${check.kind}:${check.id} appears in report but is not covered by the runtime definitions matrix`);
+  }
+}
+for (const proof of onboardingProof) {
+  if (!requiredKeys.has(matrixKey(proof.kind, proof.id))) {
+    failures.push(`${proof.kind}:${proof.id} appears in onboarding proof but is not covered by the runtime definitions matrix`);
+  }
+}
 for (const [kind, id, requiredStage] of required) {
   const check = checks.find((item) => item.kind === kind && item.id === id);
+  const proof = onboardingProof.find((item) => item.kind === kind && item.id === id);
   if (!check) {
     failures.push(`${kind}:${id} missing from report`);
     continue;
   }
+  if (!proof) {
+    failures.push(`${kind}:${id} missing onboarding proof`);
+    continue;
+  }
+  failures.push(...proofParityFailures(kind, id, check, proof));
   if (configuredOnly && check.status === "skipped" && Array.isArray(check.missingEnv) && check.missingEnv.length > 0) {
     continue;
   }
@@ -71,11 +110,22 @@ for (const [kind, id, requiredStage] of required) {
   if (!stageCovers(provenStage, requiredStage)) {
     failures.push(`${kind}:${id} stage=${provenStage}, required=${requiredStage}`);
   }
+  if (proof.verified !== true || proof.provenStage !== provenStage) {
+    failures.push(`${kind}:${id} onboarding proof mismatch verified=${proof.verified} stage=${proof.provenStage}`);
+  }
+  const expectedTrust = check.readiness?.mode ?? "unverified";
+  if (proof.trustCategory !== expectedTrust) {
+    failures.push(`${kind}:${id} trust mismatch trust=${proof.trustCategory} expected=${expectedTrust}`);
+  }
 }
 
 console.log(configuredOnly ? "configured live matrix summary" : "live matrix summary");
 for (const check of checks) {
-  console.log(`- ${check.kind}:${check.id} status=${check.status} stage=${check.readiness?.provenStage ?? "none"}`);
+  const proof = onboardingProof.find((item) => item.kind === check.kind && item.id === check.id);
+  const trust = proof?.trustCategory ?? check.readiness?.mode ?? "unverified";
+  const target = check.identity?.label ?? proof?.identity?.label;
+  const action = check.firstActionProof?.action ?? proof?.firstActionProof?.action;
+  console.log(`- ${check.kind}:${check.id} status=${check.status} trust=${trust}:${check.readiness?.provenStage ?? "none"}${target ? ` target=${target}` : ""}${action ? ` action=${action}` : ""}`);
 }
 console.log(`tmp: ${tmpRoot}`);
 console.log(`report: ${reportPath}`);
@@ -85,6 +135,107 @@ if (failures.length > 0) {
 }
 
 console.log("live matrix passed");
+
+function buildRequiredMatrix(aiDefinitions, mcpDefinitions) {
+  return [
+    ...Object.keys(aiDefinitions).map((id) => ["ai", id, "protocol-tool-call"]),
+    ...Object.values(mcpDefinitions).map((server) => [
+      "mcp",
+      server.id,
+      server.protocolReadiness === "tools/call"
+        ? "protocol-tool-call"
+        : server.protocolReadiness === "tools/list"
+          ? "protocol-tools-list"
+          : "credential-probe"
+    ])
+  ];
+}
+
+function matrixKey(kind, id) {
+  return `${kind}:${id}`;
+}
+
+function proofParityFailures(kind, id, check, proof) {
+  const failures = [];
+  const prefix = `${kind}:${id}`;
+  const expectedTrust = check.readiness?.mode ?? "unverified";
+  const provenStage = check.readiness?.provenStage ?? "none";
+  const expectedCaptured = Array.isArray(check.missingEnv) ? check.missingEnv.length === 0 : true;
+  const expectedProtocolApplicable = kind === "ai" || MCP_SERVER_DEFINITIONS[id]?.protocolReadiness !== "not-applicable";
+  const credentialStage = readinessStageStatus(check, ["credential-probe"], "skipped");
+  const protocolStage = readinessStageStatus(check, ["protocol-tools-list", "protocol-tool-call"], "not-applicable");
+  if (proof.status !== check.status) {
+    failures.push(`${prefix} proof status mismatch status=${proof.status} expected=${check.status}`);
+  }
+  if (proof.captured !== expectedCaptured) {
+    failures.push(`${prefix} proof captured mismatch captured=${proof.captured} expected=${expectedCaptured}`);
+  }
+  if (proof.checkedAt !== check.checkedAt) {
+    failures.push(`${prefix} proof checkedAt mismatch checkedAt=${proof.checkedAt} expected=${check.checkedAt}`);
+  }
+  if (proof.protocolApplicable !== expectedProtocolApplicable) {
+    failures.push(`${prefix} proof protocolApplicable mismatch value=${proof.protocolApplicable} expected=${expectedProtocolApplicable}`);
+  }
+  if (proof.trustCategory !== expectedTrust) {
+    failures.push(`${prefix} trust mismatch trust=${proof.trustCategory} expected=${expectedTrust}`);
+  }
+  if (proof.provenStage !== provenStage) {
+    failures.push(`${prefix} proof provenStage mismatch stage=${proof.provenStage} expected=${provenStage}`);
+  }
+  if (proof.proof?.readinessMode !== expectedTrust) {
+    failures.push(`${prefix} nested readinessMode mismatch value=${proof.proof?.readinessMode} expected=${expectedTrust}`);
+  }
+  if (proof.proof?.provenStage !== provenStage) {
+    failures.push(`${prefix} nested provenStage mismatch value=${proof.proof?.provenStage} expected=${provenStage}`);
+  }
+  if (proof.proof?.credentialStage !== credentialStage) {
+    failures.push(`${prefix} nested credentialStage mismatch value=${proof.proof?.credentialStage} expected=${credentialStage}`);
+  }
+  if (proof.proof?.protocolStage !== protocolStage) {
+    failures.push(`${prefix} nested protocolStage mismatch value=${proof.proof?.protocolStage} expected=${protocolStage}`);
+  }
+  const expectedEndpoint = check.endpoint;
+  if ((proof.proof?.endpoint ?? undefined) !== expectedEndpoint) {
+    failures.push(`${prefix} nested endpoint mismatch value=${proof.proof?.endpoint ?? "none"} expected=${expectedEndpoint ?? "none"}`);
+  }
+  const expectedIdentity = check.identity ?? null;
+  if (stableJson(proof.identity ?? null) !== stableJson(expectedIdentity)) {
+    failures.push(`${prefix} proof identity mismatch value=${formatJson(proof.identity ?? null)} expected=${formatJson(expectedIdentity)}`);
+  }
+  const expectedFirstActionProof = check.firstActionProof ?? null;
+  if (stableJson(proof.firstActionProof ?? null) !== stableJson(expectedFirstActionProof)) {
+    failures.push(`${prefix} firstActionProof mismatch value=${formatJson(proof.firstActionProof ?? null)} expected=${formatJson(expectedFirstActionProof)}`);
+  }
+  const expectedPolicy = check.policy ?? null;
+  const proofPolicy = proof.policy ?? null;
+  if (stableJson(proofPolicy) !== stableJson(expectedPolicy)) {
+    failures.push(`${prefix} proof policy mismatch value=${formatJson(proofPolicy)} expected=${formatJson(expectedPolicy)}`);
+  }
+  return failures;
+}
+
+function stableJson(value) {
+  return JSON.stringify(sortJson(value));
+}
+
+function formatJson(value) {
+  return stableJson(value);
+}
+
+function sortJson(value) {
+  if (Array.isArray(value)) {
+    return value.map(sortJson);
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, sortJson(value[key])]));
+  }
+  return value;
+}
+
+function readinessStageStatus(check, stageNames, fallback) {
+  const stage = check.readiness?.stages?.find((item) => stageNames.includes(item.stage));
+  return stage?.status ?? fallback;
+}
 
 function stageCovers(actual, required) {
   const rank = {

@@ -1,12 +1,30 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
-import { createMcpConfig, MCP_SERVER_CONTRACTS, type McpServerContract } from "../../integrations/src/mcp";
+import {
+  MCP_SERVER_CONTRACTS,
+  type McpConfig,
+  type McpServerAuthMode,
+  type McpServerConfig,
+  type McpServerContract
+} from "../../integrations/src/mcp";
 import { ensureDir, readJsonIfExists, writeJson } from "./fs";
+import {
+  applyMcpPolicyRegistryToServers,
+  attachMcpPolicyEvaluation,
+  buildMcpPolicyRegistry,
+  captureMcpReadOnlyToolContracts,
+  mcpPolicyForServer,
+  normalizeHarnessMcpPolicy
+} from "./mcp-policy";
+import { listMcpTools } from "./mcp-client";
 import { connectionReportFile, harnessConfigFile } from "./paths";
+import { recordConnectionProofEvents } from "./proof-ledger";
 import { nowIso } from "./time";
 import {
   AiProviderConfig,
   AiProviderId,
   ConnectionCheck,
+  ConnectionReportProvenance,
   HarnessConfig,
   McpServerId,
   McpServerRuntimeConfig,
@@ -24,7 +42,25 @@ interface ProviderDefinition {
   testEndpoint: string;
 }
 
-type McpDefinition = McpServerContract;
+type McpDefinition = McpServerContract & {
+  defaultEnabled?: boolean;
+};
+
+export interface CustomProtocolMcpServerInput {
+  id: string;
+  name?: string;
+  url: string;
+  authMode?: McpServerAuthMode;
+  authEnvKey?: string;
+  protocolToolCallProbe?: {
+    toolName: string;
+    arguments?: Record<string, unknown>;
+  };
+  agentReadOnlyTools?: string[];
+  enabled?: boolean;
+}
+
+export const CONNECTION_REPORT_TRUST_MAX_AGE_MS = 30 * 60 * 1000;
 
 export interface NormalizedGitHubRepoTarget {
   owner?: string;
@@ -78,21 +114,30 @@ export const AI_PROVIDER_DEFINITIONS: Record<AiProviderId, ProviderDefinition> =
   }
 };
 
-export const MCP_SERVER_DEFINITIONS = MCP_SERVER_CONTRACTS as Record<McpServerId, McpDefinition>;
+export const MCP_SERVER_DEFINITIONS = MCP_SERVER_CONTRACTS as Record<string, McpDefinition>;
+export const BUILT_IN_MCP_SERVER_IDS = Object.keys(MCP_SERVER_CONTRACTS);
 
 export function createHarnessConfig(
   env: NodeJS.ProcessEnv = process.env,
   setupChoices?: SetupChoices,
-  previous?: HarnessConfig
+  previous?: HarnessConfig,
+  existingMcpConfig?: McpConfig
 ): HarnessConfig {
   const now = nowIso();
   const aiProviders = mapRecord(AI_PROVIDER_DEFINITIONS, (definition) => buildAiProviderConfig(definition, env, previous));
-  const mcpServers = mapRecord(MCP_SERVER_DEFINITIONS, (definition) => buildMcpServerConfig(definition, env, setupChoices, previous));
+  const mcpDefinitions = mergeMcpDefinitions(previous, existingMcpConfig);
+  const mcpServers = mapRecord(mcpDefinitions, (definition) => buildMcpServerConfig(definition, env, setupChoices, previous));
+  const mcpPolicyRegistry = buildMcpPolicyRegistry(
+    mcpServers,
+    previous?.mcpPolicyRegistry
+  );
+  applyMcpPolicyRegistryToServers(mcpServers, mcpPolicyRegistry);
   return {
     version: 1,
     activeAiProvider: resolveActiveAiProvider(env, setupChoices, previous, aiProviders),
     aiProviders,
     mcpServers,
+    mcpPolicyRegistry,
     deployment: setupChoices?.deployment ?? previous?.deployment ?? "later",
     stack: setupChoices?.stack ?? previous?.stack ?? "recommended",
     custom: previous?.custom ?? {},
@@ -106,27 +151,36 @@ export function createHarnessConfig(
 }
 
 export function initializeHarnessConfig(projectRoot: string, setupChoices?: SetupChoices): HarnessConfig {
-  const config = createHarnessConfig(process.env, setupChoices);
+  const config = createHarnessConfig(process.env, setupChoices, undefined, readProjectMcpConfig(projectRoot));
   saveHarnessConfig(projectRoot, config);
-  writeJson(projectMcpConfigPath(projectRoot), createMcpConfig(enabledMcpServers(config)));
+  writeProjectMcpConfig(projectRoot, config);
   return config;
 }
 
 export function loadHarnessConfig(projectRoot: string): HarnessConfig {
   const configPath = harnessConfigFile(projectRoot);
   const fallback = createHarnessConfig(process.env);
-  return readJsonIfExists<HarnessConfig>(configPath, fallback);
+  return normalizeHarnessMcpPolicy(readJsonIfExists<HarnessConfig>(configPath, fallback));
+}
+
+export function readHarnessConfigSnapshot(
+  projectRoot: string,
+  env: NodeJS.ProcessEnv = process.env
+): HarnessConfig {
+  const previous = fs.existsSync(harnessConfigFile(projectRoot))
+    ? loadHarnessConfig(projectRoot)
+    : undefined;
+  return createHarnessConfig(env, undefined, previous, readProjectMcpConfig(projectRoot));
 }
 
 export function saveHarnessConfig(projectRoot: string, config: HarnessConfig): void {
-  writeJson(harnessConfigFile(projectRoot), { ...config, updatedAt: nowIso() });
+  writeJson(harnessConfigFile(projectRoot), { ...normalizeHarnessMcpPolicy(config), updatedAt: nowIso() });
 }
 
 export function syncHarnessConfigFromEnv(projectRoot: string): HarnessConfig {
-  const previous = fs.existsSync(harnessConfigFile(projectRoot)) ? loadHarnessConfig(projectRoot) : undefined;
-  const config = createHarnessConfig(process.env, undefined, previous);
+  const config = readHarnessConfigSnapshot(projectRoot);
   saveHarnessConfig(projectRoot, config);
-  writeJson(projectMcpConfigPath(projectRoot), createMcpConfig(enabledMcpServers(config)));
+  writeProjectMcpConfig(projectRoot, config);
   return config;
 }
 
@@ -162,10 +216,137 @@ export function setHarnessConfigValue(projectRoot: string, key: string, value: s
 
 export function setMcpServerEnabled(projectRoot: string, serverId: McpServerId, enabled: boolean): HarnessConfig {
   const config = loadHarnessConfig(projectRoot);
+  if (!config.mcpServers[serverId]) {
+    throw new Error(`unknown MCP server: ${serverId}`);
+  }
   config.mcpServers[serverId].enabled = enabled;
   saveHarnessConfig(projectRoot, config);
-  writeJson(projectMcpConfigPath(projectRoot), createMcpConfig(enabledMcpServers(config)));
+  writeProjectMcpConfig(projectRoot, config);
   return config;
+}
+
+export function addCustomProtocolMcpServer(
+  projectRoot: string,
+  input: CustomProtocolMcpServerInput,
+  env: NodeJS.ProcessEnv = process.env
+): HarnessConfig {
+  const id = normalizeCustomMcpServerId(input.id);
+  if (BUILT_IN_MCP_SERVER_IDS.includes(id)) {
+    throw new Error(`cannot add custom MCP server over built-in id: ${id}`);
+  }
+  const url = normalizeProtocolMcpUrl(input.url);
+  const authMode = input.authMode ?? "bearer";
+  const authEnvKey = authMode === "none" ? undefined : (input.authEnvKey ?? `${envKeyPrefix(id)}_MCP_TOKEN`);
+  const envKeys = authEnvKey ? [authEnvKey] : [];
+  const missingEnv = missingEnvKeys(env, envKeys);
+  const existing = readHarnessConfigSnapshot(projectRoot, env);
+  const agentReadOnlyTools = normalizeAgentReadOnlyTools([
+    ...(input.agentReadOnlyTools ?? []),
+    input.protocolToolCallProbe?.toolName
+  ]);
+  existing.mcpServers[id] = {
+    id,
+    name: input.name?.trim() || `${id} MCP server`,
+    kind: "mcp-server",
+    enabled: input.enabled ?? missingEnv.length === 0,
+    configured: missingEnv.length === 0,
+    transport: "http",
+    url,
+    authMode,
+    authEnvKey,
+    protocolReadiness: input.protocolToolCallProbe ? "tools/call" : "tools/list",
+    protocolToolCallProbe: input.protocolToolCallProbe,
+    agentReadOnlyTools,
+    custom: true,
+    envKeys,
+    missingEnv,
+    warnings: [],
+    notes: input.protocolToolCallProbe
+      ? "Custom protocol MCP server. Readiness proves initialize, tools/list, and a configured read-only tools/call probe."
+      : "Custom protocol MCP server. Readiness proves initialize and tools/list."
+  };
+  existing.mcpPolicyRegistry = buildMcpPolicyRegistry(existing.mcpServers, existing.mcpPolicyRegistry);
+  applyMcpPolicyRegistryToServers(existing.mcpServers, existing.mcpPolicyRegistry);
+  saveHarnessConfig(projectRoot, existing);
+  writeProjectMcpConfig(projectRoot, existing);
+  return existing;
+}
+
+export async function bindMcpReadOnlyToolContracts(
+  projectRoot: string,
+  serverId: McpServerId,
+  env: NodeJS.ProcessEnv = process.env
+): Promise<{ config: HarnessConfig; boundTools: string[]; missingTools: string[] }> {
+  const existing = readHarnessConfigSnapshot(projectRoot, env);
+  const server = existing.mcpServers[serverId];
+  if (!server) {
+    throw new Error(`MCP server not found: ${serverId}`);
+  }
+  if (server.kind !== "mcp-server" || server.transport !== "http" || !server.url) {
+    throw new Error(`${serverId} is not an HTTP protocol MCP server; read-only tool contracts only apply to protocol MCP tools.`);
+  }
+  const policy = mcpPolicyForServer(existing, serverId);
+  const allowedTools = policy?.agentReadOnlyTools ?? server.agentReadOnlyTools ?? [];
+  if (allowedTools.length === 0) {
+    throw new Error(`${serverId} has no read-only allowlist to bind; configure --allow-tool or --probe-tool first.`);
+  }
+  const result = await listMcpTools({
+    endpoint: server.url,
+    headers: protocolMcpHeadersForRuntime(env, server, serverId)
+  });
+  const contracts = captureMcpReadOnlyToolContracts(server, result.session, result.tools, allowedTools);
+  const boundTools = Object.keys(contracts).sort();
+  const missingTools = allowedTools.filter((tool) => !contracts[tool]).sort();
+  server.agentReadOnlyTools = boundTools;
+  existing.mcpPolicyRegistry.servers[serverId] = {
+    ...(policy ?? {
+      kind: "read-only-allowlist",
+      source: server.custom ? "custom" : "built-in",
+      protocolReadiness: server.protocolReadiness ?? "tools/list",
+      allowToolsList: true,
+      allowReadOnlyToolCall: true,
+      requireExplicitServerSelection: true,
+      agentReadOnlyTools: allowedTools
+    }),
+    agentReadOnlyTools: boundTools,
+    allowReadOnlyToolCall: boundTools.length > 0,
+    requireReadOnlyToolContracts: boundTools.length > 0,
+    toolContracts: {
+      ...Object.fromEntries(Object.entries(policy?.toolContracts ?? {}).filter(([toolName]) => boundTools.includes(toolName))),
+      ...contracts
+    }
+  };
+  existing.mcpPolicyRegistry = buildMcpPolicyRegistry(existing.mcpServers, existing.mcpPolicyRegistry);
+  applyMcpPolicyRegistryToServers(existing.mcpServers, existing.mcpPolicyRegistry);
+  saveHarnessConfig(projectRoot, existing);
+  writeProjectMcpConfig(projectRoot, existing);
+  return { config: existing, boundTools, missingTools };
+}
+
+function protocolMcpHeadersForRuntime(
+  env: NodeJS.ProcessEnv,
+  server: McpServerRuntimeConfig,
+  serverId: McpServerId
+): Record<string, string> | undefined {
+  const mode = server.authMode ?? "none";
+  if (mode === "none") {
+    return undefined;
+  }
+  if (!server.authEnvKey) {
+    throw new Error(`${serverId} uses auth mode ${mode}, but no auth env key is declared in the MCP config.`);
+  }
+  const secret = env[server.authEnvKey]?.trim();
+  if (!secret) {
+    throw new Error(`${serverId} auth secret missing: ${server.authEnvKey}`);
+  }
+  switch (mode) {
+    case "x-goog-api-key":
+      return { "X-Goog-Api-Key": secret };
+    case "bearer":
+      return { Authorization: `Bearer ${secret}` };
+    default:
+      throw new Error(`${serverId} uses unsupported MCP auth mode ${String(mode)}.`);
+  }
 }
 
 export function setAiProviderEnabled(projectRoot: string, providerId: AiProviderId, enabled: boolean): HarnessConfig {
@@ -184,13 +365,252 @@ export function enabledMcpServers(config: HarnessConfig): string[] {
     .map((server) => server.id);
 }
 
-export function writeConnectionReport(projectRoot: string, checks: ConnectionCheck[]): string {
+export function writeConnectionReport(
+  projectRoot: string,
+  checks: ConnectionCheck[],
+  provenance?: Partial<ConnectionReportProvenance>
+): string {
   const filePath = connectionReportFile(projectRoot);
+  const config = fs.existsSync(harnessConfigFile(projectRoot)) ? loadHarnessConfig(projectRoot) : undefined;
+  const checksWithPolicy = config
+    ? checks.map((check) => attachMcpPolicyEvaluation(config, check))
+    : checks;
+  const checkedAt = nowIso();
   writeJson(filePath, {
-    checkedAt: nowIso(),
-    checks
+    checkedAt,
+    provenance: buildConnectionReportProvenance(projectRoot, checksWithPolicy, checkedAt, provenance, config),
+    onboardingProof: buildOnboardingProof(checksWithPolicy),
+    checks: checksWithPolicy
   });
+  recordConnectionProofEvents(projectRoot, checksWithPolicy, filePath);
   return filePath;
+}
+
+export function readTrustedConnectionChecks(projectRoot: string, checkedAt = new Date()): ConnectionCheck[] {
+  const report = readConnectionReport(projectRoot);
+  if (!report) {
+    return [];
+  }
+  const config = readHarnessConfigSnapshot(projectRoot);
+  const trust = connectionReportTrust(projectRoot, report, checkedAt, config);
+  return trust.trusted
+    ? report.checks.map((check) => attachMcpPolicyEvaluation(config, { ...check, policy: undefined }))
+    : [];
+}
+
+export function readConnectionReportTrust(
+  projectRoot: string,
+  checkedAt = new Date()
+): { trusted: boolean; reason?: "missing-report" | "non-live-source" | "missing-fingerprint" | "config-mismatch" | "stale-report" | "invalid-date"; ageMs?: number } {
+  const report = readConnectionReport(projectRoot);
+  if (!report) {
+    return { trusted: false, reason: "missing-report" };
+  }
+  return connectionReportTrust(projectRoot, report, checkedAt);
+}
+
+export function connectionReportConfigFingerprint(config: HarnessConfig): string {
+  return crypto
+    .createHash("sha256")
+    .update(stableStringify({
+      version: config.version,
+      activeAiProvider: config.activeAiProvider,
+      aiProviders: Object.fromEntries(Object.values(config.aiProviders)
+        .sort((left, right) => left.id.localeCompare(right.id))
+        .map((provider) => [provider.id, {
+          enabled: provider.enabled,
+          configured: provider.configured,
+          model: provider.model,
+          baseUrl: sanitizeUrlForFingerprint(provider.baseUrl),
+          testEndpoint: sanitizeUrlForFingerprint(provider.testEndpoint),
+          missingEnv: [...provider.missingEnv].sort()
+        }])),
+      mcpServers: Object.fromEntries(Object.values(config.mcpServers)
+        .sort((left, right) => left.id.localeCompare(right.id))
+        .map((server) => [server.id, {
+          enabled: server.enabled,
+          configured: server.configured,
+          kind: server.kind,
+          transport: server.transport,
+          url: sanitizeUrlForFingerprint(server.url),
+          authMode: server.authMode,
+          authEnvKey: server.authEnvKey,
+          protocolReadiness: server.protocolReadiness,
+          protocolToolCallProbe: server.protocolToolCallProbe,
+          agentReadOnlyTools: [...(server.agentReadOnlyTools ?? [])].sort(),
+          custom: server.custom === true,
+          envKeys: [...server.envKeys].sort(),
+          missingEnv: [...server.missingEnv].sort()
+        }])),
+      mcpPolicyRegistry: config.mcpPolicyRegistry,
+      deployment: config.deployment,
+      stack: config.stack,
+      customKeys: Object.keys(config.custom).sort(),
+      ui: config.ui
+    }))
+    .digest("hex")
+    .slice(0, 16);
+}
+
+function buildConnectionReportProvenance(
+  projectRoot: string,
+  checks: ConnectionCheck[],
+  generatedAt: string,
+  input: Partial<ConnectionReportProvenance> = {},
+  config?: HarnessConfig
+): ConnectionReportProvenance {
+  const reportConfig = config ?? (fs.existsSync(harnessConfigFile(projectRoot)) ? loadHarnessConfig(projectRoot) : readHarnessConfigSnapshot(projectRoot));
+  return {
+    source: normalizeConnectionReportSource(input.source ?? process.env.RPH_CONNECTION_PROOF_SOURCE),
+    runner: input.runner ?? normalizeConnectionReportRunner(process.env.RPH_CONNECTION_PROOF_RUNNER),
+    command: input.command ?? renderConnectionReportCommand(),
+    projectInitialized: input.projectInitialized ?? fs.existsSync(harnessConfigFile(projectRoot)),
+    selectedTargets: input.selectedTargets ?? checks.map((check) => `${check.kind}:${check.id}`),
+    checkedTargetCount: input.checkedTargetCount ?? checks.length,
+    configFingerprint: input.configFingerprint ?? connectionReportConfigFingerprint(reportConfig),
+    generatedAt
+  };
+}
+
+export function readConnectionReport(projectRoot: string): { checkedAt?: string; provenance?: Partial<ConnectionReportProvenance>; checks: ConnectionCheck[] } | null {
+  const filePath = connectionReportFile(projectRoot);
+  if (!fs.existsSync(filePath)) {
+    return null;
+  }
+  try {
+    const report = JSON.parse(fs.readFileSync(filePath, "utf8")) as {
+      checkedAt?: unknown;
+      provenance?: Partial<ConnectionReportProvenance>;
+      checks?: unknown;
+    };
+    return {
+      checkedAt: typeof report.checkedAt === "string" ? report.checkedAt : undefined,
+      provenance: report.provenance,
+      checks: Array.isArray(report.checks) ? report.checks.filter(isConnectionCheckLike) : []
+    };
+  } catch {
+    return null;
+  }
+}
+
+function connectionReportTrust(
+  projectRoot: string,
+  report: { checkedAt?: string; provenance?: Partial<ConnectionReportProvenance>; checks: ConnectionCheck[] },
+  checkedAt: Date,
+  config: HarnessConfig = readHarnessConfigSnapshot(projectRoot)
+): { trusted: boolean; reason?: "non-live-source" | "missing-fingerprint" | "config-mismatch" | "stale-report" | "invalid-date"; ageMs?: number } {
+  if (report.provenance?.source !== "live") {
+    return { trusted: false, reason: "non-live-source" };
+  }
+  const expectedFingerprint = connectionReportConfigFingerprint(config);
+  if (!report.provenance.configFingerprint) {
+    return { trusted: false, reason: "missing-fingerprint" };
+  }
+  if (report.provenance.configFingerprint !== expectedFingerprint) {
+    return { trusted: false, reason: "config-mismatch" };
+  }
+  const reportAt = Date.parse(report.provenance.generatedAt ?? report.checkedAt ?? "");
+  if (Number.isNaN(reportAt)) {
+    return { trusted: false, reason: "invalid-date" };
+  }
+  const ageMs = checkedAt.getTime() - reportAt;
+  if (ageMs > CONNECTION_REPORT_TRUST_MAX_AGE_MS) {
+    return { trusted: false, reason: "stale-report", ageMs };
+  }
+  return { trusted: true, ageMs };
+}
+
+function isConnectionCheckLike(value: unknown): value is ConnectionCheck {
+  return value !== null
+    && typeof value === "object"
+    && typeof (value as { id?: unknown }).id === "string"
+    && typeof (value as { kind?: unknown }).kind === "string"
+    && typeof (value as { status?: unknown }).status === "string"
+    && ["ai", "mcp", "env", "runtime"].includes((value as { kind: string }).kind)
+    && ["passed", "failed", "skipped"].includes((value as { status: string }).status);
+}
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value)
+      .filter(([, entryValue]) => entryValue !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entryValue]) => `${JSON.stringify(key)}:${stableStringify(entryValue)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function sanitizeUrlForFingerprint(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  try {
+    const url = new URL(value);
+    return `${url.protocol}//${url.host}${url.pathname}`;
+  } catch {
+    return value.split(/[?#]/)[0];
+  }
+}
+
+function normalizeConnectionReportSource(value: unknown): ConnectionReportProvenance["source"] {
+  return value === "mock" || value === "imported" ? value : "live";
+}
+
+function normalizeConnectionReportRunner(value: unknown): ConnectionReportProvenance["runner"] {
+  return value === "script" || value === "test" || value === "cli" ? value : "cli";
+}
+
+function renderConnectionReportCommand(): string {
+  const [, entry, ...args] = process.argv;
+  const commandName = entry ? (entry.endsWith("index.js") ? "rph" : entry.split(/[\\/]/).pop() ?? entry) : "unknown";
+  return [commandName, ...args].filter(Boolean).join(" ");
+}
+
+function buildOnboardingProof(checks: ConnectionCheck[]): Array<Record<string, unknown>> {
+  return checks.map((check) => {
+    const mcpContract = check.kind === "mcp"
+      ? (MCP_SERVER_CONTRACTS as Record<string, McpDefinition>)[check.id]
+      : undefined;
+    const readinessMode = check.readiness?.mode ?? "unverified";
+    const provenStage = check.readiness?.provenStage ?? "none";
+    const credentialStage = check.readiness?.stages.find((stage) => stage.stage === "credential-probe")?.status ?? "skipped";
+    const protocolStage = check.readiness?.stages.find((stage) => stage.stage === "protocol-tools-list" || stage.stage === "protocol-tool-call")?.status ?? "not-applicable";
+    const protocolKind = mcpContract?.kind ?? (check.identity?.type === "mcp-server" ? "mcp-server" : check.kind === "ai" ? "ai-provider" : "unknown");
+    const policy = check.policy;
+    const protocolApplicable = check.kind === "ai"
+      || policy?.allowToolsList === true
+      || mcpContract?.protocolReadiness !== "not-applicable"
+      || check.identity?.type === "mcp-server"
+      || check.firstActionProof?.action === "mcp.tools.list";
+    return {
+      kind: check.kind,
+      id: check.id,
+      captured: check.missingEnv.length === 0,
+      verified: check.status === "passed",
+      status: check.status,
+      trustCategory: readinessMode,
+      requiredEnv: check.requiredEnv,
+      missingEnv: check.missingEnv,
+      identity: check.identity,
+      firstActionProof: check.firstActionProof,
+      provenStage,
+      protocolKind,
+      protocolApplicable,
+      policy,
+      proof: {
+        readinessMode,
+        provenStage,
+        credentialStage,
+        protocolStage,
+        endpoint: check.endpoint
+      },
+      checkedAt: check.checkedAt
+    };
+  });
 }
 
 export function configuredAiProviders(config: HarnessConfig): AiProviderConfig[] {
@@ -211,11 +631,12 @@ export function renderSetupGuide(config: HarnessConfig): string {
     "목표",
     "- 일반 텍스트 입력은 연결된 AI agent와 대화합니다.",
     "- /pm start 같은 slash command는 workflow 상태를 제어합니다.",
-    "- 비밀값은 .env에만 두고, .rph/config.json에는 상태와 env key 이름만 저장합니다.",
+    "- 프로젝트 범위 비밀값은 .env에만 두고, .rph/config.json에는 상태와 env key 이름만 저장합니다.",
+    "- GitHub는 GITHUB_TOKEN 대신 GITHUB_TOKEN_SOURCE=gh-cli로 기존 gh 로그인을 사용할 수 있습니다.",
     "",
     "1. AI agent 연결",
     ...Object.values(config.aiProviders).map((provider) => {
-      const ready = provider.configured ? "ready" : "needs env";
+      const ready = provider.configured ? "configured" : "needs env";
       const selected = provider.id === activeProvider ? " active" : "";
       const envKeys = ` env: ${provider.envKeys.join(", ")}`;
       const missing = provider.missingEnv.length > 0 ? ` | add: ${provider.missingEnv.join(", ")}` : "";
@@ -225,32 +646,32 @@ export function renderSetupGuide(config: HarnessConfig): string {
       ? `다음: 일반 문장을 입력하면 ${activeProvider ?? readyAi[0].id} agent와 바로 대화할 수 있습니다.`
       : "다음: .env에 OPENAI_API_KEY, GEMINI_API_KEY, ANTHROPIC_API_KEY 또는 LOCAL_AI_BASE_URL 중 하나를 추가하세요.",
     "",
-    "2. MCP 연결",
+    "2. Connector 연결 (protocol MCP + REST adapters)",
     ...Object.values(config.mcpServers).map((server) => {
-      const ready = server.configured ? "ready" : server.warnings.length > 0 ? "warning" : "needs env";
+      const ready = server.configured ? "configured" : server.warnings.length > 0 ? "warning" : "needs env";
       const enabled = server.enabled && server.configured ? " enabled" : "";
-      const contract = server.kind === "mcp-server" ? "real-mcp" : "rest-adapter";
+      const contract = server.kind === "mcp-server" ? "protocol-mcp" : "rest-adapter";
       const envKeys = ` env: ${server.envKeys.join(", ")}`;
       const missing = server.missingEnv.length > 0 ? ` | add: ${server.missingEnv.join(", ")}` : "";
       const warning = server.warnings.length > 0 ? ` | warn: ${server.warnings.join("; ")}` : "";
       return `- [${ready}] ${server.name} (${server.id}) ${server.transport}/${contract}${enabled} |${envKeys}${missing}${warning}`;
     }),
     readyMcp.length > 0
-      ? `다음: 활성 MCP는 ${configuredMcpServers(config).map((server) => server.id).join(", ") || "아직 없음"} 입니다.`
-      : "다음: .env에 NOTION_TOKEN/GITHUB_TOKEN/FIGMA_TOKEN 등 필요한 MCP env를 추가하세요.",
+      ? `다음: 활성 connector는 ${configuredMcpServers(config).map((server) => `${server.id}:${server.kind}`).join(", ") || "아직 없음"} 입니다.`
+      : "다음: .env에 NOTION_TOKEN/GITHUB_TOKEN_SOURCE=gh-cli/GITHUB_TOKEN/FIGMA_TOKEN/STITCH_API_KEY 등 필요한 connector env를 추가하세요.",
     "",
     "3. 바로 실행할 검증 명령",
-    "- /setup auto --live",
-    "- /ai status",
-    "- /mcp status",
-    "- /doctor --live",
-    activeProvider ? `- /ai test ${activeProvider}` : "- /setup ai <openai|anthropic|gemini|local>",
-    configuredMcpServers(config)[0] ? `- /mcp test ${configuredMcpServers(config)[0].id}` : "- /setup mcp <notion|github|figma|stitch>",
+    "- rph setup auto --live",
+    "- rph ai status",
+    "- rph mcp status",
+    "- rph doctor --live",
+    activeProvider ? `- rph ai test ${activeProvider}` : "- rph setup ai <openai|anthropic|gemini|local>",
+    configuredMcpServers(config)[0] ? `- rph mcp test ${configuredMcpServers(config)[0].id}` : "- rph setup mcp <notion|github|figma|stitch> 또는 rph setup mcp add <id> --url <https://host/mcp>",
     "",
     "4. 연결 후 사용",
     "- 터미널에 그냥 질문을 입력하면 AI agent가 답합니다.",
-    "- 산출물 생성은 /pm draft product-definition --ai 처럼 실행합니다.",
-    "- 연결 상태가 바뀌면 /setup auto를 다시 실행하세요."
+    "- 산출물 생성은 rph pm draft product-definition --ai 처럼 실행합니다.",
+    "- 연결 상태가 바뀌면 rph setup auto를 다시 실행하세요."
   ].join("\n");
 }
 
@@ -285,15 +706,16 @@ function buildMcpServerConfig(
   setupChoices?: SetupChoices,
   previous?: HarnessConfig
 ): McpServerRuntimeConfig {
-  const serverId = definition.id as McpServerId;
+  const serverId = definition.id;
   const previousServer = previous?.mcpServers[serverId];
   const githubTarget = serverId === "github" ? normalizeGitHubRepoTarget(env.GITHUB_OWNER, env.GITHUB_REPO) : null;
+  const githubCredentialConfigured = Boolean(env.GITHUB_TOKEN || env.GH_TOKEN || env.GITHUB_TOKEN_SOURCE === "gh-cli");
   const missingEnv = githubTarget
-    ? [...(env.GITHUB_TOKEN ? [] : ["GITHUB_TOKEN"]), ...githubTarget.missingEnv]
+    ? [...(githubCredentialConfigured ? [] : ["GITHUB_TOKEN"]), ...githubTarget.missingEnv]
     : missingEnvKeys(env, definition.envKeys);
   const warnings = githubTarget?.warnings ?? [];
   const configured = missingEnv.length === 0 && warnings.length === 0;
-  const selected = resolveMcpServerEnabled(serverId, setupChoices, previousServer);
+  const selected = resolveMcpServerEnabled(serverId, setupChoices, previousServer, definition.defaultEnabled);
   return {
     id: serverId,
     name: definition.name,
@@ -303,6 +725,13 @@ function buildMcpServerConfig(
     transport: definition.transport,
     command: definition.command,
     url: definition.url,
+    authMode: definition.auth?.mode ?? "none",
+    authEnvKey: definition.auth?.envKey,
+    protocolReadiness: definition.protocolReadiness,
+    protocolToolCallProbe: definition.protocolToolCallProbe,
+    agentReadOnlyTools: definition.agentReadOnlyTools ?? previousServer?.agentReadOnlyTools ?? [],
+    protocolReason: definition.protocolReason,
+    custom: !isBuiltInMcpServerId(serverId),
     envKeys: definition.envKeys,
     missingEnv,
     warnings,
@@ -369,7 +798,8 @@ function missingEnvKeys(env: NodeJS.ProcessEnv, keys: string[]): string[] {
 function resolveMcpServerEnabled(
   serverId: McpServerId,
   setupChoices: SetupChoices | undefined,
-  previousServer: HarnessConfig["mcpServers"][McpServerId] | undefined
+  previousServer: McpServerRuntimeConfig | undefined,
+  defaultEnabled = false
 ): boolean {
   if (setupChoices) {
     return setupChoices.mcp.includes(serverId);
@@ -377,7 +807,165 @@ function resolveMcpServerEnabled(
   if (previousServer) {
     return previousServer.enabled;
   }
-  return false;
+  return defaultEnabled;
+}
+
+function mergeMcpDefinitions(previous?: HarnessConfig, existingMcpConfig?: McpConfig): Record<string, McpDefinition> {
+  const definitions: Record<string, McpDefinition> = { ...MCP_SERVER_DEFINITIONS };
+  for (const server of Object.values(previous?.mcpServers ?? {})) {
+    if (isBuiltInMcpServerId(server.id) || server.kind !== "mcp-server") {
+      continue;
+    }
+    definitions[server.id] = definitionFromRuntimeServer(server);
+  }
+  for (const [id, server] of Object.entries(existingMcpConfig?.mcpServers ?? {})) {
+    if (isBuiltInMcpServerId(id) || server.kind !== "mcp-server") {
+      continue;
+    }
+    if (previous?.mcpServers[id]) {
+      continue;
+    }
+    definitions[id] = definitionFromPersistedMcpConfig(id, server, previous?.mcpServers[id]);
+  }
+  return definitions;
+}
+
+function definitionFromRuntimeServer(server: McpServerRuntimeConfig): McpDefinition {
+  return {
+    id: server.id,
+    name: server.name,
+    kind: server.kind,
+    transport: server.transport,
+    command: server.command,
+    url: server.url,
+    envKeys: server.envKeys,
+    auth: {
+      mode: server.authMode ?? "none",
+      envKey: server.authEnvKey
+    },
+    protocolReadiness: server.protocolReadiness ?? (server.kind === "mcp-server" ? "tools/list" : "not-applicable"),
+    protocolToolCallProbe: server.protocolToolCallProbe,
+    agentReadOnlyTools: server.agentReadOnlyTools,
+    protocolReason: server.protocolReason,
+    notes: server.notes
+  };
+}
+
+function definitionFromPersistedMcpConfig(
+  id: string,
+  server: McpServerConfig,
+  previous?: McpServerRuntimeConfig
+): McpDefinition {
+  const envKeys = Object.keys(server.env ?? {});
+  const authMode = server.auth?.mode ?? previous?.authMode ?? "none";
+  const authEnvKey = server.auth?.envKey ?? previous?.authEnvKey;
+  return {
+    id,
+    name: server.name ?? previous?.name ?? `${id} MCP server`,
+    kind: server.kind,
+    transport: server.transport,
+    command: server.command,
+    url: server.url,
+    envKeys,
+    auth: {
+      mode: authMode,
+      envKey: authEnvKey
+    },
+    protocolReadiness: previous?.protocolReadiness ?? server.protocolReadiness ?? "tools/list",
+    protocolToolCallProbe: previous?.protocolToolCallProbe ?? server.protocolToolCallProbe,
+    agentReadOnlyTools: previous
+      ? normalizeAgentReadOnlyTools(previous.agentReadOnlyTools ?? [])
+      : normalizeAgentReadOnlyTools(server.agentReadOnlyTools ?? []),
+    protocolReason: server.protocolReason ?? previous?.protocolReason,
+    notes: server.notes || previous?.notes || "Custom protocol MCP server.",
+    defaultEnabled: server.enabled
+  };
+}
+
+function writeProjectMcpConfig(projectRoot: string, config: HarnessConfig): void {
+  writeJson(projectMcpConfigPath(projectRoot), {
+    mcpPolicyRegistry: config.mcpPolicyRegistry,
+    mcpServers: Object.fromEntries(Object.values(config.mcpServers).map((server) => [
+      server.id,
+      runtimeServerToMcpConfig(server)
+    ]))
+  } satisfies McpConfig);
+}
+
+function runtimeServerToMcpConfig(server: McpServerRuntimeConfig): McpServerConfig {
+  return {
+    name: server.name,
+    kind: server.kind,
+    enabled: server.enabled,
+    transport: server.transport,
+    command: server.command,
+    url: server.url,
+    auth: server.authMode ? { mode: server.authMode, envKey: server.authEnvKey } : undefined,
+    protocolReadiness: server.protocolReadiness,
+    protocolToolCallProbe: server.protocolToolCallProbe,
+    agentReadOnlyTools: server.agentReadOnlyTools,
+    protocolReason: server.protocolReason,
+    custom: server.custom,
+    env: Object.fromEntries(server.envKeys.map((key) => [key, `\${${key}}`])),
+    notes: server.notes
+  };
+}
+
+function readProjectMcpConfig(projectRoot: string): McpConfig | undefined {
+  const filePath = `${projectRoot}/.mcp/config.json`;
+  if (!fs.existsSync(filePath)) {
+    return undefined;
+  }
+  return readJsonIfExists<McpConfig | undefined>(filePath, undefined);
+}
+
+function isBuiltInMcpServerId(value: string): boolean {
+  return BUILT_IN_MCP_SERVER_IDS.includes(value);
+}
+
+function normalizeCustomMcpServerId(value: string): string {
+  const id = value.trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9_-]{1,62}$/.test(id)) {
+    throw new Error("custom MCP server id must use lowercase letters, numbers, hyphen, or underscore and be 2-63 chars");
+  }
+  return id;
+}
+
+function normalizeProtocolMcpUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" && !(url.protocol === "http:" && isLocalDevHost(url.hostname))) {
+      throw new Error("protocol MCP URL must use https://; http:// is allowed only for localhost development");
+    }
+    return url.toString();
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("protocol MCP URL")) {
+      throw error;
+    }
+    throw new Error(`invalid protocol MCP URL: ${value}`);
+  }
+}
+
+function isLocalDevHost(hostname: string): boolean {
+  const normalized = hostname.toLowerCase();
+  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1" || normalized === "[::1]";
+}
+
+function normalizeAgentReadOnlyTools(values: Array<string | undefined>): string[] {
+  const tools = new Set<string>();
+  for (const value of values) {
+    for (const part of (value ?? "").split(",")) {
+      const toolName = part.trim();
+      if (toolName) {
+        tools.add(toolName);
+      }
+    }
+  }
+  return [...tools].sort();
+}
+
+function envKeyPrefix(id: string): string {
+  return id.replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").toUpperCase();
 }
 
 export function normalizeGitHubRepoTarget(

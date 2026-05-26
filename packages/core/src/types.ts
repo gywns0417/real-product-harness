@@ -26,6 +26,43 @@ export type DesignArtifactId = (typeof DESIGN_ARTIFACT_IDS)[number];
 
 export type AgentRole = "Orchestrator" | "PM" | "PD" | "FE" | "BE" | "QA";
 
+export interface AgentRoleContract {
+  role: AgentRole;
+  purpose: string;
+  allowedCommandPrefixes: string[];
+  requiredContext: string[];
+  successCriteria: string[];
+  handoffChecklist: string[];
+}
+
+export interface CustomAgentProfile {
+  name: string;
+  slug: string;
+  description: string;
+  model?: string;
+  modelReasoningEffort?: string;
+  sandboxMode?: string;
+  developerInstructions: string;
+  sourcePath?: string;
+  importedAt: string;
+}
+
+export interface ActiveCustomAgentProfile {
+  name: string;
+  slug: string;
+  activatedAt: string;
+}
+
+export interface AgentExecutionProfileRef {
+  source: "custom-toml";
+  name: string;
+  slug: string;
+  model?: string;
+  modelReasoningEffort?: string;
+  sandboxMode?: string;
+  activatedAt?: string;
+}
+
 export type DocumentStatus = "draft" | "review" | "revised" | "approved";
 
 export type WorkflowStageId =
@@ -112,7 +149,9 @@ export type IntegrationStatus = "not-configured" | "configured" | "dry-run";
 
 export type AiProviderId = "openai" | "anthropic" | "gemini" | "local";
 
-export type McpServerId = "notion" | "github" | "figma" | "stitch";
+export type BuiltInMcpServerId = "notion" | "github" | "figma" | "stitch";
+
+export type McpServerId = string;
 
 export interface AiProviderConfig {
   id: AiProviderId;
@@ -135,10 +174,100 @@ export interface McpServerRuntimeConfig {
   transport: "stdio" | "http";
   command?: string;
   url?: string;
+  authMode?: "none" | "x-goog-api-key" | "bearer";
+  authEnvKey?: string;
+  protocolReadiness?: "tools/list" | "tools/call" | "not-applicable";
+  protocolToolCallProbe?: {
+    toolName: string;
+    arguments?: Record<string, unknown>;
+  };
+  agentReadOnlyTools?: string[];
+  protocolReason?: string;
+  custom?: boolean;
   envKeys: string[];
   missingEnv: string[];
   warnings: string[];
   notes: string;
+}
+
+export type McpPolicyKind =
+  | "rest-adapter-readback"
+  | "protocol-tools-list"
+  | "read-only-allowlist"
+  | "read-only-probe"
+  | "missing-policy";
+
+export type McpPolicySource = "built-in" | "custom" | "runtime";
+
+export type McpPolicyRequiredTrust =
+  | "unverified:none"
+  | "adapter-ready:credential-probe"
+  | "protocol-ready:protocol-tools-list"
+  | "protocol-ready:protocol-tool-call";
+
+export type McpPolicyRuntimeState =
+  | "allowed-now"
+  | "proved-now"
+  | "stale-proof"
+  | "blocked-by-policy"
+  | "unverified";
+
+export interface McpReadOnlyToolContract {
+  version: "mcp-read-only-tool-v1";
+  toolName: string;
+  fingerprint: string;
+  endpoint: string;
+  authMode: "none" | "x-goog-api-key" | "bearer";
+  authEnvKey?: string;
+  protocolVersion: string;
+  serverInfoName?: string;
+  serverInfoVersion?: string;
+  inputSchemaSha256: string;
+  annotationsSha256: string;
+  capturedAt: string;
+}
+
+export interface McpServerPolicy {
+  kind: McpPolicyKind;
+  source: McpPolicySource;
+  protocolReadiness: "tools/list" | "tools/call" | "not-applicable";
+  protocolToolCallProbe?: {
+    toolName: string;
+    arguments?: Record<string, unknown>;
+  };
+  allowToolsList: boolean;
+  allowReadOnlyToolCall: boolean;
+  requireExplicitServerSelection: boolean;
+  agentReadOnlyTools: string[];
+  requireReadOnlyToolContracts?: boolean;
+  toolContracts?: Record<string, McpReadOnlyToolContract>;
+}
+
+export interface McpPolicyRegistry {
+  version: 1;
+  defaults: {
+    toolCallMode: "read-only-allowlist";
+    requireExplicitServerSelection: boolean;
+  };
+  servers: Record<string, McpServerPolicy>;
+}
+
+export interface McpPolicyEvaluation {
+  kind: McpPolicyKind;
+  source: McpPolicySource;
+  state: McpPolicyRuntimeState;
+  satisfied: boolean;
+  requiredTrust: McpPolicyRequiredTrust;
+  actualTrust: McpPolicyRequiredTrust | `${string}:${string}`;
+  allowToolsList: boolean;
+  allowReadOnlyToolCall: boolean;
+  requireExplicitServerSelection: boolean;
+  agentReadOnlyTools: string[];
+  requireReadOnlyToolContracts?: boolean;
+  toolContractCount?: number;
+  requiredTools: string[];
+  missingTools: string[];
+  configFingerprint: string;
 }
 
 export interface RuntimeUiConfig {
@@ -151,7 +280,8 @@ export interface HarnessConfig {
   version: 1;
   activeAiProvider: AiProviderId | "auto" | "none";
   aiProviders: Record<AiProviderId, AiProviderConfig>;
-  mcpServers: Record<McpServerId, McpServerRuntimeConfig>;
+  mcpServers: Record<string, McpServerRuntimeConfig>;
+  mcpPolicyRegistry: McpPolicyRegistry;
   deployment: SetupChoices["deployment"];
   stack: SetupChoices["stack"];
   custom: Record<string, string>;
@@ -167,10 +297,26 @@ export interface ConnectionCheck {
   requiredEnv: string[];
   missingEnv: string[];
   endpoint?: string;
+  identity?: {
+    type: "ai-provider" | "github-repo" | "notion-page" | "figma-file" | "mcp-server";
+    label: string;
+    targetId: string;
+    verifiedBy: "configuration" | "credential-probe" | "protocol-tools-list" | "protocol-tool-call";
+    source: "configuration" | "provider-response" | "mcp-initialize";
+  };
+  firstActionProof?: {
+    action: string;
+    label: string;
+    targetId: string;
+    verifiedBy: "credential-probe" | "protocol-tools-list" | "protocol-tool-call";
+    endpoint?: string;
+  };
+  policy?: McpPolicyEvaluation;
   readiness?: {
+    mode: "unverified" | "adapter-partial" | "adapter-ready" | "adapter-write-ready" | "protocol-partial" | "protocol-ready";
     provenStage: "none" | "transport" | "credential-probe" | "protocol-tools-list" | "protocol-tool-call";
     stages: Array<{
-      stage: "transport" | "credential-probe" | "protocol-tools-list" | "protocol-tool-call";
+      stage: "transport" | "credential-probe" | "protocol-tools-list" | "protocol-tool-call" | "external-write";
       status: "passed" | "failed" | "skipped" | "not-applicable";
       message: string;
       endpoint?: string;
@@ -179,21 +325,62 @@ export interface ConnectionCheck {
   checkedAt: string;
 }
 
+export interface ConnectionReportProvenance {
+  source: "live" | "mock" | "imported";
+  runner: "cli" | "script" | "test" | "unknown";
+  command: string;
+  projectInitialized: boolean;
+  selectedTargets: string[];
+  checkedTargetCount: number;
+  configFingerprint?: string;
+  generatedAt: string;
+}
+
 export interface AiGenerationRequest {
   prompt: string;
   system?: string;
   providerId?: AiProviderId;
+  executionProfile?: AgentExecutionProfileRef;
   maxOutputTokens?: number;
   temperature?: number;
+}
+
+export interface AiProviderAttempt {
+  providerId: AiProviderId;
+  status: "passed" | "failed" | "skipped";
+  message?: string;
+}
+
+export interface AiProviderFallback {
+  selectedProviderId: AiProviderId;
+  attemptedProviderIds: AiProviderId[];
+  failures: Array<{
+    providerId: AiProviderId;
+    message: string;
+  }>;
+}
+
+export interface AiProviderOutcomeSummary {
+  source: "runtime-session" | "ai-run" | "ai-chat";
+  id: string;
+  sessionId?: string;
+  providerId: AiProviderId;
+  model?: string;
+  providerAttempts?: AiProviderAttempt[];
+  providerFallback?: AiProviderFallback;
+  at: string;
 }
 
 export interface AiGenerationResult {
   id: string;
   providerId: AiProviderId;
   model: string;
+  executionProfile?: AgentExecutionProfileRef;
   text: string;
   endpoint: string;
   usage?: Record<string, unknown>;
+  providerAttempts?: AiProviderAttempt[];
+  providerFallback?: AiProviderFallback;
   generatedAt: string;
 }
 
@@ -201,6 +388,7 @@ export interface AiRunRecord {
   id: string;
   providerId: AiProviderId;
   model: string;
+  executionProfile?: AgentExecutionProfileRef;
   command: string;
   artifact?: {
     kind: "pm-document" | "pd-artifact" | "engineering-document" | "prompt";
@@ -209,6 +397,8 @@ export interface AiRunRecord {
   };
   promptPreview: string;
   outputPreview: string;
+  providerAttempts?: AiProviderAttempt[];
+  providerFallback?: AiProviderFallback;
   generatedAt: string;
 }
 
@@ -221,11 +411,15 @@ export interface AiChatMessage {
 export interface AiChatTurnRecord {
   id: string;
   sessionId: string;
+  agentTurnId?: string;
   providerId: AiProviderId;
   model: string;
+  executionProfile?: AgentExecutionProfileRef;
   user: AiChatMessage;
   assistant: AiChatMessage;
   promptPreview: string;
+  providerAttempts?: AiProviderAttempt[];
+  providerFallback?: AiProviderFallback;
   generatedAt: string;
 }
 
@@ -260,9 +454,19 @@ export type AgentToolName =
   | "artifacts.list"
   | "artifacts.get"
   | "approvals.pending"
+  | "actions.pending"
   | "issues.list"
   | "prs.list"
-  | "qa.list";
+  | "qa.list"
+  | "provider.status"
+  | "mcp.status"
+  | "mcp.tools.list"
+  | "mcp.tools.call"
+  | "github.repo.read"
+  | "notion.page.read"
+  | "figma.file.summary"
+  | "stitch.tools.list"
+  | "stitch.tools.call";
 
 export interface AgentToolCall {
   id: string;
@@ -279,6 +483,69 @@ export interface AgentCommandProposal {
   command: string;
   safeToAutoRun: boolean;
   reason?: string;
+}
+
+export type RuntimeActionApprovalStatus = "pending" | "approved" | "running" | "completed" | "rejected" | "failed";
+
+export interface RuntimeActionApprovedSnapshot {
+  kind: "github.issue" | "github.pr" | "mcp.tool-call";
+  version: "github-local-artifact-v1" | "mcp-tool-call-v1";
+  fingerprint: string;
+  snapshotPath: string;
+  bodyPath?: string;
+  localIssueNumber?: number;
+  localPrNumber?: number;
+  serverId?: string;
+  toolName?: string;
+  endpoint?: string;
+  authMode?: "none" | "x-goog-api-key" | "bearer";
+  authEnvKey?: string;
+  protocolVersion?: string;
+  serverInfoName?: string;
+  serverInfoVersion?: string;
+  inputSchemaSha256?: string;
+  annotationsSha256?: string;
+  argumentsSha256?: string;
+  capturedAt: string;
+  summary?: string;
+}
+
+export interface RuntimeActionApprovalRecord {
+  id: string;
+  sessionId: string;
+  command: string;
+  normalizedCommand: string;
+  fingerprint: string;
+  source: "agent-command-proposal";
+  target: "github" | "notion" | "mcp";
+  action: string;
+  risk: "external_live_write";
+  description: string;
+  reason?: string;
+  message?: string;
+  approvedTargetId?: string;
+  approvedParameters?: Record<string, string>;
+  approvedSnapshot?: RuntimeActionApprovedSnapshot;
+  status: RuntimeActionApprovalStatus;
+  createdAt: string;
+  updatedAt: string;
+  approvedAt?: string;
+  approvedBy?: string;
+  runningAt?: string;
+  completedAt?: string;
+  rejectedAt?: string;
+  rejectedBy?: string;
+  rejectReason?: string;
+  failedAt?: string;
+  failureReason?: string;
+  expectedReadback?: string;
+  readbackStatus?: "not_required" | "passed" | "failed";
+  readbackArtifactPath?: string;
+  verifiedTargetId?: string;
+  readbackActionApprovalId?: string;
+  readbackApprovedFingerprint?: string;
+  readbackVerifiedAt?: string;
+  resultSummary?: string;
 }
 
 export interface AgentHandoffProposal {
@@ -309,7 +576,12 @@ export interface AgentTurnState {
   status: "running" | "complete" | "waiting" | "failed";
   startedAt: string;
   updatedAt: string;
+  executionProfile?: AgentExecutionProfileRef;
   promptPreview?: string;
+  providerId?: AiProviderId;
+  model?: string;
+  providerAttempts?: AiProviderAttempt[];
+  providerFallback?: AiProviderFallback;
   toolCalls: AgentToolCall[];
   finalResponse?: string;
   proposedCommand?: AgentCommandProposal;
@@ -322,8 +594,10 @@ export interface StageQueueEntry {
   stage: WorkflowStageId;
   name: string;
   ownerAgent: AgentRole;
-  status: "active" | "pending";
+  status: "active" | "ready" | "blocked" | "pending" | "completed";
+  nodeType: "stage" | "fan-out" | "fan-in";
   reason: string;
+  joinCondition?: string;
   prerequisites: WorkflowStageId[];
   requiredDocuments: DocumentId[];
   requiredApprovals: DocumentId[];
@@ -332,10 +606,83 @@ export interface StageQueueEntry {
   nextStages: WorkflowStageId[];
   nextCommand?: string;
   blockers: string[];
+  handoffIds?: string[];
+  laneRunIds?: string[];
+  fanIn?: {
+    reducerStatus: "waiting" | "ready" | "blocked" | "complete";
+    readyPrerequisites: WorkflowStageId[];
+    pendingPrerequisites: WorkflowStageId[];
+    sourceHandoffIds?: string[];
+    sourceLaneRunIds?: string[];
+    sourceArtifactRefs?: string[];
+    materializationKey?: string;
+    materializedAt?: string;
+    blockerSummary?: string;
+  };
+}
+
+export interface RuntimeExecutionGraphNode {
+  id: string;
+  stage: WorkflowStageId;
+  name: string;
+  ownerAgent: AgentRole;
+  status: StageQueueEntry["status"];
+  nodeType: StageQueueEntry["nodeType"];
+  reason: string;
+  joinCondition?: string;
+  prerequisites: WorkflowStageId[];
+  nextStages: WorkflowStageId[];
+  nextCommand?: string;
+  blockers: string[];
+  requiredDocuments: DocumentId[];
+  requiredApprovals: DocumentId[];
+  requiredDesignArtifacts: DesignArtifactId[];
+  requiredDesignApprovals: DesignArtifactId[];
+  handoffIds: string[];
+  laneRunIds: string[];
+  fanIn?: StageQueueEntry["fanIn"];
+}
+
+export interface RuntimeExecutionGraphEdge {
+  id: string;
+  from: string;
+  to: string;
+  kind: "workflow-next" | "prerequisite";
+  status: "open" | "blocked" | "satisfied";
+  reason?: string;
+}
+
+export interface RuntimeExecutionGraph {
+  version: 1;
+  graphId: string;
+  sessionId: string;
+  source: "runtime-execution-graph";
+  projectRoot: string;
+  currentStage: RuntimeSessionStage;
+  status: RuntimeSessionManifest["status"];
+  generatedAt: string;
+  updatedAt: string;
+  queueFingerprint: string;
+  summary: {
+    nodeCount: number;
+    edgeCount: number;
+    activeNodeIds: string[];
+    readyNodeIds: string[];
+    pendingNodeIds: string[];
+    blockedNodeIds: string[];
+    completedNodeIds: string[];
+    fanInNodeIds: string[];
+    fanOutNodeIds: string[];
+    blockerCount: number;
+    handoffCount: number;
+    laneRunCount: number;
+  };
+  nodes: RuntimeExecutionGraphNode[];
+  edges: RuntimeExecutionGraphEdge[];
 }
 
 export interface WaitCondition {
-  kind: "paused" | "user_approval" | "qa_fix" | "external_live_write";
+  kind: "paused" | "blocked" | "user_approval" | "qa_fix" | "external_live_write";
   message: string;
   since: string;
 }
@@ -345,18 +692,133 @@ export interface HandoffPacket {
   toAgent: AgentRole;
   stage: WorkflowStageId;
   summary: string;
+  roleContract?: AgentRoleContract;
   artifactRefs?: string[];
   acceptanceCriteria?: string[];
   blockers?: string[];
   nextCommand?: string;
   resumeCursor?: string;
+  fanIn?: {
+    reducerStage: WorkflowStageId;
+    sourceStages: WorkflowStageId[];
+    sourceHandoffIds: string[];
+    sourceLaneRunIds: string[];
+    sourceArtifactRefs: string[];
+    materializationKey?: string;
+  };
   createdAt: string;
+}
+
+export interface RuntimeHandoffRecord {
+  id: string;
+  sessionId: string;
+  packet: HandoffPacket;
+  status: "pending" | "acknowledged" | "claimed" | "running" | "completed" | "rejected" | "dead_letter";
+  createdAt: string;
+  updatedAt: string;
+  attempts?: number;
+  maxAttempts?: number;
+  claimedBy?: string;
+  workerSessionId?: string;
+  claimToken?: string;
+  poolId?: string;
+  slotId?: string;
+  slotIndex?: number;
+  claimedAt?: string;
+  leaseExpiresAt?: string;
+  heartbeatAt?: string;
+  laneRunId?: string;
+  lastFailureAt?: string;
+  lastFailureReason?: string;
+  acknowledgedAt?: string;
+  completedAt?: string;
+  rejectedAt?: string;
+  deadLetterAt?: string;
+  deadLetterReason?: string;
+  note?: string;
+}
+
+export interface AgentLaneResultSummary {
+  ok: boolean;
+  summary: string;
+  artifacts: string[];
+  acceptance: string[];
+  completedCommand: string;
+  executionMode?: "command" | "autonomous";
+  autonomousTurnId?: string;
+  proposedCommand?: string;
+  executedCommand?: string;
+}
+
+export interface AgentLaneMemoryRef {
+  scope: AgentRole;
+  filePath: string;
+  entriesBefore: number;
+  entriesAfter?: number;
+  lastEntryAt?: string;
+}
+
+export interface AgentLaneToolBudget {
+  maxToolCalls: number;
+  remainingToolCalls: number;
+  maxOutputTokens: number;
+  externalWriteBudget: 0;
+}
+
+export interface AgentLaneRunRecord {
+  id: string;
+  sessionId: string;
+  handoffId?: string;
+  workerId?: string;
+  workerSessionId?: string;
+  claimToken?: string;
+  workerPid?: number;
+  poolId?: string;
+  slotId?: string;
+  slotIndex?: number;
+  attempt?: number;
+  role: AgentRole;
+  stage: WorkflowStageId;
+  status: "claimed" | "running" | "completed" | "failed";
+  command: string;
+  summary: string;
+  roleContract: AgentRoleContract;
+  systemPrompt: string;
+  executionProfile?: AgentExecutionProfileRef;
+  toolPolicy: {
+    allowedCommandPrefixes: string[];
+    externalWritesRequireApproval: boolean;
+  };
+  toolBudget: AgentLaneToolBudget;
+  memory: AgentLaneMemoryRef;
+  artifactRefs: string[];
+  acceptanceCriteria: string[];
+  blockers: string[];
+  executionMode?: "command" | "autonomous";
+  autonomousTurnId?: string;
+  proposedCommand?: string;
+  executedCommand?: string;
+  heartbeatAt?: string;
+  leaseExpiresAt?: string;
+  runningAt?: string;
+  result?: AgentLaneResultSummary;
+  merge?: {
+    status: "pending" | "merged" | "blocked";
+    mergedAt?: string;
+    summary?: string;
+    artifactRefs: string[];
+  };
+  startedAt: string;
+  updatedAt: string;
+  completedAt?: string;
+  exitOk?: boolean;
+  error?: string;
 }
 
 export interface RuntimeSessionManifest {
   version: 1 | 2;
   sessionId: string;
-  status: "active" | "paused" | "cancelled" | "complete";
+  status: "active" | "paused" | "blocked" | "recovering" | "cancelled" | "complete";
   projectRoot: string;
   startedAt: string;
   updatedAt: string;
@@ -374,6 +836,27 @@ export interface RuntimeSessionManifest {
   waitCondition?: WaitCondition | null;
   handoffPacket?: HandoffPacket | null;
   toolTrace?: AgentToolCall[];
+  pendingExternalActionId?: string | null;
+}
+
+export interface RuntimeSessionJournalRecord {
+  version: 1;
+  kind: "snapshot";
+  at: string;
+  sessionId: string;
+  sequence: number;
+  status: RuntimeSessionManifest["status"];
+  stage: RuntimeSessionStage;
+  ownerAgent: AgentRole;
+  checkpoint?: string | null;
+  blocker?: string | null;
+  pendingActionCommand?: string | null;
+  pendingExternalActionId?: string | null;
+  waitConditionKind?: WaitCondition["kind"] | null;
+  activeTurnId?: string | null;
+  activeTurnStatus?: AgentTurnState["status"] | null;
+  historyLength: number;
+  manifest: RuntimeSessionManifest;
 }
 
 export interface AgentContextArtifact {
@@ -401,6 +884,31 @@ export interface AgentConfigSummary {
   customKeys: string[];
 }
 
+export interface AgentConnectionProofSummary {
+  kind: "ai" | "mcp";
+  id: string;
+  status: "passed" | "failed" | "skipped";
+  trustCategory: string;
+  provenStage: string;
+  identityLabel?: string;
+  targetId?: string;
+  firstAction?: string;
+  firstActionLabel?: string;
+  policy?: McpPolicyEvaluation;
+  readTools: string[];
+}
+
+export interface AgentProofSummary {
+  kind: string;
+  status: string;
+  subject: string;
+  label: string;
+  trust?: string;
+  targetId?: string;
+  summary: string;
+  at: string;
+}
+
 export interface AgentContextBundle {
   project: {
     id: string;
@@ -421,6 +929,8 @@ export interface AgentContextBundle {
   mcp: {
     configuredServers: McpServerId[];
   };
+  connectionProofs: AgentConnectionProofSummary[];
+  recentProofs: AgentProofSummary[];
   documents: AgentContextArtifact[];
   designArtifacts: AgentContextArtifact[];
   approvals: Approval[];
@@ -441,7 +951,55 @@ export interface ProjectState {
   history: StageHistoryEntry[];
   documents: Partial<Record<DocumentId, DocumentIndex>>;
   designArtifacts?: Partial<Record<DesignArtifactId, DesignArtifactIndex>>;
+  evidence?: WorkflowEvidence;
   updatedAt: string;
+}
+
+export interface WorkflowEvidence {
+  liveVerification?: {
+    status: "current" | "failed" | "missing" | "not-current";
+    source: ConnectionReportProvenance["source"];
+    passedTargets: string[];
+    failedTargets: string[];
+    skippedTargets: string[];
+    reportPath: string;
+    configFingerprint?: string;
+    checkedAt: string;
+    updatedAt: string;
+  };
+  agentIntegration?: {
+    status: "missing" | "integrated" | "partial" | "blocked";
+    required: boolean;
+    runIds: string[];
+    mergedRunIds: string[];
+    failedRunIds: string[];
+    latestProofId?: string;
+    summary: string;
+    updatedAt: string;
+  };
+  qa?: {
+    status: "unknown" | "approved" | "changes-requested" | "blocked";
+    approvedPrs: number[];
+    pendingPrs: number[];
+    changesRequestedPrs: number[];
+    lastReportPath?: string;
+    updatedAt: string;
+  };
+  release?: {
+    id: string;
+    version: string | null;
+    status: ReleasePlanRecord["status"];
+    userApproval: ReleasePlanRecord["userApproval"];
+    filePath: string;
+    updatedAt: string;
+  };
+  deployment?: {
+    environment: DeploymentRecord["environment"];
+    provider: string;
+    status: DeploymentRecord["status"];
+    filePath: string;
+    updatedAt: string;
+  };
 }
 
 export interface StageHistoryEntry {
@@ -661,6 +1219,10 @@ export interface WorkIssue {
   testRequirement: string;
   qaChecklist: string[];
   status: WorkIssueStatus;
+  githubIssueNumber?: number;
+  githubUrl?: string | null;
+  githubReadbackStatus?: "not_required" | "passed" | "failed";
+  githubReadbackReason?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -681,6 +1243,10 @@ export interface PullRequestRecord {
   testStatus: "not-run" | "passed" | "failed";
   userApproval: "required" | "approved" | "rejected";
   dryRunCommand: string;
+  githubPrNumber?: number;
+  githubUrl?: string | null;
+  githubReadbackStatus?: "not_required" | "passed" | "failed";
+  githubReadbackReason?: string;
   createdAt: string;
   updatedAt: string;
 }
