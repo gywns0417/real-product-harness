@@ -238,7 +238,7 @@ function passedStitchConnectionCheck(checkedAt = new Date().toISOString()): Conn
     id: "stitch",
     kind: "mcp",
     status: "passed",
-    message: "credential: tools/list passed (1 tools); protocol: tools/list passed",
+    message: "credential: MCP initialize accepted; protocol: tools/list passed (1 tools); tools/call passed (echo)",
     requiredEnv: ["STITCH_API_KEY"],
     missingEnv: [],
     endpoint: "https://stitch.googleapis.com/mcp",
@@ -246,23 +246,24 @@ function passedStitchConnectionCheck(checkedAt = new Date().toISOString()): Conn
       type: "mcp-server",
       label: "stitch",
       targetId: "stitch",
-      verifiedBy: "protocol-tools-list",
+      verifiedBy: "protocol-tool-call",
       source: "configuration"
     },
     firstActionProof: {
-      action: "mcp.tools.list",
-      label: "listed 1 MCP tools",
-      targetId: "stitch",
-      verifiedBy: "protocol-tools-list",
+      action: "mcp.tools.call",
+      label: "called echo on Stitch MCP server",
+      targetId: "stitch:echo",
+      verifiedBy: "protocol-tool-call",
       endpoint: "https://stitch.googleapis.com/mcp"
     },
     readiness: {
       mode: "protocol-ready",
-      provenStage: "protocol-tools-list",
+      provenStage: "protocol-tool-call",
       stages: [
         { stage: "transport", status: "passed", message: "transport reachable", endpoint: "https://stitch.googleapis.com/mcp" },
         { stage: "credential-probe", status: "passed", message: "initialize passed", endpoint: "https://stitch.googleapis.com/mcp" },
-        { stage: "protocol-tools-list", status: "passed", message: "tools/list passed", endpoint: "https://stitch.googleapis.com/mcp" }
+        { stage: "protocol-tools-list", status: "passed", message: "tools/list passed", endpoint: "https://stitch.googleapis.com/mcp" },
+        { stage: "protocol-tool-call", status: "passed", message: "tools/call passed (echo)", endpoint: "https://stitch.googleapis.com/mcp" }
       ]
     },
     checkedAt
@@ -1832,7 +1833,7 @@ describe("command parser and env validation", () => {
     expect(mcpConfig.mcpServers.stitch.kind).toBe("mcp-server");
     expect(mcpConfig.mcpServers.stitch.url).toBe("https://stitch.googleapis.com/mcp");
     expect(mcpConfig.mcpPolicyRegistry?.servers.stitch).toMatchObject({
-      kind: "read-only-allowlist",
+      kind: "read-only-probe",
       agentReadOnlyTools: ["echo"]
     });
   });
@@ -2126,9 +2127,11 @@ describe("command parser and env validation", () => {
     expect(process.env.GH_TOKEN).toBe(originalGhToken);
   });
 
-  it("proves Stitch MCP-compatible tools/list readiness when the protocol check succeeds", async () => {
+  it("proves Stitch MCP-compatible tools/call readiness when the protocol canary succeeds", async () => {
+    const methods: string[] = [];
     const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
-      const body = JSON.parse(String(init?.body ?? "{}")) as { method?: string; id?: string };
+      const body = JSON.parse(String(init?.body ?? "{}")) as { method?: string; id?: string; params?: { name?: string; arguments?: Record<string, unknown> } };
+      methods.push(body.method ?? "unknown");
       if (body.method === "initialize") {
         return new Response(JSON.stringify({
           jsonrpc: "2.0",
@@ -2143,13 +2146,29 @@ describe("command parser and env validation", () => {
       if (body.method === "notifications/initialized") {
         return new Response(null, { status: 202 });
       }
-      return new Response(JSON.stringify({
-        jsonrpc: "2.0",
-        id: body.id,
-        result: {
-          tools: [{ name: "render-ui" }]
-        }
-      }), { status: 200, headers: { "content-type": "application/json" } });
+      if (body.method === "tools/list") {
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: body.id,
+          result: {
+            tools: [{ name: "echo" }]
+          }
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (body.method === "tools/call") {
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: body.id,
+          result: {
+            content: [{ type: "text", text: `echo:${body.params?.arguments?.text ?? ""}` }],
+            isError: false
+          }
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, error: { code: -32601, message: "method not found" } }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -2159,12 +2178,21 @@ describe("command parser and env validation", () => {
     const check = await testMcpConnection(config, "stitch", {
       STITCH_API_KEY: "stitch-secret"
     } as NodeJS.ProcessEnv);
-    const init = fetchMock.mock.calls[2]?.[1] as RequestInit;
+    const init = fetchMock.mock.calls.find((call) => {
+      const body = JSON.parse(String((call[1] as RequestInit | undefined)?.body ?? "{}")) as { method?: string };
+      return body.method === "tools/call";
+    })?.[1] as RequestInit;
     const body = JSON.parse(init.body as string) as { method: string };
 
     expect(check.status).toBe("passed");
-    expect(check.readiness?.provenStage).toBe("protocol-tools-list");
-    expect(body.method).toBe("tools/list");
+    expect(check.readiness?.provenStage).toBe("protocol-tool-call");
+    expect(check.firstActionProof).toMatchObject({
+      action: "mcp.tools.call",
+      targetId: "stitch:echo",
+      verifiedBy: "protocol-tool-call"
+    });
+    expect(methods).toEqual(["initialize", "notifications/initialized", "tools/list", "initialize", "notifications/initialized", "tools/call"]);
+    expect(body.method).toBe("tools/call");
     expect(init.headers).toMatchObject({
       Accept: "application/json, text/event-stream",
       "MCP-Protocol-Version": "2025-06-18"
@@ -2263,7 +2291,7 @@ describe("command parser and env validation", () => {
         agentReadOnlyTools: []
       });
       expect(config.mcpPolicyRegistry.servers.stitch).toMatchObject({
-        kind: "read-only-allowlist",
+        kind: "read-only-probe",
         agentReadOnlyTools: ["echo"]
       });
       expect(rewritten.mcpServers["custom-echo"]).toMatchObject({
@@ -5571,10 +5599,10 @@ describe("runtime planner and context bundle", () => {
         id: "stitch",
         status: "passed",
         trustCategory: "protocol-ready",
-        provenStage: "protocol-tools-list",
-        firstAction: "mcp.tools.list",
+        provenStage: "protocol-tool-call",
+        firstAction: "mcp.tools.call",
         policy: expect.objectContaining({
-          kind: "read-only-allowlist",
+          kind: "read-only-probe",
           state: "proved-now",
           satisfied: true,
           agentReadOnlyTools: ["echo"]
@@ -5583,9 +5611,9 @@ describe("runtime planner and context bundle", () => {
       })
     ]);
     expect(bundle.prompt).toContain("Live connection proofs:");
-    expect(bundle.prompt).toContain("mcp:stitch status=passed trust=protocol-ready:protocol-tools-list");
-    expect(bundle.prompt).toContain("policy=read-only-allowlist:proved-now:satisfied");
-    expect(bundle.prompt).toContain("first_action=mcp.tools.list");
+    expect(bundle.prompt).toContain("mcp:stitch status=passed trust=protocol-ready:protocol-tool-call");
+    expect(bundle.prompt).toContain("policy=read-only-probe:proved-now:satisfied");
+    expect(bundle.prompt).toContain("first_action=mcp.tools.call");
     expect(bundle.prompt).toContain("read_tools=mcp.tools.list,mcp.tools.call");
   });
 
@@ -5626,7 +5654,7 @@ describe("runtime planner and context bundle", () => {
 
     expect(bundle.connectionProofs).toEqual([]);
     expect(bundle.prompt).toContain("Live connection proofs:\n- none");
-    expect(liveProofSection).not.toContain("policy=read-only-allowlist:proved-now:satisfied");
+    expect(liveProofSection).not.toContain("policy=read-only-probe:proved-now:satisfied");
     expect(liveProofSection).not.toContain("read_tools=mcp.tools.list,mcp.tools.call");
     expect(bundle.recentProofs.some((proof) => proof.subject === "connection:mcp:stitch")).toBe(true);
   });

@@ -116,7 +116,7 @@ const checkSummary = (Array.isArray(report.checks) ? report.checks : []).map((ch
 }));
 expectEqual(checkSummary, [
   { kind: "ai", id: "openai", status: "passed", provenStage: "protocol-tool-call" },
-  { kind: "mcp", id: "stitch", status: "passed", provenStage: "protocol-tools-list" }
+  { kind: "mcp", id: "stitch", status: "passed", provenStage: "protocol-tool-call" }
 ], "connection checks");
 
 const session = JSON.parse(fs.readFileSync(sessionPath, "utf8"));

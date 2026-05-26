@@ -219,7 +219,7 @@ async function mcpToolsList(input: AgentToolRunInput): Promise<string> {
       results.push(JSON.parse(await protocolMcpToolsList(input, serverId)));
       continue;
     }
-    const builtIn = (MCP_SERVER_CONTRACTS as Record<string, { protocolReadiness: "tools/list" | "not-applicable"; protocolReason?: string }>)[serverId];
+    const builtIn = (MCP_SERVER_CONTRACTS as Record<string, { protocolReadiness: "tools/list" | "tools/call" | "not-applicable"; protocolReason?: string }>)[serverId];
     results.push({
       server: serverId,
       name: server.name,

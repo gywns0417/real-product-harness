@@ -5868,7 +5868,7 @@ describe("Hermes-like CLI contracts", () => {
       expect(setup.stderr).toBe("");
       expect(setup.stdout).toContain("setup live check passed");
       expect(setup.stdout).toContain("ai:openai trust=protocol-ready:protocol-tool-call");
-      expect(setup.stdout).toContain("mcp:stitch trust=protocol-ready:protocol-tools-list");
+      expect(setup.stdout).toContain("mcp:stitch trust=protocol-ready:protocol-tool-call");
       expect(setup.stdout).toContain("First action verified");
 
       const ask = await runCli(["ask", "protocol MCP echo tool을 호출해서 acceptance-mcp-ok를 확인해줘"], {
@@ -5898,7 +5898,7 @@ describe("Hermes-like CLI contracts", () => {
       };
       expect(report.checks).toEqual(expect.arrayContaining([
         expect.objectContaining({ kind: "ai", id: "openai", status: "passed", readiness: expect.objectContaining({ provenStage: "protocol-tool-call" }) }),
-        expect.objectContaining({ kind: "mcp", id: "stitch", status: "passed", readiness: expect.objectContaining({ provenStage: "protocol-tools-list" }) })
+        expect.objectContaining({ kind: "mcp", id: "stitch", status: "passed", readiness: expect.objectContaining({ provenStage: "protocol-tool-call" }) })
       ]));
 
       const agentStatus = await runCli(["agent", "status"], {
@@ -5951,12 +5951,12 @@ describe("Hermes-like CLI contracts", () => {
       expect(status.stdout).toContain("MCP / Adapter Connectors");
       expect(status.stdout).toContain("stitch");
       expect(status.stdout).toContain("protocol-mcp http https://stitch.googleapis.com/mcp");
-      expect(status.stdout).toContain("policy=read-only-allowlist state=allowed-now requiredTrust=protocol-ready:protocol-tools-list");
+      expect(status.stdout).toContain("policy=read-only-probe state=allowed-now requiredTrust=protocol-ready:protocol-tool-call");
       expect(status.stdout).toContain("next=rph mcp tools stitch 또는 rph mcp call stitch <tool> --read-only --args-json '{}'");
       expect(status.stdout).toContain("Verified targets");
-      expect(status.stdout).toContain("mcp:stitch stitch type=mcp-server target_id=stitch verified_by=protocol-tools-list");
+      expect(status.stdout).toContain("mcp:stitch stitch type=mcp-server target_id=stitch verified_by=protocol-tool-call");
       expect(status.stdout).toContain("First action verified");
-      expect(status.stdout).toContain("mcp:stitch listed 1 MCP tools from Stitch MCP server | detail=mcp.tools.list target_id=stitch verified_by=protocol-tools-list");
+      expect(status.stdout).toContain("mcp:stitch called echo on Stitch MCP server | detail=mcp.tools.call target_id=stitch:echo verified_by=protocol-tool-call");
     } finally {
       fs.rmSync(uninitializedRoot, { recursive: true, force: true });
     }

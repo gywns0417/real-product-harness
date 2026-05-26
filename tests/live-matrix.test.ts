@@ -332,14 +332,14 @@ function createMatrixReport() {
     skippedCheck("mcp", "notion", ["NOTION_TOKEN", "NOTION_PARENT_PAGE_ID"], "protocol-tools-list", false, checkedAt),
     skippedCheck("mcp", "github", ["GITHUB_TOKEN", "GITHUB_OWNER", "GITHUB_REPO"], "protocol-tools-list", false, checkedAt),
     skippedCheck("mcp", "figma", ["FIGMA_TOKEN", "FIGMA_FILE_ID"], "protocol-tools-list", false, checkedAt),
-    skippedCheck("mcp", "stitch", ["STITCH_API_KEY"], "protocol-tools-list", true, checkedAt)
+    skippedCheck("mcp", "stitch", ["STITCH_API_KEY"], "protocol-tool-call", true, checkedAt)
   ];
   (checks[7] as MatrixCheck & { policy?: unknown }).policy = {
     kind: "read-only-allowlist",
     source: "built-in",
     state: "unverified",
     satisfied: false,
-    requiredTrust: "protocol-ready:protocol-tools-list",
+    requiredTrust: "protocol-ready:protocol-tool-call",
     actualTrust: "unverified:none",
     allowToolsList: true,
     allowReadOnlyToolCall: true,

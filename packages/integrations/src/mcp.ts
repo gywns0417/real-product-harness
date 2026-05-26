@@ -113,9 +113,15 @@ export const MCP_SERVER_CONTRACTS = {
       mode: "x-goog-api-key",
       envKey: "STITCH_API_KEY"
     },
-    protocolReadiness: "tools/list",
+    protocolReadiness: "tools/call",
+    protocolToolCallProbe: {
+      toolName: "echo",
+      arguments: {
+        text: "rph-readiness-probe"
+      }
+    },
     agentReadOnlyTools: ["echo"],
-    notes: "MCP streamable HTTP endpoint. Readiness proves initialize and tools/list."
+    notes: "MCP streamable HTTP endpoint. Readiness proves initialize, tools/list, and a read-only tools/call canary."
   }
 } as const satisfies Record<string, McpServerContract>;
 

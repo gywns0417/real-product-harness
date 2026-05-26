@@ -226,9 +226,13 @@ describe("MCP readiness", () => {
     }));
   });
 
-  it("proves Stitch readiness with tools/list", async () => {
+  it("proves Stitch readiness with a read-only tools/call canary", async () => {
     const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
-      const body = JSON.parse(String(init?.body ?? "{}")) as { method?: string; id?: string };
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        method?: string;
+        id?: string;
+        params?: { arguments?: Record<string, unknown> };
+      };
       if (body.method === "initialize") {
         return new Response(JSON.stringify({
           jsonrpc: "2.0",
@@ -249,17 +253,33 @@ describe("MCP readiness", () => {
       if (body.method === "notifications/initialized") {
         return new Response(null, { status: 202 });
       }
-      return new Response(JSON.stringify({
-        jsonrpc: "2.0",
-        id: body.id,
-        result: {
-          tools: [
-            {
-              name: "render-ui"
-            }
-          ]
-        }
-      }), { status: 200, headers: { "content-type": "application/json" } });
+      if (body.method === "tools/list") {
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: body.id,
+          result: {
+            tools: [
+              {
+                name: "echo"
+              }
+            ]
+          }
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (body.method === "tools/call") {
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: body.id,
+          result: {
+            content: [{ type: "text", text: `echo:${body.params?.arguments?.text ?? ""}` }],
+            isError: false
+          }
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, error: { code: -32601, message: "method not found" } }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
     });
     vi.stubGlobal("fetch", fetchMock);
     const env = {
@@ -270,24 +290,24 @@ describe("MCP readiness", () => {
     const result = await testMcpConnection(config, "stitch", env);
 
     expect(result.status).toBe("passed");
-    expect(result.message).toContain("credential: MCP initialize accepted with session");
-    expect(result.message).toContain("protocol: tools/list passed (1 tools)");
+    expect(result.message).toContain("credential: MCP initialize accepted");
+    expect(result.message).toContain("protocol: tools/list passed (1 tools); tools/call passed (echo)");
     expect(result.identity).toMatchObject({
       type: "mcp-server",
       label: "stitch",
       targetId: "stitch",
-      verifiedBy: "protocol-tools-list",
+      verifiedBy: "protocol-tool-call",
       source: "configuration"
     });
     expect(result.firstActionProof).toMatchObject({
-      action: "mcp.tools.list",
-      targetId: "stitch",
-      verifiedBy: "protocol-tools-list",
+      action: "mcp.tools.call",
+      targetId: "stitch:echo",
+      verifiedBy: "protocol-tool-call",
       endpoint: "https://stitch.googleapis.com/mcp"
     });
     expect(result.readiness).toMatchObject({
       mode: "protocol-ready",
-      provenStage: "protocol-tools-list",
+      provenStage: "protocol-tool-call",
       stages: [
         {
           stage: "transport",
@@ -301,20 +321,30 @@ describe("MCP readiness", () => {
           stage: "protocol-tools-list",
           status: "passed",
           endpoint: "https://stitch.googleapis.com/mcp"
+        },
+        {
+          stage: "protocol-tool-call",
+          status: "passed",
+          endpoint: "https://stitch.googleapis.com/mcp"
         }
       ]
     });
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(6);
     expect(fetchMock).toHaveBeenLastCalledWith("https://stitch.googleapis.com/mcp", expect.objectContaining({
       method: "POST",
       body: JSON.stringify({
         jsonrpc: "2.0",
-        id: "rph-tools-list",
-        method: "tools/list",
-        params: {}
+        id: "rph-tools-call",
+        method: "tools/call",
+        params: {
+          name: "echo",
+          arguments: {
+            text: "rph-readiness-probe"
+          }
+        }
       })
     }));
-    expect(fetchMock.mock.calls[2][1]?.headers).toMatchObject({
+    expect(fetchMock.mock.calls[5][1]?.headers).toMatchObject({
       Accept: "application/json, text/event-stream",
       "MCP-Protocol-Version": "2025-06-18",
       "Mcp-Session-Id": "session-123",
