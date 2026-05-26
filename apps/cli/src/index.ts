@@ -683,6 +683,9 @@ async function main(): Promise<void> {
   }
 
   const parsed = parseCli(argv);
+  if (argv[0]?.startsWith("/")) {
+    parsed.options.commandSurface = "slash";
+  }
   const commandSuggestion = suggestCommand(parsed.command);
   if (
     !isKnownTopLevelCommand(parsed.command)
@@ -741,7 +744,7 @@ export async function runParsedCommand(
         break;
       case "status":
         handleStatus(projectRoot, {
-          commandSurface: context.runtimeShell ? "slash" : "rph",
+          commandSurface: context.runtimeShell ? "slash" : commandSurfaceFromOptions(parsed.options),
           json: optionBool(parsed.options, "json"),
           verbose: optionBool(parsed.options, "verbose")
         });
@@ -855,7 +858,7 @@ async function runRuntimeShell(initialRoot: string): Promise<void> {
       reason: runtimeHomeReasonFromManifest(manifest),
       commandSurface: "slash"
     });
-    printRuntimeDigest(projectRoot, manifest);
+    printRuntimeDigest(projectRoot, manifest, "slash");
     if (manifest.status === "paused") {
       console.log("이전 runtime session이 일시정지 상태입니다. 계속하려면 /resume 을 입력하세요.");
     }
@@ -2490,7 +2493,7 @@ function runtimeExecutionGraphDigest(graph: RuntimeExecutionGraph): string {
   return createHash("sha256").update(graph.queueFingerprint).digest("hex").slice(0, 12);
 }
 
-function runtimeDigestLines(projectRoot: string, session: RuntimeSessionManifest | null): string[] {
+function runtimeDigestLines(projectRoot: string, session: RuntimeSessionManifest | null, commandSurface: CommandSurface = "rph"): string[] {
   if (!session || runtimeExecutionGraphReadIssue(projectRoot)) {
     return [];
   }
@@ -2506,7 +2509,7 @@ function runtimeDigestLines(projectRoot: string, session: RuntimeSessionManifest
     const lines = [
       `- graph: ${graph.graphId}`,
       `- digest: ${runtimeExecutionGraphDigest(graph)}`,
-      "- inspect: rph agent graph status --verbose"
+      `- inspect: ${agentSurfaceCommand(commandSurface, "graph status --verbose")}`
     ];
     if (pendingIntents.length > 0) {
       const next = pendingIntents[pendingIntents.length - 1];
@@ -2514,9 +2517,9 @@ function runtimeDigestLines(projectRoot: string, session: RuntimeSessionManifest
       lines.push(`- pending intents: ${pendingIntents.length}`);
       if (blocker) {
         lines.push(`- next intent blocked: ${blocker}`);
-        lines.push("- inspect intents: rph agent intents");
+        lines.push(`- inspect intents: ${agentSurfaceCommand(commandSurface, "intents")}`);
       } else {
-        lines.push(`- next intent: rph agent confirm-intent ${next.id}`);
+        lines.push(`- next intent: ${agentSurfaceCommand(commandSurface, `confirm-intent ${next.id}`)}`);
       }
     }
     return lines;
@@ -2525,8 +2528,8 @@ function runtimeDigestLines(projectRoot: string, session: RuntimeSessionManifest
   }
 }
 
-function printRuntimeDigest(projectRoot: string, session: RuntimeSessionManifest | null): void {
-  const lines = runtimeDigestLines(projectRoot, session);
+function printRuntimeDigest(projectRoot: string, session: RuntimeSessionManifest | null, commandSurface: CommandSurface = "rph"): void {
+  const lines = runtimeDigestLines(projectRoot, session, commandSurface);
   if (lines.length === 0) {
     return;
   }
@@ -4340,6 +4343,10 @@ async function handleRuntimeAgentInput(
   if (confirmedIntent !== null) {
     return confirmedIntent;
   }
+  const safeControl = await tryRunSafeRuntimeControlFromPlainChat(projectRoot, sessionId, userInput, prompter ? { prompter, runtimeShell: true } : { runtimeShell: true });
+  if (safeControl !== null) {
+    return safeControl;
+  }
   const continued = await tryContinueRuntimeWorkFromPlainChat(projectRoot, sessionId, userInput);
   if (continued !== null) {
     return continued;
@@ -4403,6 +4410,50 @@ async function handleRuntimeAgentInput(
   return handleRuntimeChat(projectRoot, sessionId, chatHistory, userInput);
 }
 
+async function tryRunSafeRuntimeControlFromPlainChat(
+  projectRoot: string,
+  sessionId: string,
+  userInput: string,
+  commandContext: CommandContext
+): Promise<boolean | null> {
+  if (hasNaturalNegation(userInput) || /[?？]/.test(userInput)) {
+    return null;
+  }
+  const intent = naturalRuntimeIntent(userInput);
+  const command = safeNaturalRuntimeControlCommand(projectRoot, intent);
+  if (!command) {
+    return null;
+  }
+  console.log(`plain control: ${command}`);
+  if (isRuntimeProjectInitialized(projectRoot)) {
+    recordRuntimeSessionEvent(projectRoot, sessionId, {
+      kind: "command",
+      message: `plain control: ${command}`,
+      ok: true
+    });
+  }
+  const parsed = parseCli(parseCommandLine(command));
+  return runParsedCommand(projectRoot, parsed, false, commandContext);
+}
+
+function safeNaturalRuntimeControlCommand(projectRoot: string, intent: NaturalRuntimeIntent | null): string | null {
+  switch (intent) {
+    case "status":
+      return "/status";
+    case "session":
+      return "/agent replay";
+    case "setup":
+      return "/setup auto --live";
+    case "productDefinition":
+      if (!isRuntimeProjectInitialized(projectRoot)) {
+        return "/pm start";
+      }
+      return loadState(projectRoot).currentStage === "SETUP" ? "/pm start" : null;
+    default:
+      return null;
+  }
+}
+
 async function tryContinueRuntimeWorkFromPlainChat(
   projectRoot: string,
   sessionId: string,
@@ -4450,7 +4501,7 @@ async function tryContinueRuntimeWorkFromPlainChat(
   return true;
 }
 
-type NaturalRuntimeIntent = "start" | "continue" | "approve" | "reject" | "status" | "session" | "productDefinition";
+type NaturalRuntimeIntent = "start" | "continue" | "approve" | "reject" | "status" | "session" | "setup" | "productDefinition";
 
 function naturalRuntimeIntent(input: string): NaturalRuntimeIntent | null {
   const text = normalizeNaturalRuntimeText(input);
@@ -4517,7 +4568,9 @@ function naturalRuntimeIntent(input: string): NaturalRuntimeIntent | null {
     reject: ["거절", "거절해", "거절해줘", "반려", "반려해", "reject", "reject it", "deny", "decline"],
     status: [
       "현재 상태",
+      "현재 상태 알려줘",
       "현재 상태 보여줘",
+      "상태 알려줘",
       "상태 보여줘",
       "상태 확인",
       "상태 확인해",
@@ -4535,7 +4588,26 @@ function naturalRuntimeIntent(input: string): NaturalRuntimeIntent | null {
       "show session",
       "session timeline"
     ],
+    setup: [
+      "setup 시작",
+      "setup 시작해",
+      "setup 시작해줘",
+      "setup 해줘",
+      "설정 시작",
+      "설정 시작해",
+      "설정 시작해줘",
+      "연결 시작",
+      "연결 시작해",
+      "연결 시작해줘",
+      "ai 연결해줘"
+    ],
     productDefinition: [
+      "pm 시작",
+      "pm 시작해",
+      "pm 시작해줘",
+      "pm 작업 시작",
+      "pm 작업 시작해",
+      "pm 작업 시작해줘",
       "제품 정의 시작",
       "제품 정의 시작해",
       "제품 정의 시작해줘",
@@ -7411,7 +7483,7 @@ function handleWorkspace(
     return;
   }
   console.log(renderOperatorWorkspace(snapshot, {
-    commandSurface: context.runtimeShell ? "slash" : "rph"
+    commandSurface: context.runtimeShell ? "slash" : commandSurfaceFromOptions(options)
   }));
 }
 
@@ -7456,11 +7528,11 @@ function handleStatus(projectRoot: string, options: { commandSurface?: "rph" | "
   }
   console.log(`- do now: ${renderedNext}`);
   console.log(`- why: ${statusReason}`);
-  console.log("- chat: rph shell (plain text goes to the connected AI agent)");
-  console.log("- one-shot chat: rph ask \"다음에 뭐 하면 돼?\"");
+  console.log(`- chat: ${runtimeSurfaceCommand(commandSurface, "shell")} (plain text goes to the connected AI agent)`);
+  console.log(`- one-shot chat: ${runtimeSurfaceCommand(commandSurface, "ask")} "다음에 뭐 하면 돼?"`);
   console.log(`- control: ${renderedNext}`);
-  console.log("- inspect: rph workspace");
-  for (const line of runtimeDigestLines(projectRoot, session)) {
+  console.log(`- inspect: ${runtimeSurfaceCommand(commandSurface, "workspace")}`);
+  for (const line of runtimeDigestLines(projectRoot, session, commandSurface)) {
     console.log(line);
   }
   if (!options.verbose) {

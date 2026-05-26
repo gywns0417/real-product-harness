@@ -150,11 +150,12 @@ the current stage plus the exact next action. If no read-only connector is avail
 to an AI-only `First demo turn` and says connector proof is still pending. Demo/proof failure is
 non-fatal: setup stays successful and the recovery command is `rph doctor --live`.
 
-Plain text is chat. Command-like natural phrases such as `계속 진행해`, `현재 상태 보여줘`,
-or `continue` are sent to the connected AI agent instead of being silently promoted into local workflow
-execution. To control the harness, type the slash/control command explicitly: `/status`,
-`/agent run --steps 6`, `/agent recover`, `/agent approve-action <id>`, `/pm start`, or their
-`rph ...` one-shot forms.
+Plain text is chat, with a narrow local-safe exception inside the runtime shell: exact phrases such as
+`현재 상태 보여줘` and `제품 정의 시작해줘` run the matching slash control immediately. Broader
+phrases such as `계속 진행해` or `continue` stay in chat unless there is a bounded handoff queue to
+resume, and approval/external-write controls always remain explicit. To control the harness directly,
+type `/status`, `/agent run --steps 6`, `/agent recover`, `/agent approve-action <id>`, `/pm start`,
+or their `rph ...` one-shot forms.
 
 When RPH recognizes a concrete start-workflow request such as productizing an idea or running setup,
 it prints an `Execution plan` card with the inferred goal, workflow, steps, approval note, next safe
@@ -559,7 +560,7 @@ pnpm run release:live
 `release:check` runs lint, build, tests, productize smoke, Hermes e2e smoke, setup-live-chat smoke,
 provider-onboarding smoke for OpenAI/Anthropic/Gemini/local, MCP-runtime smoke, Notion write/readback smoke, GitHub repo/label/push readback smoke, mutable-action approval smoke, GitHub setup-to-first-live-action onboarding smoke, isolated install smoke, and clean-home install E2E smoke. Productize smoke covers both sides of the conversation contract:
 plain `ask` must propose without mutating, while `ask --execute` must create the golden path package.
-Hermes acceptance tests also cover runtime `/setup auto` from credential entry to successful selected-provider connection, in-wizard recovery from missing or bad credentials without widening the selected check scope, first-value ready-action output after passed checks, protocol-partial trust reporting when credential probes pass but generation fails, setup recovery hints, runtime env-overlay immutability, approval-command proposal blocking, natural-language chat boundaries for command-like text, request-time provider failover, persisted failover metadata in chat/session/run records, runtime session journal/replay output, and recovery from an unreadable runtime session head.
+Hermes acceptance tests also cover runtime `/setup auto` from credential entry to successful selected-provider connection, in-wizard recovery from missing or bad credentials without widening the selected check scope, first-value ready-action output after passed checks, protocol-partial trust reporting when credential probes pass but generation fails, setup recovery hints, runtime env-overlay immutability, approval-command proposal blocking, narrow local-safe natural controls in the runtime shell, natural-language chat boundaries for broader command-like text, request-time provider failover, persisted failover metadata in chat/session/run records, runtime session journal/replay output, and recovery from an unreadable runtime session head.
 Setup-live-chat smoke joins fresh setup, selected-provider live verification, and a real agent ask
 turn in one temp project. MCP-runtime smoke joins fresh setup, protocol MCP `tools/list` readiness,
 an agent tool-call turn, guarded `mcp.tools.call`, and persisted tool observations in one temp

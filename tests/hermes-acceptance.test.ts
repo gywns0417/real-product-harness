@@ -260,6 +260,63 @@ describe("Hermes-like runtime acceptance", () => {
     expect(manifest.blocker).toBeFalsy();
   }, 10000);
 
+  it("auto-runs exact natural-language status requests inside the runtime shell", async () => {
+    const result = await runCli(["shell"], {
+      cwd: root,
+      env: withoutProviderEnv(),
+      stdinChunks: [
+        { text: "현재 상태 보여줘\n", delayMs: 0 },
+        { text: "/exit\n", delayMs: 50 }
+      ],
+      preloadFetchCommandProposal: true
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("plain control: /status");
+    expect(result.stdout).toContain("RPH status");
+    expect(result.stdout).toContain("- current: SETUP");
+    expect(result.stdout).toContain("- chat: /shell (plain text goes to the connected AI agent)");
+    expect(result.stdout).toContain("- one-shot chat: /ask \"다음에 뭐 하면 돼?\"");
+    expect(result.stdout).not.toContain("suggested control: /status");
+    expect(result.stdout).not.toContain("intent saved:");
+    expect(result.stdout).not.toContain("confirm: /agent confirm-intent");
+    expect(result.stdout).not.toContain("AI agent is not connected yet.");
+    const intentsPath = path.join(root, ".rph", "runtime", "intents.json");
+    const intents = fs.existsSync(intentsPath)
+      ? JSON.parse(fs.readFileSync(intentsPath, "utf8")) as Array<{ command: string; status: string }>
+      : [];
+    expect(intents.filter((intent) => intent.command === "/status" && intent.status === "pending")).toHaveLength(0);
+    const manifest = JSON.parse(fs.readFileSync(path.join(root, ".rph", "runtime", "current-session.json"), "utf8")) as {
+      status: string;
+      blocker?: string;
+    };
+    expect(manifest.status).toBe("active");
+    expect(manifest.blocker).toBeFalsy();
+  }, 10000);
+
+  it("auto-runs exact product-definition start requests inside the runtime shell", async () => {
+    const result = await runCli(["shell"], {
+      cwd: root,
+      env: withoutProviderEnv(),
+      stdinChunks: [
+        { text: "제품 정의 시작해줘\n", delayMs: 0 },
+        { text: "/exit\n", delayMs: 50 }
+      ],
+      preloadFetchCommandProposal: true
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("plain control: /pm start");
+    expect(result.stdout).toContain("PM 워크플로우 시작");
+    expect(result.stdout).not.toContain("suggested control: /pm start");
+    expect(result.stdout).not.toContain("intent saved:");
+    expect(result.stdout).not.toContain("confirm: /agent confirm-intent");
+    const state = JSON.parse(fs.readFileSync(path.join(root, ".rph", "state.json"), "utf8")) as {
+      currentStage: string;
+    };
+    expect(state.currentStage).toBe("PM_PRODUCT_DEFINITION_INTERVIEW");
+  }, 10000);
+
   it("confirms a durable read-only intent without losing the runtime session", async () => {
     writeOpenAiEnv(root, "https://example.invalid/v1");
 
@@ -4003,7 +4060,8 @@ describe("Hermes-like runtime acceptance", () => {
     expect(shell.exitCode).toBe(0);
     expect(shell.stdout).toContain("- graph: graph:session-recovery");
     expect(shell.stdout).toMatch(/- digest: [a-f0-9]{12}/);
-    expect(shell.stdout).toContain("- inspect: rph agent graph status --verbose");
+    expect(shell.stdout).toContain("- inspect: /agent graph status --verbose");
+    expect(shell.stdout).not.toContain("- inspect: rph agent graph status --verbose");
     expect(shell.stdout).toContain("Session recovery brief");
     expect(shell.stdout).toContain("pending external action: action-recovery [pending] /github create-repo --public");
     expect(shell.stdout).toContain("next safe command: /agent approve-action action-recovery");
@@ -5836,7 +5894,20 @@ describe("Hermes-like CLI contracts", () => {
     expect(shell.exitCode).toBe(0);
     expect(shell.stdout).toContain("Harness readiness");
     expect(shell.stdout).toContain("next=/doctor --live");
+    expect(shell.stdout).toContain("- chat: /shell (plain text goes to the connected AI agent)");
+    expect(shell.stdout).toContain("- one-shot chat: /ask \"다음에 뭐 하면 돼?\"");
+    expect(shell.stdout).toContain("- inspect: /workspace");
     expect(shell.stdout).not.toContain("next=rph doctor --live");
+    expect(shell.stdout).not.toContain("- chat: rph shell");
+    expect(shell.stdout).not.toContain("- one-shot chat: rph ask");
+    expect(shell.stdout).not.toContain("- inspect: rph workspace");
+
+    const slash = await runCli(["/status", "--verbose"], { cwd: root, env: withoutProviderEnv() });
+    expect(slash.exitCode).toBe(0);
+    expect(slash.stdout).toContain("Harness readiness");
+    expect(slash.stdout).toContain("next=/doctor --live");
+    expect(slash.stdout).toContain("- chat: /shell (plain text goes to the connected AI agent)");
+    expect(slash.stdout).not.toContain("next=rph doctor --live");
   }, 10000);
 
   it("keeps fresh runtime /status setup guidance on slash commands", async () => {
