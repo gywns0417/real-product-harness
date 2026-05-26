@@ -65,12 +65,14 @@ assertIncludes(init, "function /pm() { command rph /pm \"$@\"; }", "init.sh");
 assertIncludes(init, "function /agent() { command rph /agent \"$@\"; }", "init.sh");
 assertIncludes(init, "function /setup() { command rph /setup \"$@\"; }", "init.sh");
 assertIncludes(init, "function /workspace() { command rph /workspace \"$@\"; }", "init.sh");
+assertIncludes(init, "function /live() { command rph /live \"$@\"; }", "init.sh");
 assertIncludes(init, 'if [ "${RPH_ENABLE_SLASH_COMMANDS:-1}" = "1" ]; then', "init.sh");
 assertIncludes(completion, "#compdef rph", "completion.zsh");
 assertIncludes(completion, "help version update shell runtime init status workspace next pause resume cancel setup settings", "completion.zsh");
 assertIncludes(completion, "setup_cmds=(auto repair detect apply check ai mcp custom)", "completion.zsh");
 assertIncludes(completion, "doctor_cmds=(status install shell)", "completion.zsh");
 assertIncludes(completion, "agent_cmds=(status roles catalog discover search import install use activate bind bindings unbind session journal replay handoffs actions action-approvals intents confirm-intent dismiss-intent lanes run continue recover pool worker claim heartbeat ack complete dead-letter approve-action reject-action clear reset)", "completion.zsh");
+assertIncludes(completion, "live_cmds=(audit target ai:openai ai:anthropic ai:gemini mcp:stitch mcp:github mcp:notion mcp:figma)", "completion.zsh");
 assertIncludes(profile, "# >>> rph init >>>", "shell profile");
 assertIncludes(profile, `source "${initPath}"`, "shell profile");
 

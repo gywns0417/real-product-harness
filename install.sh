@@ -178,6 +178,7 @@ function /fe() { command rph /fe "\$@"; }
 function /be() { command rph /be "\$@"; }
 function /ai() { command rph /ai "\$@"; }
 function /mcp() { command rph /mcp "\$@"; }
+function /live() { command rph /live "\$@"; }
 function /docs() { command rph /docs "\$@"; }
 function /github() { command rph /github "\$@"; }
 function /notion() { command rph /notion "\$@"; }
@@ -189,7 +190,7 @@ function /help() { command rph /help "\$@"; }
 }
 
 rph_disable_slash_commands() {
-  unset -f /pm /pd /setup /status /workspace /next /qa /fe /be /ai /mcp /docs /github /notion /agent /productize /doctor /help 2>/dev/null || true
+  unset -f /pm /pd /setup /status /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /productize /doctor /help 2>/dev/null || true
 }
 
 if [ "\${RPH_ENABLE_SLASH_COMMANDS:-1}" = "1" ]; then
@@ -200,7 +201,7 @@ if [ -n "\${BASH_VERSION:-}" ]; then
   _rph_bash_complete() {
     local cur="\${COMP_WORDS[COMP_CWORD]}"
     local command="\${COMP_WORDS[1]:-}"
-    local words="help version update shell runtime init status workspace next pause resume cancel setup settings ask agent chat ai mcp doctor productize pm pd fe be qa notion docs github"
+    local words="help version update shell runtime init status workspace next pause resume cancel setup settings ask agent chat ai mcp live doctor productize pm pd fe be qa notion docs github"
     local subcommands=""
     if [ "\$COMP_CWORD" -gt 1 ]; then
       case "\$command" in
@@ -209,6 +210,7 @@ if [ -n "\${BASH_VERSION:-}" ]; then
         agent) subcommands="status roles catalog discover search import install use activate bind bindings unbind session journal replay handoffs actions action-approvals intents confirm-intent dismiss-intent lanes run continue recover pool worker claim heartbeat ack complete dead-letter approve-action reject-action clear reset" ;;
         ai) subcommands="status test enable disable run" ;;
         mcp) subcommands="status tools call test enable disable" ;;
+        live) subcommands="audit target ai:openai ai:anthropic ai:gemini mcp:stitch mcp:github mcp:notion mcp:figma" ;;
         pm) subcommands="start interview draft revise approve diff rollback finalize" ;;
         pd) subcommands="start references directions landing-preview design-system pages show revise approve export finalize" ;;
         fe) subcommands="spec approve sprint-plan issue-create work pr" ;;
@@ -234,16 +236,17 @@ EOF
 cat > "$completion_file" <<'EOF'
 #compdef rph
 _rph() {
-  local -a commands setup_cmds doctor_cmds agent_cmds ai_cmds mcp_cmds pm_cmds pd_cmds fe_cmds be_cmds qa_cmds notion_cmds docs_cmds github_cmds
+  local -a commands setup_cmds doctor_cmds agent_cmds ai_cmds mcp_cmds live_cmds pm_cmds pd_cmds fe_cmds be_cmds qa_cmds notion_cmds docs_cmds github_cmds
   commands=(
     help version update shell runtime init status workspace next pause resume cancel setup settings
-    ask agent chat ai mcp doctor productize pm pd fe be qa notion docs github
+    ask agent chat ai mcp live doctor productize pm pd fe be qa notion docs github
   )
   setup_cmds=(auto repair detect apply check ai mcp custom)
   doctor_cmds=(status install shell)
   agent_cmds=(status roles catalog discover search import install use activate bind bindings unbind session journal replay handoffs actions action-approvals intents confirm-intent dismiss-intent lanes run continue recover pool worker claim heartbeat ack complete dead-letter approve-action reject-action clear reset)
   ai_cmds=(status test enable disable run)
   mcp_cmds=(status tools call test enable disable)
+  live_cmds=(audit target ai:openai ai:anthropic ai:gemini mcp:stitch mcp:github mcp:notion mcp:figma)
   pm_cmds=(start interview draft revise approve diff rollback finalize)
   pd_cmds=(start references directions landing-preview design-system pages show revise approve export finalize)
   fe_cmds=(spec approve sprint-plan issue-create work pr)
@@ -264,6 +267,7 @@ _rph() {
     agent) _describe 'agent command' agent_cmds ;;
     ai) _describe 'ai command' ai_cmds ;;
     mcp) _describe 'mcp command' mcp_cmds ;;
+    live) _describe 'live command' live_cmds ;;
     pm) _describe 'pm command' pm_cmds ;;
     pd) _describe 'pd command' pd_cmds ;;
     fe) _describe 'fe command' fe_cmds ;;

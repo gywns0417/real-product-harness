@@ -511,14 +511,15 @@ const HELP_TOPIC_LINES: Record<string, string[]> = {
     "  rph live ai:gemini",
     "  rph live mcp:stitch",
     "  rph live target mcp:github",
-    "  pnpm run live:audit",
+    "  rph live audit [--strict] [--output <path>]",
     "",
     "Runtime slash form:",
     "  /live ai:openai",
     "  /live mcp:stitch",
+    "  /live audit",
     "",
     "Runs one selected provider or connector through live setup/test, writes .rph/connections/latest.json, and exits non-zero when the target is not verified.",
-    "live:audit writes .rph/live-audit/latest.json and .md while preserving release-gate failure semantics in strict mode."
+    "live audit writes .rph/live-audit/latest.json and .md. Default audit mode exits zero while clearly reporting release_ready=no; --strict exits non-zero on release blockers."
   ],
   proofs: [
     "Proof ledger commands",
@@ -8792,6 +8793,10 @@ async function handleLive(
   args: string[],
   options: Record<string, string | boolean>
 ): Promise<void> {
+  if (subcommand === "audit" || optionBool(options, "audit")) {
+    await handleLiveAudit(projectRoot, args, options);
+    return;
+  }
   const target = liveTargetFromArgs(subcommand, args, options);
   if (!target) {
     console.log("Live proof commands");
@@ -8800,10 +8805,12 @@ async function handleLive(
     console.log("  rph live ai:gemini");
     console.log("  rph live mcp:stitch");
     console.log("  rph live target mcp:github");
+    console.log("  rph live audit [--strict] [--output <path>]");
     console.log("");
     console.log("Runtime slash form:");
     console.log("  /live ai:openai");
     console.log("  /live mcp:stitch");
+    console.log("  /live audit");
     return;
   }
   if (!isRuntimeProjectInitialized(projectRoot)) {
@@ -8838,6 +8845,283 @@ async function handleLive(
   if (checks.some((check) => check.status !== "passed")) {
     process.exitCode = 1;
   }
+}
+
+async function handleLiveAudit(
+  projectRoot: string,
+  _args: string[],
+  options: Record<string, string | boolean>
+): Promise<void> {
+  if (!isRuntimeProjectInitialized(projectRoot)) {
+    const projectName = optionString(options, "project-name") ?? (path.basename(projectRoot) || "RPH Project");
+    initProject(projectRoot, { projectName });
+    console.log(`RPH project initialized: ${projectName}`);
+  }
+
+  const configuredOnly = !optionBool(options, "all");
+  const strict = optionBool(options, "strict");
+  const config = syncHarnessConfigFromEnv(projectRoot);
+  const checks = [
+    ...await testAllAiConnections(config),
+    ...await testAllMcpConnections(config)
+  ];
+  const reportPath = writeLiveConnectionReport(projectRoot, checks, {
+    command: strict ? "rph live audit --strict" : "rph live audit",
+    selectedTargets: checks.map(formatConnectionTarget),
+    runner: "cli",
+    source: "live"
+  });
+  const report = readConnectionReport(projectRoot);
+  const reportWithProof = report as ({ onboardingProof?: Array<Record<string, unknown>> } & typeof report);
+  const failures = liveAuditFailures(checks, configuredOnly);
+  const audit = buildCliLiveAuditReport({
+    configuredOnly,
+    strict,
+    sourceReport: reportPath,
+    provenance: report?.provenance ?? null,
+    checks,
+    onboardingProof: Array.isArray(reportWithProof?.onboardingProof) ? reportWithProof.onboardingProof : [],
+    failures
+  });
+  const artifacts = writeCliLiveAuditArtifacts(projectRoot, audit, optionString(options, "output"));
+
+  console.log("Live credential audit");
+  console.log("audit complete");
+  console.log(`- release readiness: ${audit.summary.releaseReady ? "yes" : "no"}`);
+  console.log(`- summary: passed=${audit.summary.passed} failed=${audit.summary.failed} skipped=${audit.summary.skipped} total=${audit.summary.total}`);
+  console.log(`- strict: ${strict ? "yes" : "no"}`);
+  console.log(`- connection_report: ${reportPath}`);
+  console.log(`- audit: ${artifacts.jsonPath}`);
+  console.log(`- audit_markdown: ${artifacts.markdownPath}`);
+  for (const check of audit.checks) {
+    console.log(`- ${check.kind}:${check.id} status=${check.status} trust=${check.trust}:${check.provenStage}`);
+    if (check.cause) {
+      console.log(`  cause: ${check.cause}`);
+    }
+  }
+  if (!audit.summary.releaseReady) {
+    console.log("release gate: blocked");
+    console.log("repair: rph setup repair --live");
+  } else {
+    console.log("release gate: ready");
+  }
+  printSetupRecoveryHints(checks);
+  if (strict && failures.length > 0) {
+    process.exitCode = 1;
+  }
+}
+
+interface CliLiveAuditCheck {
+  kind: "ai" | "mcp" | "env" | "runtime";
+  id: string;
+  status: "passed" | "failed" | "skipped";
+  trust: string;
+  provenStage: string;
+  message: string;
+  cause: string;
+  missingEnv: string[];
+  identity: unknown;
+  firstActionProof: unknown;
+  policy: unknown;
+}
+
+interface CliLiveAuditReport {
+  schema: "rph-live-audit-v0";
+  generatedAt: string;
+  configuredOnly: boolean;
+  strict: boolean;
+  sourceReport: string;
+  provenance: unknown;
+  summary: {
+    total: number;
+    passed: number;
+    failed: number;
+    skipped: number;
+    releaseReady: boolean;
+  };
+  failedTargets: string[];
+  skippedTargets: string[];
+  checks: CliLiveAuditCheck[];
+  failures: string[];
+}
+
+function liveAuditFailures(checks: ConnectionCheck[], configuredOnly: boolean): string[] {
+  const failures: string[] = [];
+  for (const check of checks) {
+    if (configuredOnly && check.status === "skipped" && check.missingEnv.length > 0) {
+      continue;
+    }
+    const provenStage = check.readiness?.provenStage ?? "none";
+    const requiredStage = requiredLiveAuditStage(check);
+    if (check.status !== "passed") {
+      failures.push(`${check.kind}:${check.id} status=${check.status} stage=${provenStage} message=${check.message}`);
+      continue;
+    }
+    if (!liveAuditStageCovers(provenStage, requiredStage)) {
+      failures.push(`${check.kind}:${check.id} stage=${provenStage}, required=${requiredStage}`);
+    }
+  }
+  return failures;
+}
+
+function requiredLiveAuditStage(check: ConnectionCheck): string {
+  if (check.kind === "ai") {
+    return "protocol-tool-call";
+  }
+  if (check.kind === "mcp") {
+    const definition = MCP_SERVER_DEFINITIONS[check.id];
+    if (definition?.protocolReadiness === "tools/call") {
+      return "protocol-tool-call";
+    }
+    if (definition?.protocolReadiness === "tools/list") {
+      return "protocol-tools-list";
+    }
+    return "credential-probe";
+  }
+  return "credential-probe";
+}
+
+function liveAuditStageCovers(actual: string, required: string): boolean {
+  const rank: Record<string, number> = {
+    none: 0,
+    transport: 1,
+    "credential-probe": 2,
+    "protocol-tools-list": 3,
+    "protocol-tool-call": 4
+  };
+  return (rank[actual] ?? 0) >= (rank[required] ?? 0);
+}
+
+function buildCliLiveAuditReport(input: {
+  configuredOnly: boolean;
+  strict: boolean;
+  sourceReport: string;
+  provenance: unknown;
+  checks: ConnectionCheck[];
+  onboardingProof: Array<Record<string, unknown>>;
+  failures: string[];
+}): CliLiveAuditReport {
+  const counts = { passed: 0, failed: 0, skipped: 0 };
+  for (const check of input.checks) {
+    counts[check.status] += 1;
+  }
+  const checks = input.checks.map((check) => {
+    const proof = input.onboardingProof.find((item) => item.kind === check.kind && item.id === check.id);
+    const failedStage = check.readiness?.stages.find((stage) => stage.status === "failed");
+    return sanitizeCliAuditJson({
+      kind: check.kind,
+      id: check.id,
+      status: check.status,
+      trust: typeof proof?.trustCategory === "string" ? proof.trustCategory : check.readiness?.mode ?? "unverified",
+      provenStage: check.readiness?.provenStage ?? "none",
+      message: check.message,
+      cause: check.missingEnv.length > 0
+        ? `missing ${check.missingEnv.join(", ")}`
+        : failedStage
+          ? `${failedStage.stage} failed: ${failedStage.message}`
+          : check.message,
+      missingEnv: check.missingEnv,
+      identity: check.identity ?? null,
+      firstActionProof: check.firstActionProof ?? null,
+      policy: check.policy ?? null
+    }) as CliLiveAuditCheck;
+  });
+  return sanitizeCliAuditJson({
+    schema: "rph-live-audit-v0",
+    generatedAt: new Date().toISOString(),
+    configuredOnly: input.configuredOnly,
+    strict: input.strict,
+    sourceReport: input.sourceReport,
+    provenance: input.provenance,
+    summary: {
+      total: input.checks.length,
+      passed: counts.passed,
+      failed: counts.failed,
+      skipped: counts.skipped,
+      releaseReady: input.failures.length === 0
+    },
+    failedTargets: checks.filter((check) => check.status === "failed").map((check) => `${check.kind}:${check.id}`),
+    skippedTargets: checks.filter((check) => check.status === "skipped").map((check) => `${check.kind}:${check.id}`),
+    checks,
+    failures: input.failures.map(redactCliAuditSecretText)
+  }) as CliLiveAuditReport;
+}
+
+function writeCliLiveAuditArtifacts(
+  projectRoot: string,
+  audit: CliLiveAuditReport,
+  requestedOutputPath: string | undefined
+): { jsonPath: string; markdownPath: string } {
+  const jsonPath = resolveCliLiveAuditJsonPath(projectRoot, requestedOutputPath);
+  const markdownPath = jsonPath.endsWith(".json")
+    ? `${jsonPath.slice(0, -5)}.md`
+    : `${jsonPath}.md`;
+  fs.mkdirSync(path.dirname(jsonPath), { recursive: true });
+  fs.writeFileSync(jsonPath, `${JSON.stringify(audit, null, 2)}\n`);
+  fs.writeFileSync(markdownPath, renderCliLiveAuditMarkdown(audit));
+  return { jsonPath, markdownPath };
+}
+
+function resolveCliLiveAuditJsonPath(projectRoot: string, requestedOutputPath: string | undefined): string {
+  if (!requestedOutputPath) {
+    return path.join(projectRoot, ".rph", "live-audit", "latest.json");
+  }
+  const resolved = path.resolve(projectRoot, requestedOutputPath);
+  if (resolved.endsWith(".json")) {
+    return resolved;
+  }
+  return path.join(resolved, "latest.json");
+}
+
+function renderCliLiveAuditMarkdown(audit: CliLiveAuditReport): string {
+  const lines = [
+    "# RPH Live Credential Audit",
+    "",
+    `- generated_at: ${audit.generatedAt}`,
+    "- status: audit complete",
+    `- release_readiness: ${audit.summary.releaseReady ? "yes" : "no"}`,
+    `- summary: passed=${audit.summary.passed} failed=${audit.summary.failed} skipped=${audit.summary.skipped} total=${audit.summary.total}`,
+    "",
+    "## Checks",
+    ""
+  ];
+  for (const check of audit.checks) {
+    lines.push(`- ${check.kind}:${check.id} status=${check.status} trust=${check.trust}:${check.provenStage}`);
+    if (check.cause) {
+      lines.push(`  - cause: ${check.cause}`);
+    }
+    if (check.missingEnv.length > 0) {
+      lines.push(`  - missing_env: ${check.missingEnv.join(", ")}`);
+    }
+  }
+  if (audit.failures.length > 0) {
+    lines.push("", "## Release Blockers", "");
+    for (const failure of audit.failures) {
+      lines.push(`- ${failure}`);
+    }
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+function sanitizeCliAuditJson(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sanitizeCliAuditJson);
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, sanitizeCliAuditJson(item)]));
+  }
+  if (typeof value === "string") {
+    return redactCliAuditSecretText(value);
+  }
+  return value;
+}
+
+function redactCliAuditSecretText(value: string): string {
+  return value
+    .replace(/\b(?:sk|ghp|github_pat|xoxb|figd|ntn)_[A-Za-z0-9_-]{8,}\b/g, "[redacted]")
+    .replace(/\bAIza[A-Za-z0-9_-]{8,}\b/g, "[redacted]")
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}\b/gi, "Bearer [redacted]")
+    .replace(/\b(api[_-]?key|token|secret|authorization)(=|:)\s*["']?[^,\s"}]+/gi, "$1$2<redacted>");
 }
 
 function liveTargetFromArgs(
@@ -11562,8 +11846,8 @@ function renderGeneralHelp(): string {
     "    Connect AI/MCP credentials, apply config, and verify live connections.",
     "  rph live ai:openai",
     "    Verify one provider or MCP target without running the full live matrix.",
-    "  pnpm run live:audit",
-    "    Write a sanitized current credential audit to .rph/live-audit/latest.json and .md.",
+    "  rph live audit",
+    "    Collect live proof for configured AI/MCP targets and write a sanitized audit snapshot. Evidence only; use --strict for a failing release gate.",
     "  rph status",
     "    Show the active workflow, runtime graph digest, blockers, and next safe command.",
     "  rph workspace",

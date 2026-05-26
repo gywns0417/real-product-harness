@@ -4555,6 +4555,120 @@ describe("Hermes-like runtime acceptance", () => {
 });
 
 describe("Hermes-like CLI contracts", () => {
+  it("runs rph live audit as an evidence-only command by default", async () => {
+    const result = await runCli(["live", "audit"], {
+      cwd: root,
+      env: {
+        ...withoutProviderEnv(),
+        GH_TOKEN: undefined,
+        GITHUB_TOKEN_SOURCE: undefined,
+        GITHUB_OWNER: undefined,
+        GITHUB_REPO: undefined,
+        NOTION_PARENT_PAGE_ID: undefined,
+        FIGMA_FILE_ID: undefined,
+        OPENAI_API_KEY: "test-openai"
+      },
+      preloadFetchOpenAiGenerationFailure: true
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("Live credential audit");
+    expect(result.stdout).toContain("audit complete");
+    expect(result.stdout).toContain("- release readiness: no");
+    expect(result.stdout).toContain("- strict: no");
+    expect(result.stdout).toContain("release gate: blocked");
+    expect(fs.existsSync(path.join(root, ".rph", "connections", "latest.json"))).toBe(true);
+    expect(fs.existsSync(path.join(root, ".rph", "live-audit", "latest.json"))).toBe(true);
+    expect(fs.existsSync(path.join(root, ".rph", "live-audit", "latest.md"))).toBe(true);
+  }, 10000);
+
+  it("runs rph live audit --strict as a failing release gate", async () => {
+    const result = await runCli(["live", "audit", "--strict"], {
+      cwd: root,
+      env: {
+        ...withoutProviderEnv(),
+        GH_TOKEN: undefined,
+        GITHUB_TOKEN_SOURCE: undefined,
+        GITHUB_OWNER: undefined,
+        GITHUB_REPO: undefined,
+        NOTION_PARENT_PAGE_ID: undefined,
+        FIGMA_FILE_ID: undefined,
+        OPENAI_API_KEY: "test-openai"
+      },
+      preloadFetchOpenAiGenerationFailure: true
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toContain("Live credential audit");
+    expect(result.stdout).toContain("- strict: yes");
+    expect(result.stdout).toContain("release gate: blocked");
+    expect(fs.existsSync(path.join(root, ".rph", "connections", "latest.json"))).toBe(true);
+    expect(fs.existsSync(path.join(root, ".rph", "live-audit", "latest.json"))).toBe(true);
+    expect(fs.existsSync(path.join(root, ".rph", "live-audit", "latest.md"))).toBe(true);
+  }, 10000);
+
+  it("keeps runtime /live audit behavior aligned with direct CLI live audit", async () => {
+    const result = await runCli(["shell"], {
+      cwd: root,
+      env: {
+        ...withoutProviderEnv(),
+        GH_TOKEN: undefined,
+        GITHUB_TOKEN_SOURCE: undefined,
+        GITHUB_OWNER: undefined,
+        GITHUB_REPO: undefined,
+        NOTION_PARENT_PAGE_ID: undefined,
+        FIGMA_FILE_ID: undefined,
+        OPENAI_API_KEY: "test-openai"
+      },
+      stdinChunks: [
+        { text: "/live audit\n", delayMs: 0 },
+        { text: "/exit\n", delayMs: 50 }
+      ],
+      preloadFetchOpenAiGenerationFailure: true
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("Live credential audit");
+    expect(result.stdout).toContain("audit complete");
+    expect(result.stdout).toContain("- release readiness: no");
+    expect(result.stdout).toContain("release gate: blocked");
+    expect(result.stdout).toContain("audit:");
+    expect(result.stdout).toContain("audit_markdown:");
+    expect(fs.existsSync(path.join(root, ".rph", "live-audit", "latest.json"))).toBe(true);
+
+    const strictRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rph-live-audit-strict-shell-"));
+    try {
+      initProject(strictRoot, { projectName: "Strict Shell Audit" });
+      const strict = await runCli(["shell"], {
+        cwd: strictRoot,
+        env: {
+          ...withoutProviderEnv(),
+          GH_TOKEN: undefined,
+          GITHUB_TOKEN_SOURCE: undefined,
+          GITHUB_OWNER: undefined,
+          GITHUB_REPO: undefined,
+          NOTION_PARENT_PAGE_ID: undefined,
+          FIGMA_FILE_ID: undefined,
+          OPENAI_API_KEY: "test-openai"
+        },
+        stdinChunks: [
+          { text: "/live audit --strict\n", delayMs: 0 },
+          { text: "/exit\n", delayMs: 50 }
+        ],
+        preloadFetchOpenAiGenerationFailure: true
+      });
+
+      expect(strict.exitCode).toBe(1);
+      expect(strict.stdout).toContain("- strict: yes");
+      expect(strict.stdout).toContain("release gate: blocked");
+      expect(fs.existsSync(path.join(strictRoot, ".rph", "live-audit", "latest.json"))).toBe(true);
+    } finally {
+      fs.rmSync(strictRoot, { recursive: true, force: true });
+    }
+  }, 15000);
+
   it("turns one product idea into a review-ready execution package", async () => {
     const result = await runCli(["productize", "AI 회의록을 액션아이템과 담당자 추적으로 바꾸는 SaaS"], { cwd: root });
 

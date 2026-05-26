@@ -1137,6 +1137,15 @@ describe("command parser and env validation", () => {
     expect(parsed.options.summary).toBe("first draft");
   });
 
+  it("accepts slash-command argv for live audit", () => {
+    const parsed = parseCli(["/live", "audit", "--strict", "--output", "reports/audit"]);
+
+    expect(parsed.command).toBe("live");
+    expect(parsed.subcommand).toBe("audit");
+    expect(parsed.options.strict).toBe(true);
+    expect(parsed.options.output).toBe("reports/audit");
+  });
+
   it("routes operator workspace commands and json flags", () => {
     const workspace = parseCli(["/workspace", "--json"]);
     expect(workspace.command).toBe("workspace");
@@ -1471,6 +1480,7 @@ describe("command parser and env validation", () => {
     expect(output).toContain("rph start");
     expect(output).toContain("rph setup auto --live");
     expect(output).toContain("rph live ai:openai");
+    expect(output).toContain("rph live audit");
     expect(output).toContain("rph status");
     expect(output).toContain("rph \"what should I do next?\"");
     expect(output).toContain("Unknown bare text is treated as conversation");
@@ -1579,7 +1589,9 @@ describe("command parser and env validation", () => {
     expect(output).toContain("Live proof commands");
     expect(output).toContain("rph live ai:openai");
     expect(output).toContain("rph live target mcp:github");
+    expect(output).toContain("rph live audit [--strict] [--output <path>]");
     expect(output).toContain("Runtime slash form:");
+    expect(output).toContain("/live audit");
   });
 
   it("prints live target usage without requiring internal script names", async () => {
@@ -1592,6 +1604,121 @@ describe("command parser and env validation", () => {
     expect(output).toContain("Live proof commands");
     expect(output).toContain("rph live ai:openai");
     expect(output).toContain("/live ai:openai");
+    expect(output).toContain("rph live audit [--strict] [--output <path>]");
+    expect(output).not.toContain("pnpm run live:audit");
+  });
+
+  it("writes a top-layer live audit without treating audit completion as release readiness", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.endsWith("/models")) {
+        return new Response(JSON.stringify({ data: [{ id: "gpt-5.4" }] }), { status: 200 });
+      }
+      if (target.endsWith("/responses")) {
+        return new Response(JSON.stringify({ output: [], usage: { input_tokens: 4, output_tokens: 0 } }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ error: { message: `unexpected ${target}` } }), { status: 500 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await withProcessEnv({
+      OPENAI_API_KEY: "sk-test-live-audit-secret",
+      OPENAI_BASE_URL: "https://api.openai.com/v1",
+      OPENAI_MODEL: "gpt-5.4",
+      ANTHROPIC_API_KEY: undefined,
+      GEMINI_API_KEY: undefined,
+      LOCAL_AI_BASE_URL: undefined,
+      LOCAL_AI_MODEL: undefined,
+      NOTION_TOKEN: undefined,
+      NOTION_PARENT_PAGE_ID: undefined,
+      NOTION_WORKSPACE_ID: undefined,
+      GITHUB_TOKEN: undefined,
+      GH_TOKEN: undefined,
+      GITHUB_TOKEN_SOURCE: undefined,
+      GITHUB_OWNER: undefined,
+      GITHUB_REPO: undefined,
+      FIGMA_TOKEN: undefined,
+      FIGMA_FILE_ID: undefined,
+      STITCH_API_KEY: undefined
+    }, async () => {
+      const ok = await runParsedCommand(root, parseCli(["live", "audit"]));
+
+      expect(ok).toBe(true);
+      expect(process.exitCode).toBe(0);
+      const output = logSpy.mock.calls.flat().join("\n");
+      expect(output).toContain("Live credential audit");
+      expect(output).toContain("audit complete");
+      expect(output).toContain("- release readiness: no");
+      expect(output).toContain("release gate: blocked");
+      expect(output).toContain("ai:openai status=failed");
+      expect(output).not.toContain("sk-test-live-audit-secret");
+
+      const auditPath = path.join(root, ".rph", "live-audit", "latest.json");
+      const markdownPath = path.join(root, ".rph", "live-audit", "latest.md");
+      expect(fs.existsSync(auditPath)).toBe(true);
+      expect(fs.existsSync(markdownPath)).toBe(true);
+      const auditText = fs.readFileSync(auditPath, "utf8");
+      const audit = JSON.parse(auditText) as {
+        schema: string;
+        summary: { releaseReady: boolean; failed: number; skipped: number };
+        failedTargets: string[];
+      };
+      expect(audit.schema).toBe("rph-live-audit-v0");
+      expect(audit.summary.releaseReady).toBe(false);
+      expect(audit.summary.failed).toBeGreaterThanOrEqual(1);
+      expect(audit.summary.skipped).toBeGreaterThan(0);
+      expect(audit.failedTargets).toContain("ai:openai");
+      expect(auditText).not.toContain("sk-test-live-audit-secret");
+      expect(fs.readFileSync(markdownPath, "utf8")).toContain("release_readiness: no");
+    });
+  });
+
+  it("uses strict top-layer live audit as a failing release gate", async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.endsWith("/models")) {
+        return new Response(JSON.stringify({ data: [{ id: "gpt-5.4" }] }), { status: 200 });
+      }
+      if (target.endsWith("/responses")) {
+        return new Response(JSON.stringify({ output: [], usage: { input_tokens: 4, output_tokens: 0 } }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ error: { message: `unexpected ${target}` } }), { status: 500 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await withProcessEnv({
+      OPENAI_API_KEY: "sk-test-live-audit-secret",
+      OPENAI_BASE_URL: "https://api.openai.com/v1",
+      OPENAI_MODEL: "gpt-5.4",
+      ANTHROPIC_API_KEY: undefined,
+      GEMINI_API_KEY: undefined,
+      LOCAL_AI_BASE_URL: undefined,
+      LOCAL_AI_MODEL: undefined,
+      NOTION_TOKEN: undefined,
+      NOTION_PARENT_PAGE_ID: undefined,
+      NOTION_WORKSPACE_ID: undefined,
+      GITHUB_TOKEN: undefined,
+      GH_TOKEN: undefined,
+      GITHUB_TOKEN_SOURCE: undefined,
+      GITHUB_OWNER: undefined,
+      GITHUB_REPO: undefined,
+      FIGMA_TOKEN: undefined,
+      FIGMA_FILE_ID: undefined,
+      STITCH_API_KEY: undefined
+    }, async () => {
+      const ok = await runParsedCommand(root, parseCli(["live", "audit", "--strict"]));
+
+      expect(ok).toBe(true);
+      expect(process.exitCode).toBe(1);
+      const auditPath = path.join(root, ".rph", "live-audit", "latest.json");
+      const audit = JSON.parse(fs.readFileSync(auditPath, "utf8")) as {
+        strict: boolean;
+        summary: { releaseReady: boolean };
+      };
+      expect(audit.strict).toBe(true);
+      expect(audit.summary.releaseReady).toBe(false);
+    });
   });
 
   it("prints package version from version command", async () => {

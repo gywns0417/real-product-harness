@@ -169,6 +169,7 @@ assertIncludes(initFile, "function /pm() { command rph /pm \"$@\"; }", "init.sh"
 assertIncludes(initFile, "function /agent() { command rph /agent \"$@\"; }", "init.sh");
 assertIncludes(initFile, "function /ai() { command rph /ai \"$@\"; }", "init.sh");
 assertIncludes(initFile, "function /mcp() { command rph /mcp \"$@\"; }", "init.sh");
+assertIncludes(initFile, "function /live() { command rph /live \"$@\"; }", "init.sh");
 assertIncludes(initFile, "function /docs() { command rph /docs \"$@\"; }", "init.sh");
 assertIncludes(initFile, "function /workspace() { command rph /workspace \"$@\"; }", "init.sh");
 assertIncludes(initFile, "function /doctor() { command rph /doctor \"$@\"; }", "init.sh");
@@ -181,6 +182,7 @@ assertIncludes(completion, "help version update shell runtime init status worksp
 assertIncludes(completion, "setup_cmds=(auto repair detect apply check ai mcp custom)", "completion.zsh");
 assertIncludes(completion, "doctor_cmds=(status install shell)", "completion.zsh");
 assertIncludes(completion, "agent_cmds=(status roles catalog discover search import install use activate bind bindings unbind session journal replay handoffs actions action-approvals intents confirm-intent dismiss-intent lanes run continue recover pool worker claim heartbeat ack complete dead-letter approve-action reject-action clear reset)", "completion.zsh");
+assertIncludes(completion, "live_cmds=(audit target ai:openai ai:anthropic ai:gemini mcp:stitch mcp:github mcp:notion mcp:figma)", "completion.zsh");
 assertIncludes(completion, "github_cmds=(create-repo setup-labels setup-templates setup-branches create-issue create-pr sync release-plan release-approve hotfix-plan)", "completion.zsh");
 assertIncludes(profile, "# existing shell config", "shell profile");
 assertIncludes(profile, "# >>> rph init >>>", "shell profile");
