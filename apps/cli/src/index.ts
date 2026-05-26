@@ -7479,7 +7479,9 @@ async function runAutoSetupWizard(
       Object.assign(envValues, await collectAiEnvValues(prompter, providerId, fromEnv));
     }
     const selectedMcp = await chooseMcpServers(prompter, config, options, projectRoot);
-    for (const serverId of selectedMcp) {
+    const customMcp = await maybeRegisterCustomMcpServersDuringAutoSetup(prompter, projectRoot, selectedMcp, options, fromEnv);
+    const allSelectedMcp = uniqueConnectionIds([...selectedMcp, ...customMcp]);
+    for (const serverId of allSelectedMcp) {
       Object.assign(envValues, await collectMcpEnvValues(prompter, serverId, projectRoot, fromEnv));
     }
     const changedCustomSettings = await configureSetupCustomSettings(prompter, projectRoot, options, fromEnv);
@@ -7501,7 +7503,7 @@ async function runAutoSetupWizard(
     if (selectedAi[0]) {
       config = setHarnessConfigValue(projectRoot, "ai.active", selectedAi[0]);
     }
-    for (const serverId of selectedMcp) {
+    for (const serverId of allSelectedMcp) {
       config = setMcpServerEnabled(projectRoot, serverId, true);
     }
     config = syncHarnessConfigFromEnv(projectRoot);
@@ -7512,7 +7514,7 @@ async function runAutoSetupWizard(
       projectRoot,
       config,
       selectedAi,
-      selectedMcp,
+      allSelectedMcp,
       options,
       prompter,
       !fromEnv
@@ -7901,10 +7903,88 @@ async function chooseMcpServers(
   console.log("");
   console.log("2. MCP 선택");
   console.log("  notion, github, figma, stitch 또는 추가된 custom id를 쉼표로 입력하세요.");
-  console.log("  새 protocol MCP 서버는 `/setup mcp add <id> --url <https://host/mcp>`로 먼저 등록합니다.");
+  console.log("  built-in 선택 뒤 custom protocol MCP 서버를 이 wizard 안에서 바로 추가할 수 있습니다.");
   console.log("  all = 전체, none = 건너뛰기");
   const answer = await askText(prompter, "MCP", defaultServers.join(","));
   return parseMcpSelection(answer, config);
+}
+
+async function maybeRegisterCustomMcpServersDuringAutoSetup(
+  prompter: SetupPrompter,
+  projectRoot: string,
+  selectedMcp: McpServerId[],
+  options: Record<string, string | boolean>,
+  fromEnv: boolean
+): Promise<McpServerId[]> {
+  if (fromEnv) {
+    return [];
+  }
+  const config = syncHarnessConfigFromEnv(projectRoot);
+  const registered: McpServerId[] = [];
+  const selectedUnknownIds = selectedMcp.filter((id) => !config.mcpServers[id]);
+  for (const id of selectedUnknownIds) {
+    console.log("");
+    console.log("2a. Custom protocol MCP 추가");
+    console.log(`선택한 MCP id가 아직 등록되지 않았습니다: ${id}`);
+    registered.push(await registerCustomMcpServerDuringAutoSetup(prompter, projectRoot, id));
+  }
+  if (optionString(options, "mcp") !== undefined) {
+    return registered;
+  }
+  while (true) {
+    console.log("");
+    console.log("2a. Custom protocol MCP 추가");
+    const shouldAdd = parseSetupBoolean(await askText(prompter, "Add custom MCP", "no")) === "true";
+    if (!shouldAdd) {
+      return registered;
+    }
+
+    registered.push(await registerCustomMcpServerDuringAutoSetup(prompter, projectRoot));
+  }
+}
+
+async function registerCustomMcpServerDuringAutoSetup(
+  prompter: SetupPrompter,
+  projectRoot: string,
+  preselectedId?: McpServerId
+): Promise<McpServerId> {
+  const id = preselectedId ?? parseMcpServerId(await askRequiredText(prompter, "Custom MCP id"));
+  const name = await askOptionalText(prompter, "Custom MCP name");
+  const url = await askRequiredText(prompter, "Custom MCP URL");
+  const authMode = parseMcpAuthMode(await askText(prompter, "Custom MCP auth mode", "bearer")) ?? "bearer";
+  const authEnvKey = authMode === "none" ? undefined : await askOptionalText(prompter, "Custom MCP auth env");
+  const proofMode = parseSetupMcpProofMode(await askText(prompter, "Custom MCP proof mode", "tools/list"));
+  const probeTool = proofMode === "tools/call" ? await askRequiredText(prompter, "Probe tool") : undefined;
+  const probeArgs = proofMode === "tools/call"
+    ? parseJsonObjectOption(await askOptionalText(prompter, "Probe args JSON"))
+    : undefined;
+
+  const next = addCustomProtocolMcpServer(projectRoot, {
+    id,
+    name: name || undefined,
+    url,
+    authMode,
+    authEnvKey: authEnvKey || undefined,
+    protocolToolCallProbe: probeTool
+      ? {
+          toolName: probeTool,
+          arguments: probeArgs
+        }
+      : undefined,
+    enabled: true
+  });
+  const server = next.mcpServers[id];
+  if (!server) {
+    throw new Error(`custom MCP server was not saved: ${id}`);
+  }
+  console.log(`Custom protocol MCP server 추가: ${server.id}`);
+  console.log(`- target: ${server.url}`);
+  console.log(`- auth: ${server.authMode ?? "none"}${server.authEnvKey ? ` env=${server.authEnvKey}` : ""}`);
+  console.log(`- proof: ${server.protocolReadiness ?? "tools/list"}`);
+  if (server.protocolToolCallProbe?.toolName) {
+    console.log(`- probe tool: ${server.protocolToolCallProbe.toolName}`);
+  }
+  return server.id;
 }
 
 async function collectAiEnvValues(
@@ -8102,6 +8182,20 @@ async function askText(prompter: SetupPrompter, label: string, defaultValue: str
   const suffix = defaultValue ? ` (${defaultValue})` : "";
   const answer = (await prompter.question(`${label}${suffix}: `)).trim();
   return answer || defaultValue;
+}
+
+async function askOptionalText(prompter: SetupPrompter, label: string): Promise<string> {
+  return (await prompter.question(`${label} (optional): `)).trim();
+}
+
+async function askRequiredText(prompter: SetupPrompter, label: string): Promise<string> {
+  while (true) {
+    const answer = (await prompter.question(`${label}: `)).trim();
+    if (answer) {
+      return answer;
+    }
+    console.log(`${label} is required.`);
+  }
 }
 
 async function askEnvValue(prompter: SetupPrompter, key: string, defaultValue: string): Promise<string> {
@@ -9505,6 +9599,17 @@ function parseMcpAuthMode(value: string | undefined): "none" | "x-goog-api-key" 
     return "x-goog-api-key";
   }
   throw new Error(`invalid MCP auth mode: ${value}. allowed: bearer, x-goog-api-key, none`);
+}
+
+function parseSetupMcpProofMode(value: string): "tools/list" | "tools/call" {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "tools/list" || normalized === "list" || normalized === "1") {
+    return "tools/list";
+  }
+  if (normalized === "tools/call" || normalized === "call" || normalized === "2") {
+    return "tools/call";
+  }
+  throw new Error(`invalid MCP proof mode: ${value}. allowed: tools/list, tools/call`);
 }
 
 function parseJsonObjectOption(value: string | undefined): Record<string, unknown> | undefined {

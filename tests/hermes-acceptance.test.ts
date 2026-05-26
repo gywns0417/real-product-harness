@@ -6010,6 +6010,102 @@ describe("Hermes-like CLI contracts", () => {
     }
   }, 10000);
 
+  it("onboards a custom protocol MCP server from interactive /setup auto --live without leaking the raw secret", async () => {
+    const uninitializedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rph-runtime-setup-auto-custom-mcp-"));
+    try {
+      const result = await runCli(["shell"], {
+        cwd: uninitializedRoot,
+        env: withoutProviderEnv(),
+        stdinChunks: [
+          { text: "/setup auto --ai none --live\n", delayMs: 0 },
+          { text: "none\n", delayMs: 600 },
+          { text: "yes\n", delayMs: 400 },
+          { text: "custom-echo\n", delayMs: 400 },
+          { text: "\n", delayMs: 400 },
+          { text: "https://mcp.example.test/echo\n", delayMs: 400 },
+          { text: "bearer\n", delayMs: 400 },
+          { text: "CUSTOM_ECHO_MCP_TOKEN\n", delayMs: 400 },
+          { text: "tools/call\n", delayMs: 400 },
+          { text: "echo\n", delayMs: 400 },
+          { text: "{\"text\":\"acceptance-mcp-ok\"}\n", delayMs: 400 },
+          { text: "no\n", delayMs: 400 },
+          { text: "custom-secret-from-wizard\n", delayMs: 400 },
+          { text: "/exit\n", delayMs: 500 }
+        ],
+        preloadFetchMcpRuntime: true
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("RPH Setup Auto");
+      expect(result.stdout).toContain("2a. Custom protocol MCP 추가");
+      expect(result.stdout).toContain("custom-echo");
+      expect(result.stdout).toContain("mcp:custom-echo trust=protocol-ready:protocol-tool-call");
+      expect(result.stdout).toContain("detail=mcp.tools.call target_id=custom-echo:echo verified_by=protocol-tool-call");
+      expect(result.stdout).toContain("setup live check passed");
+      expect(result.stdout).not.toContain("custom-secret-from-wizard");
+
+      const envFile = fs.readFileSync(path.join(uninitializedRoot, ".env"), "utf8");
+      expect(envFile).toContain("CUSTOM_ECHO_MCP_TOKEN=custom-secret-from-wizard");
+
+      const configFile = fs.readFileSync(path.join(uninitializedRoot, ".rph", "config.json"), "utf8");
+      expect(configFile).toContain("\"custom-echo\"");
+      expect(configFile).toContain("\"protocolReadiness\": \"tools/call\"");
+      expect(configFile).toContain("\"toolName\": \"echo\"");
+      expect(configFile).not.toContain("custom-secret-from-wizard");
+
+      const mcpConfigFile = fs.readFileSync(path.join(uninitializedRoot, ".mcp", "config.json"), "utf8");
+      expect(mcpConfigFile).toContain("\"custom-echo\"");
+      expect(mcpConfigFile).toContain("\"envKey\": \"CUSTOM_ECHO_MCP_TOKEN\"");
+      expect(mcpConfigFile).not.toContain("custom-secret-from-wizard");
+
+      const reportFile = fs.readFileSync(path.join(uninitializedRoot, ".rph", "connections", "latest.json"), "utf8");
+      expect(reportFile).toContain("\"id\": \"custom-echo\"");
+      expect(reportFile).toContain("\"provenStage\": \"protocol-tool-call\"");
+      expect(reportFile).not.toContain("custom-secret-from-wizard");
+    } finally {
+      fs.rmSync(uninitializedRoot, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it("registers an unknown --mcp id inline during /setup auto --live", async () => {
+    const uninitializedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rph-runtime-setup-auto-mcp-option-"));
+    try {
+      const result = await runCli(["shell"], {
+        cwd: uninitializedRoot,
+        env: withoutProviderEnv(),
+        stdinChunks: [
+          { text: "/setup auto --ai none --mcp custom-flag --live\n", delayMs: 0 },
+          { text: "\n", delayMs: 600 },
+          { text: "https://mcp.example.test/echo\n", delayMs: 400 },
+          { text: "bearer\n", delayMs: 400 },
+          { text: "CUSTOM_FLAG_MCP_TOKEN\n", delayMs: 400 },
+          { text: "tools/list\n", delayMs: 400 },
+          { text: "custom-flag-secret\n", delayMs: 400 },
+          { text: "/exit\n", delayMs: 500 }
+        ],
+        preloadFetchMcpRuntime: true
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("선택한 MCP id가 아직 등록되지 않았습니다: custom-flag");
+      expect(result.stdout).toContain("mcp:custom-flag trust=protocol-ready:protocol-tools-list");
+      expect(result.stdout).toContain("setup live check passed");
+      expect(result.stdout).not.toContain("custom-flag-secret");
+
+      const envFile = fs.readFileSync(path.join(uninitializedRoot, ".env"), "utf8");
+      expect(envFile).toContain("CUSTOM_FLAG_MCP_TOKEN=custom-flag-secret");
+
+      const reportFile = fs.readFileSync(path.join(uninitializedRoot, ".rph", "connections", "latest.json"), "utf8");
+      expect(reportFile).toContain("\"id\": \"custom-flag\"");
+      expect(reportFile).toContain("\"provenStage\": \"protocol-tools-list\"");
+      expect(reportFile).not.toContain("custom-flag-secret");
+    } finally {
+      fs.rmSync(uninitializedRoot, { recursive: true, force: true });
+    }
+  }, 15000);
+
   it("refreshes latest live proof after mcp tools bind updates read-only contracts", async () => {
     const uninitializedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rph-mcp-tools-bind-refresh-"));
     try {
