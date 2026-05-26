@@ -718,7 +718,7 @@ export async function runParsedCommand(
         await handleAsk(projectRoot, [parsed.subcommand, ...parsed.args].filter((item): item is string => Boolean(item)), parsed.options);
         break;
       case "agent":
-        await handleAgentControlCommand(projectRoot, parsed.subcommand, parsed.args, parsed.options);
+        await handleAgentControlCommand(projectRoot, parsed.subcommand, parsed.args, parsed.options, context);
         break;
       case "ai":
         await handleAi(projectRoot, parsed.subcommand, parsed.args, parsed.options);
@@ -815,6 +815,7 @@ async function runRuntimeShell(initialRoot: string): Promise<void> {
     console.log("fallback: /pm start");
   }
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const setupPrompter = setupPrompterFromRuntimeReadline(rl);
 
   try {
     rl.setPrompt(runtimePrompt(projectRoot));
@@ -834,7 +835,7 @@ async function runRuntimeShell(initialRoot: string): Promise<void> {
 
       let ok = false;
       try {
-        const control = await handleRuntimeControlCommand(projectRoot, line);
+        const control = await handleRuntimeControlCommand(projectRoot, line, setupPrompter);
         if (control.handled) {
           projectRoot = control.projectRoot;
           if (control.clearChat) {
@@ -845,7 +846,7 @@ async function runRuntimeShell(initialRoot: string): Promise<void> {
         }
 
         if (!line.startsWith("/")) {
-          ok = await handleRuntimeAgentInput(projectRoot, sessionId, chatHistory, line);
+          ok = await handleRuntimeAgentInput(projectRoot, sessionId, chatHistory, line, setupPrompter);
           continue;
         }
 
@@ -854,7 +855,7 @@ async function runRuntimeShell(initialRoot: string): Promise<void> {
           parsed.options.yes = true;
           console.log("runtime init은 비대화형 기본값으로 실행합니다. 필요한 값은 /init --project-name <name>처럼 넘기세요.");
         }
-        ok = await runParsedCommand(projectRoot, parsed, false, { prompter: rl, runtimeShell: true });
+        ok = await runParsedCommand(projectRoot, parsed, false, { prompter: setupPrompter, runtimeShell: true });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         console.error(`[error] ${message}`);
@@ -895,7 +896,8 @@ function isExitCommand(line: string): boolean {
 
 async function handleRuntimeControlCommand(
   projectRoot: string,
-  line: string
+  line: string,
+  prompter?: SetupPrompter
 ): Promise<{ handled: true; projectRoot: string; clearChat?: boolean } | { handled: false; projectRoot: string }> {
   const argv = parseCommandLine(line);
   const [command, target, ...rest] = argv;
@@ -907,7 +909,7 @@ async function handleRuntimeControlCommand(
     return { handled: true, projectRoot };
   }
   if (command === "/chat" || command === "/agent") {
-    return handleRuntimeAgentCommand(projectRoot, target, rest);
+    return handleRuntimeAgentCommand(projectRoot, target, rest, prompter);
   }
   if (!target) {
     console.log("usage: /project <path>");
@@ -926,12 +928,13 @@ async function handleRuntimeControlCommand(
 async function handleRuntimeAgentCommand(
   projectRoot: string,
   subcommand: string | undefined,
-  args: string[]
+  args: string[],
+  prompter?: SetupPrompter
 ): Promise<{ handled: true; projectRoot: string; clearChat?: boolean }> {
   const result = await handleAgentControlCommand(projectRoot, subcommand, args, {
     ...parseRuntimeAgentOptions(args),
     commandSurface: "slash"
-  });
+  }, prompter ? { prompter, runtimeShell: true } : undefined);
   return { handled: true, projectRoot, clearChat: result.clearChat };
 }
 
@@ -939,7 +942,8 @@ async function handleAgentControlCommand(
   projectRoot: string,
   subcommand: string | undefined,
   args: string[],
-  options: Record<string, string | boolean>
+  options: Record<string, string | boolean>,
+  context: CommandContext = {}
 ): Promise<{ clearChat?: boolean }> {
   const config = loadRuntimeChatConfig(projectRoot);
   switch (subcommand) {
@@ -1069,7 +1073,8 @@ async function handleAgentControlCommand(
       }
       await confirmAndRunRuntimeIntent(projectRoot, id, {
         confirmedBy: optionString(options, "by") ?? "user",
-        force: optionBool(options, "force")
+        force: optionBool(options, "force"),
+        commandContext: context
       });
       return {};
     }
@@ -2615,7 +2620,7 @@ function printRuntimeIntents(projectRoot: string): void {
 async function confirmAndRunRuntimeIntent(
   projectRoot: string,
   id: string,
-  options: { confirmedBy: string; force?: boolean }
+  options: { confirmedBy: string; force?: boolean; commandContext?: CommandContext }
 ): Promise<boolean> {
   if (!isRuntimeProjectInitialized(projectRoot)) {
     console.log("intent blocked: project is not initialized");
@@ -2660,7 +2665,8 @@ async function confirmAndRunRuntimeIntent(
   }, {
     sessionId: record.sessionId,
     executeLocalMutations: true,
-    surface: "execution"
+    surface: "execution",
+    commandContext: options.commandContext
   });
   recordRuntimeIntentApplied(projectRoot, record.id, runtimeIntentAppliedOutcome(record, ok));
   return ok;
@@ -4184,6 +4190,26 @@ function manualAgentWorkerId(): string {
   return "manual-runtime-agent";
 }
 
+function setupPrompterFromRuntimeReadline(rl: {
+  question(query: string): Promise<string>;
+  pause?: () => void;
+  resume?: () => void;
+}): SetupPrompter {
+  return {
+    question: async (query, options) => {
+      if (!options?.secret) {
+        return rl.question(query);
+      }
+      rl.pause?.();
+      try {
+        return await askHiddenText(query);
+      } finally {
+        rl.resume?.();
+      }
+    }
+  };
+}
+
 function agentWorkerIdFromOptions(options: Record<string, string | boolean>): string {
   return optionString(options, "worker-id") ?? manualAgentWorkerId();
 }
@@ -4219,17 +4245,49 @@ function appendRuntimeLog(projectRoot: string, sessionId: string, command: strin
   }
 }
 
+const ephemeralRuntimeSetupIntents = new Map<string, RuntimeActionPlan>();
+
+function ephemeralRuntimeSetupIntentKey(projectRoot: string, sessionId: string): string {
+  return `${path.resolve(projectRoot)}\0${sessionId}`;
+}
+
+function rememberEphemeralRuntimeSetupIntent(projectRoot: string, sessionId: string, plan: RuntimeActionPlan): void {
+  ephemeralRuntimeSetupIntents.set(ephemeralRuntimeSetupIntentKey(projectRoot, sessionId), plan);
+}
+
+function takeEphemeralRuntimeSetupIntent(projectRoot: string, sessionId: string): RuntimeActionPlan | undefined {
+  const key = ephemeralRuntimeSetupIntentKey(projectRoot, sessionId);
+  const plan = ephemeralRuntimeSetupIntents.get(key);
+  ephemeralRuntimeSetupIntents.delete(key);
+  return plan;
+}
+
 async function handleRuntimeAgentInput(
   projectRoot: string,
   sessionId: string,
   chatHistory: AiChatMessage[],
-  userInput: string
+  userInput: string,
+  prompter?: SetupPrompter
 ): Promise<boolean> {
-  const confirmedIntent = await tryConfirmRuntimeIntentFromPlainChat(projectRoot, sessionId, userInput);
+  const confirmedIntent = await tryConfirmRuntimeIntentFromPlainChat(projectRoot, sessionId, userInput, "runtime-chat", prompter ? { prompter, runtimeShell: true } : undefined);
   if (confirmedIntent !== null) {
     return confirmedIntent;
   }
-  const plan = createRuntimePlan(projectRoot, userInput);
+  let plan = createRuntimePlan(projectRoot, userInput);
+  const hasReadyAi = safeHasReadyAiProvider(projectRoot);
+  const wasInitialized = isRuntimeProjectInitialized(projectRoot);
+  if (!hasReadyAi && !wasInitialized && plan.kind === "chat") {
+    plan = createRuntimeSetupOnboardingPlan();
+    rememberEphemeralRuntimeSetupIntent(projectRoot, sessionId, plan);
+    printExecutionPlanCard(userInput, plan, {
+      confirmCommand: "confirm 또는 이 계획 실행해줘"
+    });
+    console.log(`suggested control: ${plan.command}`);
+    console.log("run explicitly: type the suggested control when you want to execute it.");
+    console.log("intent pending: setup bootstrap is kept in this shell until confirmed.");
+    console.log("confirm exactly: confirm 또는 이 계획 실행해줘");
+    return true;
+  }
   if (isRuntimeProjectInitialized(projectRoot)) {
     recordRuntimeSessionEvent(projectRoot, sessionId, {
       kind: "plan",
@@ -4255,6 +4313,9 @@ async function handleRuntimeAgentInput(
       console.log(`intent saved: ${intent.id}`);
       console.log(`confirm: /agent confirm-intent ${intent.id}`);
       console.log(`dismiss: /agent dismiss-intent ${intent.id}`);
+      if (plan.workflowTarget === "setup") {
+        console.log("confirm exactly: confirm 또는 이 계획 실행해줘");
+      }
     }
     return true;
   }
@@ -4264,7 +4325,7 @@ async function handleRuntimeAgentInput(
   if (plan.kind !== "chat" && plan.command) {
     console.log("run explicitly: type the suggested control when you want to execute it.");
   }
-  if (!safeHasReadyAiProvider(projectRoot)) {
+  if (!hasReadyAi) {
     printMissingAiAgentGuidance(projectRoot, plan.command, "slash");
     return false;
   }
@@ -4540,14 +4601,42 @@ async function tryConfirmRuntimeIntentFromPlainChat(
   projectRoot: string,
   sessionId: string,
   userInput: string,
-  confirmedBy = "runtime-chat"
+  confirmedBy = "runtime-chat",
+  commandContext?: CommandContext
 ): Promise<boolean | null> {
   const confirmMode = plainRuntimeConfirmMode(userInput);
   if (!confirmMode) {
     return null;
   }
   if (!isRuntimeProjectInitialized(projectRoot)) {
-    return null;
+    const ephemeralSetup = takeEphemeralRuntimeSetupIntent(projectRoot, sessionId);
+    if (!ephemeralSetup) {
+      return null;
+    }
+    ensureRuntimeProjectForSetupIntent(projectRoot, sessionId);
+    const intent = recordRuntimePlanIntent(projectRoot, sessionId, ephemeralSetup);
+    if (!intent) {
+      return false;
+    }
+    rememberPresentedIntent(projectRoot, sessionId, ephemeralSetup, intent);
+    recordRuntimeSessionEvent(projectRoot, sessionId, {
+      kind: "command",
+      message: `plain confirm: /agent confirm-intent ${intent.id}`,
+      ok: true
+    });
+    console.log(`plain confirm: /agent confirm-intent ${intent.id}`);
+    const ok = await confirmAndRunRuntimeIntent(projectRoot, intent.id, {
+      confirmedBy,
+      commandContext
+    });
+    if (ok && confirmMode === "confirm-and-continue") {
+      console.log("plain confirm continue: running safe local orchestration loop");
+      await runAgentOrchestrationLoop(projectRoot, sessionId, {
+        maxSteps: loopMaxSteps({}),
+        concurrency: loopConcurrency({})
+      });
+    }
+    return ok;
   }
   const session = loadRuntimeSession(projectRoot);
   const pendingExternal = session?.pendingExternalActionId
@@ -4590,7 +4679,8 @@ async function tryConfirmRuntimeIntentFromPlainChat(
   });
   console.log(`plain confirm: /agent confirm-intent ${confirmable.id}`);
   const ok = await confirmAndRunRuntimeIntent(projectRoot, confirmable.id, {
-    confirmedBy
+    confirmedBy,
+    commandContext
   });
   if (ok && confirmMode === "confirm-and-continue") {
     console.log("plain confirm continue: running safe local orchestration loop");
@@ -5695,6 +5785,7 @@ async function runAgentCommandProposal(
     executeLocalMutations?: boolean;
     sessionId?: string;
     surface?: "runtime-chat" | "execution";
+    commandContext?: CommandContext;
   } = {}
 ): Promise<boolean> {
   if (!proposal) {
@@ -5801,7 +5892,7 @@ async function runAgentCommandProposal(
     console.log(`agent action: ${proposal.command}`);
     console.log("execution-policy: ask --execute allowed local workflow command");
     const parsed = parseCli(parseCommandLine(proposal.command));
-    return runParsedCommand(projectRoot, parsed, false);
+    return runParsedCommand(projectRoot, parsed, false, options.commandContext);
   }
   if (options.executeLocalMutations && !localMutation) {
     if (isMcpCallCommand(proposal.command)) {
@@ -6754,6 +6845,7 @@ function isLocalAgentCommand(command: string): boolean {
       case "status":
       case "next":
       case "help":
+      case "setup":
       case "productize":
       case "pm":
       case "pd":
@@ -6832,6 +6924,32 @@ function createRuntimePlan(projectRoot: string, userInput: string) {
     recommendedCommand: recommended,
     hasConfiguredAi
   });
+}
+
+function createRuntimeSetupOnboardingPlan(): RuntimeActionPlan {
+  return {
+    kind: "start-workflow",
+    confidence: 0.94,
+    reason: "AI provider missing; start guided setup before plain chat",
+    command: "/setup auto --live --mcp none",
+    workflowTarget: "setup",
+    safeToAutoRun: true,
+    steps: [
+      "Initialize the current folder as an RPH project if needed.",
+      "Collect one AI provider credential in the runtime wizard.",
+      "Run live readiness checks and return to plain text agent chat."
+    ],
+    createdAt: new Date().toISOString()
+  };
+}
+
+function ensureRuntimeProjectForSetupIntent(projectRoot: string, sessionId: string): void {
+  if (!isRuntimeProjectInitialized(projectRoot)) {
+    const projectName = path.basename(projectRoot) || "RPH Project";
+    initProject(projectRoot, { projectName });
+    console.log(`RPH project initialized: ${projectName}`);
+  }
+  ensureRuntimeSession(projectRoot, sessionId);
 }
 
 function readPipedStdin(): string {

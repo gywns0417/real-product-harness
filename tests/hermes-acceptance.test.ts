@@ -6259,6 +6259,101 @@ describe("Hermes-like CLI contracts", () => {
     }
   }, 15000);
 
+  it("turns first plain text into a setup intent and launches setup in the same runtime after confirm", async () => {
+    const uninitializedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rph-runtime-setup-intent-"));
+    try {
+      const result = await runCli(["shell"], {
+        cwd: uninitializedRoot,
+        env: withoutProviderEnv(),
+        stdinChunks: [
+          { text: "AI 회의록 SaaS를 만들고 싶어\n", delayMs: 0 },
+          { text: "confirm\n", delayMs: 200 },
+          { text: "1\n", delayMs: 200 },
+          { text: "test-openai-from-confirm\n", delayMs: 200 },
+          { text: "\n", delayMs: 50 },
+          { text: "https://example.invalid/v1\n", delayMs: 50 },
+          { text: "이제 연결됐으면 짧게 답해줘\n", delayMs: 350 },
+          { text: "/exit\n", delayMs: 250 }
+        ],
+        preloadFetchOpenAiConnectionSuccess: true
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("Fresh workspace.");
+      expect(result.stdout).toContain("Execution plan");
+      expect(result.stdout).toContain("goal: Connect AI and MCP providers until the harness can prove readiness.");
+      expect(result.stdout).toContain("suggested control: /setup auto --live --mcp none");
+      expect(result.stdout).toContain("confirm exactly: confirm 또는 이 계획 실행해줘");
+      expect(result.stdout).toContain("plain confirm: /agent confirm-intent");
+      expect(result.stdout).toContain("intent confirmed:");
+      expect(result.stdout).toContain("agent action: /setup auto --live --mcp none");
+      expect(result.stdout).toContain("RPH Setup Auto");
+      expect(result.stdout).toContain(".env 저장 완료");
+      expect(result.stdout).toContain("setup live check passed");
+      expect(result.stdout).toContain("Connected");
+      expect(result.stdout).toContain("- AI: openai");
+      expect(result.stdout).toContain("이제 일반 텍스트를 입력하면 연결된 AI agent와 대화합니다.");
+      expect(result.stdout).toContain("OK");
+      expect(result.stdout).toContain("RPH runtime 종료");
+      expect(result.stdout).not.toContain("AI agent is not connected yet.");
+      expect(result.stdout).not.toContain("test-openai-from-confirm");
+
+      const envFile = fs.readFileSync(path.join(uninitializedRoot, ".env"), "utf8");
+      expect(envFile).toContain("OPENAI_API_KEY=test-openai-from-confirm");
+      expect(envFile).toContain("OPENAI_BASE_URL=https://example.invalid/v1");
+      const intents = JSON.parse(fs.readFileSync(path.join(uninitializedRoot, ".rph", "runtime", "intents.json"), "utf8")) as Array<{
+        command: string;
+        status: string;
+        confirmedBy?: string;
+      }>;
+      expect(intents).toHaveLength(1);
+      expect(intents[0]).toMatchObject({
+        command: "/setup auto --live --mcp none",
+        status: "confirmed",
+        confirmedBy: "runtime-chat"
+      });
+      const config = JSON.parse(fs.readFileSync(path.join(uninitializedRoot, ".rph", "config.json"), "utf8")) as {
+        activeAiProvider: string;
+        aiProviders: {
+          openai: {
+            configured: boolean;
+            enabled: boolean;
+          };
+        };
+      };
+      expect(config.activeAiProvider).toBe("openai");
+      expect(config.aiProviders.openai.configured).toBe(true);
+      expect(config.aiProviders.openai.enabled).toBe(true);
+    } finally {
+      fs.rmSync(uninitializedRoot, { recursive: true, force: true });
+    }
+  }, 20000);
+
+  it("does not persist an unconfirmed fresh plain setup bridge", async () => {
+    const uninitializedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rph-runtime-setup-ephemeral-"));
+    try {
+      const result = await runCli(["shell"], {
+        cwd: uninitializedRoot,
+        env: withoutProviderEnv(),
+        stdinChunks: [
+          { text: "sk-test-secret-should-not-persist\n", delayMs: 0 },
+          { text: "/exit\n", delayMs: 50 }
+        ]
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("Fresh workspace.");
+      expect(result.stdout).toContain("Execution plan");
+      expect(result.stdout).toContain("intent pending: setup bootstrap is kept in this shell until confirmed.");
+      expect(result.stdout).not.toContain("sk-test-secret-should-not-persist");
+      expect(fs.existsSync(path.join(uninitializedRoot, ".rph"))).toBe(false);
+    } finally {
+      fs.rmSync(uninitializedRoot, { recursive: true, force: true });
+    }
+  }, 10000);
+
   it("keeps one runtime shell session usable across setup, chat, status, chat, and explicit control", async () => {
     const uninitializedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rph-runtime-mixed-session-"));
     try {
