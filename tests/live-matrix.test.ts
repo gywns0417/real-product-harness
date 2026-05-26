@@ -320,7 +320,89 @@ describe("live matrix report integrity", () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("runs configured-only matrix through setup auto --from-env --live --allow-missing", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rph-live-matrix-configured-only-"));
+    try {
+      const scriptDir = path.join(root, "scripts");
+      const cliDir = path.join(root, "dist", "apps", "cli", "src");
+      const settingsDir = path.join(root, "dist", "packages", "core", "src");
+      const captureFile = path.join(root, "argv.json");
+      fs.mkdirSync(scriptDir, { recursive: true });
+      fs.mkdirSync(cliDir, { recursive: true });
+      fs.mkdirSync(settingsDir, { recursive: true });
+      fs.copyFileSync(path.resolve(__dirname, "..", "scripts", "live-matrix.mjs"), path.join(scriptDir, "live-matrix.mjs"));
+      fs.writeFileSync(path.join(settingsDir, "settings.js"), [
+        "module.exports = {",
+        "  AI_PROVIDER_DEFINITIONS: { openai: { id: 'openai' } },",
+        "  MCP_SERVER_DEFINITIONS: { stitch: { id: 'stitch', protocolReadiness: 'tools/call' } }",
+        "};"
+      ].join("\n"));
+      fs.writeFileSync(path.join(cliDir, "index.js"), [
+        "const fs = require('node:fs');",
+        "const path = require('node:path');",
+        `fs.writeFileSync(${JSON.stringify(captureFile)}, JSON.stringify(process.argv.slice(2)));`,
+        "const outDir = path.join(process.cwd(), '.rph', 'connections');",
+        "fs.mkdirSync(outDir, { recursive: true });",
+        `const report = ${JSON.stringify(createConfiguredOnlyMatrixReport())};`,
+        "fs.writeFileSync(path.join(outDir, 'latest.json'), JSON.stringify(report, null, 2));"
+      ].join("\n"));
+
+      const result = spawnSync(process.execPath, [
+        path.join(scriptDir, "live-matrix.mjs"),
+        "--configured-only"
+      ], {
+        cwd: root,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          RPH_TEST_CAPTURE_ARGV: captureFile
+        }
+      });
+      const argv = JSON.parse(fs.readFileSync(captureFile, "utf8")) as string[];
+
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("configured live matrix summary");
+      expect(result.stdout).toContain("live matrix passed");
+      expect(argv).toEqual([
+        "setup",
+        "auto",
+        "--from-env",
+        "--live",
+        "--allow-missing",
+        "--ai",
+        "all",
+        "--mcp",
+        "all"
+      ]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
+
+function createConfiguredOnlyMatrixReport() {
+  const checkedAt = "2026-01-01T00:00:00.000Z";
+  const checks = [
+    skippedCheck("ai", "openai", ["OPENAI_API_KEY"], "protocol-tool-call", true, checkedAt),
+    skippedCheck("mcp", "stitch", ["STITCH_API_KEY"], "protocol-tool-call", true, checkedAt)
+  ];
+  return {
+    checkedAt,
+    provenance: {
+      source: "live",
+      runner: "cli",
+      command: "setup auto --from-env --live --allow-missing --ai all --mcp all",
+      projectInitialized: true,
+      selectedTargets: checks.map((check) => `${check.kind}:${check.id}`),
+      checkedTargetCount: checks.length,
+      generatedAt: checkedAt
+    },
+    checks,
+    onboardingProof: checks.map((check) => proofFromCheck(check))
+  };
+}
 
 function createMatrixReport() {
   const checkedAt = "2026-01-01T00:00:00.000Z";

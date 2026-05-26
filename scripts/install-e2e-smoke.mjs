@@ -18,10 +18,12 @@ const configDir = path.join(homeDir, ".config", "rph");
 const profilePath = path.join(homeDir, ".zshrc");
 const projectDir = path.join(tmpRoot, "product");
 const slashProjectDir = path.join(tmpRoot, "slash-product");
+const topLevelProjectDir = path.join(tmpRoot, "top-level-product");
 
 fs.mkdirSync(homeDir, { recursive: true });
 fs.mkdirSync(projectDir, { recursive: true });
 fs.mkdirSync(slashProjectDir, { recursive: true });
+fs.mkdirSync(topLevelProjectDir, { recursive: true });
 fs.writeFileSync(profilePath, "# existing shell config\n", "utf8");
 
 copyCurrentWorktree(sourceRepo);
@@ -64,11 +66,12 @@ assertIncludes(init, `export PATH="${binDir}:$PATH"`, "init.sh");
 assertIncludes(init, "function /pm() { command rph /pm \"$@\"; }", "init.sh");
 assertIncludes(init, "function /agent() { command rph /agent \"$@\"; }", "init.sh");
 assertIncludes(init, "function /setup() { command rph /setup \"$@\"; }", "init.sh");
+assertIncludes(init, "function /home() { command rph /home \"$@\"; }", "init.sh");
 assertIncludes(init, "function /workspace() { command rph /workspace \"$@\"; }", "init.sh");
 assertIncludes(init, "function /live() { command rph /live \"$@\"; }", "init.sh");
 assertIncludes(init, 'if [ "${RPH_ENABLE_SLASH_COMMANDS:-1}" = "1" ]; then', "init.sh");
 assertIncludes(completion, "#compdef rph", "completion.zsh");
-assertIncludes(completion, "help version update shell runtime init status workspace next pause resume cancel setup settings", "completion.zsh");
+assertIncludes(completion, "help version update home shell runtime init status workspace next pause resume cancel setup settings", "completion.zsh");
 assertIncludes(completion, "setup_cmds=(auto repair detect apply check ai mcp custom)", "completion.zsh");
 assertIncludes(completion, "doctor_cmds=(status install shell)", "completion.zsh");
 assertIncludes(completion, "agent_cmds=(status roles catalog discover search import install use activate bind bindings unbind session journal replay handoffs actions action-approvals intents confirm-intent dismiss-intent lanes run continue recover pool worker claim heartbeat ack complete dead-letter approve-action reject-action clear reset)", "completion.zsh");
@@ -82,6 +85,44 @@ const version = runChecked(wrapperPath, ["version"], {
   label: "installed rph version"
 });
 assertIncludes(version.stdout, packageJson.version, "installed rph version");
+
+const topLevelCapture = path.join(tmpRoot, "top-level-fetch-calls.jsonl");
+const topLevelPreload = createInstallTopLevelPreload(tmpRoot, topLevelCapture);
+const topLevelEnv = {
+  ...env,
+  OPENAI_API_KEY: "install-e2e-openai",
+  NODE_OPTIONS: `${env.NODE_OPTIONS ?? ""} --require ${topLevelPreload}`.trim()
+};
+const topLevelStart = runChecked(wrapperPath, [
+  "start",
+  "--from-env",
+  "--live",
+  "--ai",
+  "openai",
+  "--mcp",
+  "none",
+  "연결 확인 인사해줘"
+], {
+  cwd: topLevelProjectDir,
+  env: topLevelEnv,
+  label: "installed top-level start chat"
+});
+assertIncludes(topLevelStart.stdout, "RPH runtime: setup needed before agent chat", "installed top-level start chat");
+assertIncludes(topLevelStart.stdout, "setup assistant: rph setup auto --live", "installed top-level start chat");
+assertIncludes(topLevelStart.stdout, "setup live check passed", "installed top-level start chat");
+assertIncludes(topLevelStart.stdout, "OK", "installed top-level start chat");
+assertFile(path.join(topLevelProjectDir, ".rph", "project.json"), "top-level project");
+assertFile(path.join(topLevelProjectDir, ".rph", "connections", "latest.json"), "top-level connection report");
+const topLevelChat = runChecked(wrapperPath, ["chat", "두 번째 인사도 해줘"], {
+  cwd: topLevelProjectDir,
+  env: topLevelEnv,
+  label: "installed top-level chat alias"
+});
+assertIncludes(topLevelChat.stdout, "OK", "installed top-level chat alias");
+const capturedTopLevelCalls = fs.readFileSync(topLevelCapture, "utf8");
+assertIncludes(capturedTopLevelCalls, "Reply with exactly OK.", "installed top-level captured smoke");
+assertIncludes(capturedTopLevelCalls, "연결 확인 인사해줘", "installed top-level captured first chat");
+assertIncludes(capturedTopLevelCalls, "두 번째 인사도 해줘", "installed top-level captured second chat");
 
 const pmStart = runChecked(wrapperPath, ["/pm", "start", "--project-name", "Install E2E Product"], {
   cwd: projectDir,
@@ -193,6 +234,30 @@ assertJsonSchema(shellWorkspaceJson, "rph-operator-workspace-v0", "installed she
 
 console.log("install e2e smoke passed");
 console.log(`tmp: ${tmpRoot}`);
+
+function createInstallTopLevelPreload(rootDir, captureFile) {
+  const preloadPath = path.join(rootDir, "install-top-level-preload.cjs");
+  fs.writeFileSync(preloadPath, [
+    "const fs = require('node:fs');",
+    `const captureFile = ${JSON.stringify(captureFile)};`,
+    "global.fetch = async (url, init = {}) => {",
+    "  const target = String(url);",
+    "  if (target.endsWith('/models')) {",
+    "    return json({ data: [{ id: 'gpt-5.4' }] });",
+    "  }",
+    "  if (target.endsWith('/responses')) {",
+    "    const body = typeof init.body === 'string' ? JSON.parse(init.body) : {};",
+    "    fs.appendFileSync(captureFile, JSON.stringify(body) + '\\n');",
+    "    return json({ output_text: 'OK', usage: { input_tokens: 4, output_tokens: 1 } });",
+    "  }",
+    "  return json({ error: { message: `unexpected URL ${target}` } }, 500);",
+    "};",
+    "function json(data, status = 200) {",
+    "  return new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json' } });",
+    "}"
+  ].join("\n"));
+  return preloadPath;
+}
 
 function copyCurrentWorktree(targetDir) {
   const skipTopLevel = new Set([

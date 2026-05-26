@@ -171,6 +171,7 @@ function /pm() { command rph /pm "\$@"; }
 function /pd() { command rph /pd "\$@"; }
 function /setup() { command rph /setup "\$@"; }
 function /status() { command rph /status "\$@"; }
+function /home() { command rph /home "\$@"; }
 function /workspace() { command rph /workspace "\$@"; }
 function /next() { command rph /next "\$@"; }
 function /qa() { command rph /qa "\$@"; }
@@ -190,7 +191,7 @@ function /help() { command rph /help "\$@"; }
 }
 
 rph_disable_slash_commands() {
-  unset -f /pm /pd /setup /status /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /productize /doctor /help 2>/dev/null || true
+  unset -f /pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /productize /doctor /help 2>/dev/null || true
 }
 
 if [ "\${RPH_ENABLE_SLASH_COMMANDS:-1}" = "1" ]; then
@@ -201,7 +202,7 @@ if [ -n "\${BASH_VERSION:-}" ]; then
   _rph_bash_complete() {
     local cur="\${COMP_WORDS[COMP_CWORD]}"
     local command="\${COMP_WORDS[1]:-}"
-    local words="help version update shell runtime init status workspace next pause resume cancel setup settings ask agent chat ai mcp live doctor productize pm pd fe be qa notion docs github"
+    local words="help version update home shell runtime init status workspace next pause resume cancel setup settings ask agent chat ai mcp live doctor productize pm pd fe be qa notion docs github"
     local subcommands=""
     if [ "\$COMP_CWORD" -gt 1 ]; then
       case "\$command" in
@@ -238,7 +239,7 @@ cat > "$completion_file" <<'EOF'
 _rph() {
   local -a commands setup_cmds doctor_cmds agent_cmds ai_cmds mcp_cmds live_cmds pm_cmds pd_cmds fe_cmds be_cmds qa_cmds notion_cmds docs_cmds github_cmds
   commands=(
-    help version update shell runtime init status workspace next pause resume cancel setup settings
+    help version update home shell runtime init status workspace next pause resume cancel setup settings
     ask agent chat ai mcp live doctor productize pm pd fe be qa notion docs github
   )
   setup_cmds=(auto repair detect apply check ai mcp custom)

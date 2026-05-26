@@ -60,6 +60,14 @@ export interface CustomProtocolMcpServerInput {
   enabled?: boolean;
 }
 
+export interface PersistedConfigRepairSummary {
+  changed: boolean;
+  harnessChanged: boolean;
+  mcpChanged: boolean;
+  migratedServers: string[];
+  notes: string[];
+}
+
 export const CONNECTION_REPORT_TRUST_MAX_AGE_MS = 30 * 60 * 1000;
 
 export interface NormalizedGitHubRepoTarget {
@@ -182,6 +190,59 @@ export function syncHarnessConfigFromEnv(projectRoot: string): HarnessConfig {
   saveHarnessConfig(projectRoot, config);
   writeProjectMcpConfig(projectRoot, config);
   return config;
+}
+
+export function repairPersistedConfigDrift(
+  projectRoot: string,
+  env: NodeJS.ProcessEnv = process.env
+): PersistedConfigRepairSummary {
+  const configPath = harnessConfigFile(projectRoot);
+  const hasHarnessConfig = fs.existsSync(configPath);
+  const mcpPath = projectMcpConfigPath(projectRoot);
+  const hasProjectMcpConfig = fs.existsSync(mcpPath);
+  if (!hasHarnessConfig && !hasProjectMcpConfig) {
+    return emptyPersistedConfigRepairSummary();
+  }
+
+  const previous = hasHarnessConfig
+    ? normalizeHarnessMcpPolicy(readJsonIfExists<HarnessConfig>(configPath, createHarnessConfig(env)))
+    : undefined;
+  const existingMcpConfig = readProjectMcpConfig(projectRoot);
+  const next = createHarnessConfig(env, undefined, previous, existingMcpConfig);
+  const nextMcpConfig = projectMcpConfigFromHarnessConfig(next);
+  const harnessChanged = previous
+    ? stableStringify(comparableHarnessConfig(previous)) !== stableStringify(comparableHarnessConfig(next))
+    : hasHarnessConfig;
+  const mcpChanged = stableStringify(existingMcpConfig ?? null) !== stableStringify(nextMcpConfig);
+  const migratedServers = migratedBuiltInMcpServers(previous, existingMcpConfig, next, nextMcpConfig);
+  const notes: string[] = [];
+  if (migratedServers.length > 0) {
+    notes.push(`canonicalized built-in MCP contract: ${migratedServers.join(",")}`);
+  }
+  if (!hasProjectMcpConfig && mcpChanged) {
+    notes.push("created missing .mcp/config.json from harness config");
+  }
+  if (harnessChanged && migratedServers.length === 0) {
+    notes.push("refreshed .rph/config.json from current environment and policy registry");
+  }
+  if (mcpChanged && migratedServers.length === 0 && hasProjectMcpConfig) {
+    notes.push("refreshed .mcp/config.json from current harness policy registry");
+  }
+
+  if (harnessChanged && hasHarnessConfig) {
+    saveHarnessConfig(projectRoot, next);
+  }
+  if (mcpChanged) {
+    writeJson(mcpPath, nextMcpConfig);
+  }
+
+  return {
+    changed: harnessChanged || mcpChanged,
+    harnessChanged,
+    mcpChanged,
+    migratedServers,
+    notes
+  };
 }
 
 export function setHarnessConfigValue(projectRoot: string, key: string, value: string): HarnessConfig {
@@ -883,13 +944,17 @@ function definitionFromPersistedMcpConfig(
 }
 
 function writeProjectMcpConfig(projectRoot: string, config: HarnessConfig): void {
-  writeJson(projectMcpConfigPath(projectRoot), {
+  writeJson(projectMcpConfigPath(projectRoot), projectMcpConfigFromHarnessConfig(config));
+}
+
+function projectMcpConfigFromHarnessConfig(config: HarnessConfig): McpConfig {
+  return {
     mcpPolicyRegistry: config.mcpPolicyRegistry,
     mcpServers: Object.fromEntries(Object.values(config.mcpServers).map((server) => [
       server.id,
       runtimeServerToMcpConfig(server)
     ]))
-  } satisfies McpConfig);
+  } satisfies McpConfig;
 }
 
 function runtimeServerToMcpConfig(server: McpServerRuntimeConfig): McpServerConfig {
@@ -917,6 +982,97 @@ function readProjectMcpConfig(projectRoot: string): McpConfig | undefined {
     return undefined;
   }
   return readJsonIfExists<McpConfig | undefined>(filePath, undefined);
+}
+
+function emptyPersistedConfigRepairSummary(): PersistedConfigRepairSummary {
+  return {
+    changed: false,
+    harnessChanged: false,
+    mcpChanged: false,
+    migratedServers: [],
+    notes: []
+  };
+}
+
+function comparableHarnessConfig(config: HarnessConfig): Omit<HarnessConfig, "updatedAt"> {
+  const normalized = normalizeHarnessMcpPolicy(config);
+  const { updatedAt: _updatedAt, ...rest } = normalized;
+  return rest;
+}
+
+function migratedBuiltInMcpServers(
+  previous: HarnessConfig | undefined,
+  previousMcp: McpConfig | undefined,
+  next: HarnessConfig,
+  nextMcp: McpConfig
+): string[] {
+  const migrated = new Set<string>();
+  for (const id of BUILT_IN_MCP_SERVER_IDS) {
+    const nextRuntime = next.mcpServers[id];
+    if (!nextRuntime) {
+      continue;
+    }
+    const previousRuntime = previous?.mcpServers[id];
+    if (
+      previousRuntime
+      && stableStringify(comparableBuiltInRuntimeServer(previousRuntime))
+        !== stableStringify(comparableBuiltInRuntimeServer(nextRuntime))
+    ) {
+      migrated.add(id);
+    }
+    const previousPersisted = previousMcp?.mcpServers[id];
+    const nextPersisted = nextMcp.mcpServers[id];
+    if (
+      previousPersisted
+      && nextPersisted
+      && stableStringify(comparableBuiltInMcpServer(previousPersisted))
+        !== stableStringify(comparableBuiltInMcpServer(nextPersisted))
+    ) {
+      migrated.add(id);
+    }
+    const previousPolicy = previousMcp?.mcpPolicyRegistry?.servers?.[id] ?? previous?.mcpPolicyRegistry?.servers?.[id];
+    const nextPolicy = next.mcpPolicyRegistry.servers[id];
+    if (previousPolicy && nextPolicy && stableStringify(previousPolicy) !== stableStringify(nextPolicy)) {
+      migrated.add(id);
+    }
+  }
+  return [...migrated].sort();
+}
+
+function comparableBuiltInRuntimeServer(server: McpServerRuntimeConfig): Record<string, unknown> {
+  return {
+    id: server.id,
+    name: server.name,
+    kind: server.kind,
+    transport: server.transport,
+    command: server.command,
+    url: server.url,
+    authMode: server.authMode,
+    authEnvKey: server.authEnvKey,
+    protocolReadiness: server.protocolReadiness,
+    protocolToolCallProbe: server.protocolToolCallProbe,
+    agentReadOnlyTools: server.agentReadOnlyTools ?? [],
+    protocolReason: server.protocolReason,
+    envKeys: server.envKeys,
+    notes: server.notes
+  };
+}
+
+function comparableBuiltInMcpServer(server: McpServerConfig): Record<string, unknown> {
+  return {
+    name: server.name,
+    kind: server.kind,
+    transport: server.transport,
+    command: server.command,
+    url: server.url,
+    auth: server.auth,
+    protocolReadiness: server.protocolReadiness,
+    protocolToolCallProbe: server.protocolToolCallProbe,
+    agentReadOnlyTools: server.agentReadOnlyTools ?? [],
+    protocolReason: server.protocolReason,
+    env: server.env,
+    notes: server.notes
+  };
 }
 
 function isBuiltInMcpServerId(value: string): boolean {

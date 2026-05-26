@@ -171,6 +171,7 @@ assertIncludes(initFile, "function /ai() { command rph /ai \"$@\"; }", "init.sh"
 assertIncludes(initFile, "function /mcp() { command rph /mcp \"$@\"; }", "init.sh");
 assertIncludes(initFile, "function /live() { command rph /live \"$@\"; }", "init.sh");
 assertIncludes(initFile, "function /docs() { command rph /docs \"$@\"; }", "init.sh");
+assertIncludes(initFile, "function /home() { command rph /home \"$@\"; }", "init.sh");
 assertIncludes(initFile, "function /workspace() { command rph /workspace \"$@\"; }", "init.sh");
 assertIncludes(initFile, "function /doctor() { command rph /doctor \"$@\"; }", "init.sh");
 assertIncludes(initFile, "function /github() { command rph /github \"$@\"; }", "init.sh");
@@ -178,7 +179,7 @@ assertIncludes(initFile, "function /notion() { command rph /notion \"$@\"; }", "
 assertIncludes(initFile, 'if [ "${RPH_ENABLE_SLASH_COMMANDS:-1}" = "1" ]; then', "init.sh");
 assertIncludes(initFile, `source "${completionPath}"`, "init.sh");
 assertIncludes(completion, "#compdef rph", "completion.zsh");
-assertIncludes(completion, "help version update shell runtime init status workspace next pause resume cancel setup settings", "completion.zsh");
+assertIncludes(completion, "help version update home shell runtime init status workspace next pause resume cancel setup settings", "completion.zsh");
 assertIncludes(completion, "setup_cmds=(auto repair detect apply check ai mcp custom)", "completion.zsh");
 assertIncludes(completion, "doctor_cmds=(status install shell)", "completion.zsh");
 assertIncludes(completion, "agent_cmds=(status roles catalog discover search import install use activate bind bindings unbind session journal replay handoffs actions action-approvals intents confirm-intent dismiss-intent lanes run continue recover pool worker claim heartbeat ack complete dead-letter approve-action reject-action clear reset)", "completion.zsh");

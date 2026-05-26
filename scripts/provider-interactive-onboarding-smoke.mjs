@@ -117,8 +117,8 @@ for (const provider of providers) {
   assertIncludes(result.stdout, "RPH Setup Auto", `${provider.id} setup`);
   assertIncludes(result.stdout, "setup live check passed", `${provider.id} setup`);
   assertIncludes(result.stdout, "Connected", `${provider.id} setup`);
-  assertIncludes(result.stdout, `- AI: ${provider.id}`, `${provider.id} setup`);
-  assertIncludes(result.stdout, "- MCP: none", `${provider.id} setup`);
+  assertIncludes(result.stdout, `- chat lane: ready via ${provider.id}`, `${provider.id} setup`);
+  assertIncludes(result.stdout, "- connector lane: no verified connectors", `${provider.id} setup`);
   assertIncludes(result.stdout, "First demo turn", `${provider.id} setup`);
   assertIncludes(result.stdout, `- provider: ${provider.id}`, `${provider.id} setup`);
   assertIncludes(result.stdout, "Live credential audit", `${provider.id} audit`);

@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import packageJson from "../package.json";
 import { runParsedCommand } from "../apps/cli/src/index";
+import { createMcpConfig, STITCH_MCP_URL } from "../packages/integrations/src/mcp";
 import {
   approveDesignArtifact,
   approveDocument,
@@ -79,6 +80,7 @@ import {
   readDocumentIndex,
   readDesignArtifactIndex,
   readHarnessConfigSnapshot,
+  repairPersistedConfigDrift,
   readProofLedgerEvents,
   readProofLedgerLatest,
   renderSetupGuide,
@@ -2379,6 +2381,112 @@ describe("command parser and env validation", () => {
     } finally {
       delete process.env.CUSTOM_ECHO_MCP_TOKEN;
     }
+  });
+
+  it("repairs stale persisted built-in MCP contracts without dropping custom MCP servers", () => {
+    const env = { STITCH_API_KEY: "stitch-secret", CUSTOM_ECHO_MCP_TOKEN: "custom-secret" } as NodeJS.ProcessEnv;
+    const harnessPath = path.join(root, ".rph", "config.json");
+    const mcpPath = path.join(root, ".mcp", "config.json");
+    const staleHarness = createHarnessConfig(env, {
+      aiProvider: "later",
+      deployment: "later",
+      stack: "recommended",
+      mcp: ["stitch"]
+    });
+    staleHarness.mcpServers.stitch.url = "https://mcp.example.test/old-stitch";
+    staleHarness.mcpServers.stitch.protocolToolCallProbe = {
+      toolName: "echo",
+      arguments: { text: "old" }
+    };
+    staleHarness.mcpServers.stitch.agentReadOnlyTools = [];
+    staleHarness.mcpPolicyRegistry.servers.stitch.protocolToolCallProbe = {
+      toolName: "echo",
+      arguments: { text: "old" }
+    };
+    staleHarness.mcpPolicyRegistry.servers.stitch.agentReadOnlyTools = [];
+    staleHarness.mcpServers["custom-echo"] = {
+      id: "custom-echo",
+      name: "Custom Echo",
+      kind: "mcp-server",
+      enabled: true,
+      configured: true,
+      transport: "http",
+      url: "https://mcp.example.test/echo",
+      authMode: "bearer",
+      authEnvKey: "CUSTOM_ECHO_MCP_TOKEN",
+      protocolReadiness: "tools/call",
+      protocolToolCallProbe: {
+        toolName: "echo",
+        arguments: { text: "safe" }
+      },
+      agentReadOnlyTools: ["echo"],
+      custom: true,
+      envKeys: ["CUSTOM_ECHO_MCP_TOKEN"],
+      missingEnv: [],
+      warnings: [],
+      notes: "Custom echo protocol server."
+    };
+    fs.writeFileSync(harnessPath, `${JSON.stringify(staleHarness, null, 2)}\n`);
+
+    const staleMcp = createMcpConfig(["stitch"]);
+    staleMcp.mcpServers.stitch.url = "https://mcp.example.test/old-stitch";
+    staleMcp.mcpServers.stitch.protocolToolCallProbe = {
+      toolName: "echo",
+      arguments: { text: "old" }
+    };
+    staleMcp.mcpServers.stitch.agentReadOnlyTools = [];
+    staleMcp.mcpServers["custom-echo"] = {
+      name: "Custom Echo",
+      kind: "mcp-server",
+      enabled: true,
+      transport: "http",
+      url: "https://mcp.example.test/echo",
+      auth: {
+        mode: "bearer",
+        envKey: "CUSTOM_ECHO_MCP_TOKEN"
+      },
+      protocolReadiness: "tools/call",
+      protocolToolCallProbe: {
+        toolName: "echo",
+        arguments: { text: "safe" }
+      },
+      agentReadOnlyTools: ["echo"],
+      env: {
+        CUSTOM_ECHO_MCP_TOKEN: "${CUSTOM_ECHO_MCP_TOKEN}"
+      },
+      notes: "Custom echo protocol server."
+    };
+    fs.writeFileSync(mcpPath, `${JSON.stringify(staleMcp, null, 2)}\n`);
+
+    const summary = repairPersistedConfigDrift(root, env);
+    const repairedHarness = JSON.parse(fs.readFileSync(harnessPath, "utf8")) as ReturnType<typeof createHarnessConfig>;
+    const repairedMcp = JSON.parse(fs.readFileSync(mcpPath, "utf8")) as ReturnType<typeof createMcpConfig>;
+
+    expect(summary.changed).toBe(true);
+    expect(summary.migratedServers).toContain("stitch");
+    expect(repairedHarness.mcpServers.stitch.url).toBe(STITCH_MCP_URL);
+    expect(repairedHarness.mcpServers.stitch.protocolToolCallProbe).toEqual({
+      toolName: "list_projects",
+      arguments: { filter: "view=owned" }
+    });
+    expect(repairedHarness.mcpServers.stitch.agentReadOnlyTools).toEqual(["list_projects"]);
+    expect(repairedHarness.mcpServers["custom-echo"]).toMatchObject({
+      url: "https://mcp.example.test/echo",
+      protocolToolCallProbe: {
+        toolName: "echo",
+        arguments: { text: "safe" }
+      },
+      agentReadOnlyTools: ["echo"]
+    });
+    expect(repairedMcp.mcpServers.stitch.url).toBe(STITCH_MCP_URL);
+    expect(repairedMcp.mcpServers.stitch.protocolToolCallProbe).toEqual({
+      toolName: "list_projects",
+      arguments: { filter: "view=owned" }
+    });
+    expect(repairedMcp.mcpServers["custom-echo"].protocolToolCallProbe).toEqual({
+      toolName: "echo",
+      arguments: { text: "safe" }
+    });
   });
 
   it("rejects custom authenticated protocol MCP servers over remote plain HTTP", () => {

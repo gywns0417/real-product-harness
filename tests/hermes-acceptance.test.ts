@@ -22,7 +22,7 @@ import { createPullRequestDraft, createWorkIssue } from "../packages/core/src/is
 import { initProject, loadState, saveState } from "../packages/core/src/project";
 import { createHarnessConfig, writeConnectionReport } from "../packages/core/src/settings";
 import { ConnectionCheck } from "../packages/core/src/types";
-import { createMcpConfig } from "../packages/integrations/src/mcp";
+import { createMcpConfig, STITCH_MCP_URL } from "../packages/integrations/src/mcp";
 
 let root: string;
 const ERROR_COORDINATOR_TOML = "/Users/king/Desktop/awesome-codex-subagents/categories/09-meta-orchestration/error-coordinator.toml";
@@ -5148,7 +5148,7 @@ describe("Hermes-like CLI contracts", () => {
       expect(result.stdout).toContain("Real Product Harness");
       expect(result.stdout).toContain("RPH status");
       expect(result.stdout).toContain("project not initialized");
-      expect(result.stdout).toContain("- rph setup auto --live");
+      expect(result.stdout).toContain("next: rph setup auto --live");
       expect(fs.existsSync(path.join(uninitializedRoot, ".rph"))).toBe(false);
     } finally {
       fs.rmSync(uninitializedRoot, { recursive: true, force: true });
@@ -5168,7 +5168,7 @@ describe("Hermes-like CLI contracts", () => {
       expect(result.stdout).toContain("AI agent is not connected yet.");
       expect(result.stdout).toContain("대화하려면 먼저 AI provider를 연결해야 합니다.");
       expect(result.stdout).toContain("Real Product Harness");
-      expect(result.stdout).toContain("- rph setup auto --live");
+      expect(result.stdout).toContain("next: rph setup auto --live");
       expect(fs.existsSync(path.join(uninitializedRoot, ".rph"))).toBe(false);
     } finally {
       fs.rmSync(uninitializedRoot, { recursive: true, force: true });
@@ -5775,9 +5775,9 @@ describe("Hermes-like CLI contracts", () => {
       expect(shell.exitCode).toBe(0);
       expect(shell.stdout).toContain("RPH status");
       expect(shell.stdout).toContain("project not initialized");
-      expect(shell.stdout).toContain("- /setup auto --live");
-      expect(shell.stdout).toContain("- /setup auto --from-env --live");
-      expect(shell.stdout).toContain("- /help setup");
+      expect(shell.stdout).toContain("next: /setup auto --live");
+      expect(shell.stdout).not.toContain("- /setup auto --from-env --live");
+      expect(shell.stdout).not.toContain("- /help setup");
       expect(shell.stdout).not.toContain("next:\n- rph setup auto");
     } finally {
       fs.rmSync(uninitializedRoot, { recursive: true, force: true });
@@ -6089,9 +6089,9 @@ describe("Hermes-like CLI contracts", () => {
       expect(setup.stdout).toContain("report refreshed after MCP contract binding");
       expect(setup.stdout).toContain("setup live check passed");
       expect(setup.stdout).toContain("Connected");
-      expect(setup.stdout).toContain("- AI: none");
-      expect(setup.stdout).toContain("- MCP: custom-echo");
-      expect(setup.stdout).toContain("- chat: connect an AI provider to enable plain text agent chat");
+      expect(setup.stdout).toContain("- chat lane: blocked until AI provider setup");
+      expect(setup.stdout).toContain("- connector lane: verified custom-echo");
+      expect(setup.stdout).toContain("- talk now: rph setup auto --live");
       expect(setup.stdout).toContain("Capability summary");
       expect(setup.stdout).toContain("- connected AI: none");
       expect(setup.stdout).toContain("- connected MCP: custom-echo (protocol-ready:protocol-tool-call)");
@@ -6405,10 +6405,10 @@ describe("Hermes-like CLI contracts", () => {
       expect(result.stdout).toContain("ai:openai");
       expect(result.stdout).toContain("setup live check passed");
       expect(result.stdout).toContain("Connected");
-      expect(result.stdout).toContain("- AI: openai");
-      expect(result.stdout).toContain("- MCP: none");
-      expect(result.stdout).toContain("- chat: plain text goes to the connected AI agent");
-      expect(result.stdout).toContain("- start product work: /pm start");
+      expect(result.stdout).toContain("- chat lane: ready via openai");
+      expect(result.stdout).toContain("- connector lane: no verified connectors");
+      expect(result.stdout).toContain("- talk now: type plain text to chat with the connected AI agent");
+      expect(result.stdout).toContain("- control: /pm start");
       expect(result.stdout).toContain("Capability summary");
       expect(result.stdout).toContain("- connected AI: openai");
       expect(result.stdout).toContain("- connected MCP: none");
@@ -6478,7 +6478,7 @@ describe("Hermes-like CLI contracts", () => {
       expect(result.stdout).toContain(".env 저장 완료");
       expect(result.stdout).toContain("setup live check passed");
       expect(result.stdout).toContain("Connected");
-      expect(result.stdout).toContain("- AI: openai");
+      expect(result.stdout).toContain("- chat lane: ready via openai");
       expect(result.stdout).toContain("Original goal resume");
       expect(result.stdout).toContain("workflow: productize");
       expect(result.stdout).toContain("suggested control: /productize");
@@ -6807,18 +6807,17 @@ describe("Hermes-like CLI contracts", () => {
 
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toContain("Real Product Harness");
-      expect(result.stdout).toContain("shell ready");
+      expect(result.stdout).toContain("connected AI harness");
       expect(result.stdout).toContain("RPH home");
-      expect(result.stdout).toContain("- connected AI: none");
-      expect(result.stdout).toContain("- connected MCP: none");
-      expect(result.stdout).toContain("- current blocker: setup required before agent chat can run");
-      expect(result.stdout).toContain("- primary next action: rph setup auto --live");
-      expect(result.stdout).toContain("- chat entry: connect an AI provider, then type plain text here");
+      expect(result.stdout).toContain("- chat lane: blocked until AI provider setup");
+      expect(result.stdout).toContain("- connector lane: no verified connectors");
+      expect(result.stdout).toContain("- blocker: setup required before agent chat can run");
+      expect(result.stdout).toContain("- control: rph setup auto --live");
+      expect(result.stdout).not.toContain("/status  /next  /agent status  /pm start  /exit");
       expect(result.stdout).toContain("RPH start");
       expect(result.stdout).toContain("setup required before agent chat can run");
-      expect(result.stdout).toContain("next:");
-      expect(result.stdout).toContain("- rph setup auto --live");
-      expect(result.stdout).toContain("- rph help setup");
+      expect(result.stdout).toContain("next: rph setup auto --live");
+      expect(result.stdout).not.toContain("- rph help setup");
       expect(result.stdout).not.toContain("RPH Setup Auto");
       expect(fs.existsSync(path.join(uninitializedRoot, ".rph"))).toBe(false);
     } finally {
@@ -6850,6 +6849,67 @@ describe("Hermes-like CLI contracts", () => {
     } finally {
       fs.rmSync(uninitializedRoot, { recursive: true, force: true });
     }
+  }, 10000);
+
+  it("rewrites stale built-in Stitch projection during setup auto --live", async () => {
+    const mcpPath = path.join(root, ".mcp", "config.json");
+    const harnessPath = path.join(root, ".rph", "config.json");
+    const staleHarness = JSON.parse(fs.readFileSync(harnessPath, "utf8")) as ReturnType<typeof createHarnessConfig>;
+    staleHarness.mcpServers.stitch.url = "https://mcp.example.test/echo";
+    staleHarness.mcpServers.stitch.protocolReadiness = "tools/list";
+    staleHarness.mcpServers.stitch.protocolToolCallProbe = {
+      toolName: "echo",
+      arguments: { text: "old" }
+    };
+    staleHarness.mcpServers.stitch.agentReadOnlyTools = ["echo"];
+    staleHarness.mcpPolicyRegistry.servers.stitch.protocolReadiness = "tools/list";
+    staleHarness.mcpPolicyRegistry.servers.stitch.protocolToolCallProbe = {
+      toolName: "echo",
+      arguments: { text: "old" }
+    };
+    staleHarness.mcpPolicyRegistry.servers.stitch.agentReadOnlyTools = ["echo"];
+    fs.writeFileSync(harnessPath, `${JSON.stringify(staleHarness, null, 2)}\n`);
+
+    const staleMcp = JSON.parse(fs.readFileSync(mcpPath, "utf8")) as ReturnType<typeof createMcpConfig>;
+    staleMcp.mcpServers.stitch.url = "https://mcp.example.test/echo";
+    staleMcp.mcpServers.stitch.protocolReadiness = "tools/list";
+    staleMcp.mcpServers.stitch.protocolToolCallProbe = {
+      toolName: "echo",
+      arguments: { text: "old" }
+    };
+    staleMcp.mcpServers.stitch.agentReadOnlyTools = ["echo"];
+    staleMcp.mcpPolicyRegistry!.servers.stitch.protocolReadiness = "tools/list";
+    staleMcp.mcpPolicyRegistry!.servers.stitch.protocolToolCallProbe = {
+      toolName: "echo",
+      arguments: { text: "old" }
+    };
+    staleMcp.mcpPolicyRegistry!.servers.stitch.agentReadOnlyTools = ["echo"];
+    fs.writeFileSync(mcpPath, `${JSON.stringify(staleMcp, null, 2)}\n`);
+
+    const result = await runCli(["setup", "auto", "--from-env", "--live", "--ai", "none", "--mcp", "stitch"], {
+      cwd: root,
+      env: {
+        ...withoutProviderEnv(),
+        STITCH_API_KEY: "test-stitch"
+      },
+      preloadFetchMcpRuntime: true
+    });
+    const repairedMcp = JSON.parse(fs.readFileSync(mcpPath, "utf8")) as ReturnType<typeof createMcpConfig>;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("self-heal: persisted harness config refreshed");
+    expect(result.stdout).toContain("migrated MCP contracts: stitch");
+    expect(result.stdout).toContain("mcp:stitch trust=protocol-ready:protocol-tool-call");
+    expect(result.stdout).toContain("First action verified");
+    expect(result.stdout).toContain("detail=mcp.tools.call target_id=stitch:list_projects verified_by=protocol-tool-call");
+    expect(repairedMcp.mcpServers.stitch.url).toBe(STITCH_MCP_URL);
+    expect(repairedMcp.mcpServers.stitch.protocolReadiness).toBe("tools/call");
+    expect(repairedMcp.mcpServers.stitch.protocolToolCallProbe).toEqual({
+      toolName: "list_projects",
+      arguments: { filter: "view=owned" }
+    });
+    expect(repairedMcp.mcpServers.stitch.agentReadOnlyTools).toEqual(["list_projects"]);
   }, 10000);
 
   it("exits with code 2 and a suggestion for likely command typos", async () => {

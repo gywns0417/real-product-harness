@@ -187,6 +187,7 @@ import {
   readConnectionReportTrust,
   readHarnessConfigSnapshot,
   readLatestAiProviderOutcome,
+  repairPersistedConfigDrift,
   readProofLedgerEvents,
   readProofLedgerLatest,
   readTrustedConnectionChecks,
@@ -345,6 +346,15 @@ const HERMES_OPERATOR_AGENT_PACK = [
 ] as const;
 
 const HELP_TOPIC_LINES: Record<string, string[]> = {
+  home: [
+    "Operator home",
+    "",
+    "  rph home",
+    "  /home",
+    "",
+    "Shows the chat-first operator home: chat readiness, connector readiness, current work lane, proof freshness, approvals, and the one next action.",
+    "Use --json when another tool needs the stable operator workspace snapshot."
+  ],
   shell: [
     "Runtime shell",
     "",
@@ -710,6 +720,9 @@ export async function runParsedCommand(
     }
 
     switch (parsed.command) {
+      case "home":
+        handleHome(projectRoot, parsed.options, context);
+        break;
       case "start":
       case "go":
         await handleStart(projectRoot, parsed.args, parsed.options, context);
@@ -5065,6 +5078,7 @@ async function handleStart(
     });
     return;
   }
+  printPersistedConfigRepairSummary(projectRoot, commandSurfaceFromOptions(options));
   if (message) {
     await handleAsk(projectRoot, [message], options);
     return;
@@ -6877,6 +6891,45 @@ function guidanceHarnessConfig(projectRoot: string) {
   }
 }
 
+function handleHome(
+  projectRoot: string,
+  options: Record<string, string | boolean>,
+  context: CommandContext = {}
+): void {
+  if (optionBool(options, "json")) {
+    console.log(JSON.stringify(buildOperatorWorkspace(projectRoot), null, 2));
+    return;
+  }
+  const commandSurface = context.runtimeShell ? "slash" : commandSurfaceFromOptions(options);
+  printPersistedConfigRepairSummary(projectRoot, commandSurface);
+  console.log(renderRuntimeHero(projectRoot, resolveRuntimeSessionId(projectRoot), guidanceHarnessConfig(projectRoot)));
+  console.log("");
+  const manifest = isRuntimeProjectInitialized(projectRoot) ? loadRuntimeSession(projectRoot) : null;
+  printRuntimeHomeCard(projectRoot, {
+    reason: manifest ? runtimeHomeReasonFromManifest(manifest) : "setup required before agent chat can run",
+    commandSurface
+  });
+}
+
+function printPersistedConfigRepairSummary(projectRoot: string, commandSurface: CommandSurface = "rph"): void {
+  if (!isRuntimeProjectInitialized(projectRoot)) {
+    return;
+  }
+  const summary = repairPersistedConfigDrift(projectRoot);
+  if (!summary.changed) {
+    return;
+  }
+  console.log("self-heal: persisted harness config refreshed");
+  if (summary.migratedServers.length > 0) {
+    console.log(`- migrated MCP contracts: ${summary.migratedServers.join(", ")}`);
+  }
+  for (const note of summary.notes) {
+    console.log(`- ${note}`);
+  }
+  console.log(`- proof: rerun ${runtimeSurfaceCommand(commandSurface, "setup auto --from-env --live")} to refresh live connection trust`);
+  console.log("");
+}
+
 function printRuntimeRecoveryCard(
   projectRoot: string,
   options: {
@@ -6900,12 +6953,9 @@ function printRuntimeRecoveryCard(
   if (options.proposedCommand) {
     console.log(`- suggested control: ${runtimeSurfaceCommand(commandSurface, options.proposedCommand.replace(/^\//, ""))}`);
   }
-  console.log("- chat: connect an AI provider, then type plain text");
+  console.log("- chat: unavailable until an AI provider is connected");
   console.log("");
-  console.log("next:");
-  console.log(`- ${runtimeSurfaceCommand(commandSurface, "setup auto --live")}`);
-  console.log(`- ${runtimeSurfaceCommand(commandSurface, "setup auto --from-env --live")}`);
-  console.log(`- ${runtimeSurfaceCommand(commandSurface, "help setup")}`);
+  console.log(`next: ${runtimeSurfaceCommand(commandSurface, "setup auto --live")}`);
 }
 
 function printRuntimeHomeCard(
@@ -6920,21 +6970,32 @@ function printRuntimeHomeCard(
   const config = guidanceHarnessConfig(projectRoot);
   const initialized = isRuntimeProjectInitialized(projectRoot);
   const checks = initialized ? readLatestConnectionChecks(projectRoot) : [];
+  const workspace = buildOperatorWorkspace(projectRoot);
   const passedAi = checks.filter((check) => check.kind === "ai" && check.status === "passed").map((check) => check.id);
   const passedMcp = checks.filter((check) => check.kind === "mcp" && check.status === "passed").map((check) => check.id);
   const configuredAi = configuredAiProviders(config).map((provider) => provider.id);
   const configuredMcp = configuredMcpServers(config).map((server) => server.id);
   const failed = checks.filter((check) => check.status === "failed");
-  const connectedAi = passedAi.length > 0
-    ? `verified:${passedAi.join(",")}`
+  const pendingExternal = workspace.approvals.externalActions.filter((action) => action.status === "pending");
+  const trust = initialized ? readConnectionReportTrust(projectRoot) : { trusted: false as const, reason: "missing-report" as const };
+  const chatLane = passedAi.length > 0
+    ? `ready via verified ${passedAi.join(", ")}`
     : configuredAi.length > 0
-      ? `configured:${configuredAi.join(",")}`
-      : "none";
-  const connectedMcp = passedMcp.length > 0
-    ? `verified:${passedMcp.join(",")}`
+      ? `configured ${configuredAi.join(", ")}; run live setup to verify`
+      : "blocked until AI provider setup";
+  const connectorLane = passedMcp.length > 0
+    ? `verified ${passedMcp.join(", ")}`
     : configuredMcp.length > 0
-      ? `configured:${configuredMcp.join(",")}`
-      : "none";
+      ? `configured ${configuredMcp.join(", ")}; run live setup to verify`
+      : "no verified connectors";
+  const workLane = workspace.runtime
+    ? `${workspace.runtime.stage} (${workspace.runtime.status})`
+    : workspace.initialized
+      ? `${workspace.workflow.currentStage} (${workspace.workflow.currentStageName})`
+      : "not initialized";
+  const proofLane = trust.trusted
+    ? "live proof current"
+    : `live proof needs refresh (${trust.reason ?? workspace.readiness.connectionProofReason ?? "missing-report"})`;
   const primaryNext = options.proposedCommand
     ? runtimeSurfaceCommand(commandSurface, options.proposedCommand.replace(/^\//, ""))
     : failed.length > 0
@@ -6942,15 +7003,19 @@ function printRuntimeHomeCard(
       : configuredAi.length > 0
         ? (commandSurface === "rph" ? `rph "다음에 뭐 하면 돼?"` : "일반 텍스트로 AI agent와 대화")
         : runtimeSurfaceCommand(commandSurface, "setup auto --live");
-  const chatEntry = configuredAi.length > 0
-    ? "plain text goes to the connected AI agent"
-    : "connect an AI provider, then type plain text here";
   console.log("RPH home");
-  console.log(`- connected AI: ${connectedAi}`);
-  console.log(`- connected MCP: ${connectedMcp}`);
-  console.log(`- current blocker: ${options.reason}`);
-  console.log(`- primary next action: ${primaryNext}`);
-  console.log(`- chat entry: ${chatEntry}`);
+  console.log(`- chat lane: ${chatLane}`);
+  console.log(`- connector lane: ${connectorLane}`);
+  console.log(`- work lane: ${workLane}`);
+  console.log(`- proof lane: ${proofLane}`);
+  if (pendingExternal.length > 0) {
+    console.log(`- approval lane: ${pendingExternal.length} external action(s) waiting; next ${pendingExternal[0].command}`);
+  } else {
+    console.log("- approval lane: clear");
+  }
+  console.log(`- blocker: ${options.reason}`);
+  console.log(`- talk now: ${configuredAi.length > 0 ? primaryNext : "connect an AI provider first"}`);
+  console.log(`- control: ${primaryNext}`);
 }
 
 function runtimeHomeReasonFromManifest(manifest: RuntimeSessionManifest): string {
@@ -7701,6 +7766,7 @@ async function printSetupAutoSummary(
   }
   if (optionBool(options, "live")) {
     console.log("auto --live: env 감지 결과를 적용한 뒤 live check까지 실행합니다.");
+    printPersistedConfigRepairSummary(projectRoot, commandSurfaceFromOptions(options));
     const appliedConfig = syncHarnessConfigFromEnv(projectRoot);
     const checks = await runSetupChecks(projectRoot, appliedConfig, commandSurfaceFromOptions(options));
     await finishLiveConnectionOnboarding(projectRoot, checks, options);
@@ -7830,6 +7896,7 @@ async function runAutoSetupWizard(
     console.log("GitHub는 기존 gh 로그인을 감지하면 token 값 대신 GITHUB_TOKEN_SOURCE=gh-cli만 저장합니다.");
     console.log("");
 
+    printPersistedConfigRepairSummary(projectRoot, commandSurfaceFromOptions(options));
     let config = syncHarnessConfigFromEnv(projectRoot);
     const selectedAi = await chooseAiProviders(prompter, config, options);
     const envValues: Record<string, string> = {};
@@ -8067,17 +8134,17 @@ function printSetupConnectedHandoff(projectRoot: string, checks: ConnectionCheck
   const ai = passed.filter((check) => check.kind === "ai").map((check) => check.id).join(", ") || "none";
   const mcp = passed.filter((check) => check.kind === "mcp").map((check) => check.id).join(", ") || "none";
   const commandSurface = commandSurfaceFromOptions(options);
-  console.log("Connected");
-  console.log(`- AI: ${ai}`);
-  console.log(`- MCP: ${mcp}`);
+  console.log("Connected agent home");
+  console.log(`- chat lane: ${ai !== "none" ? `ready via ${ai}` : "blocked until AI provider setup"}`);
+  console.log(`- connector lane: ${mcp !== "none" ? `verified ${mcp}` : "no verified connectors"}`);
   console.log("- secrets: stored in .env only; .rph/config.json stores redacted connection state");
   if (ai !== "none") {
-    console.log("- chat: plain text goes to the connected AI agent");
+    console.log("- talk now: type plain text to chat with the connected AI agent");
   } else {
-    console.log("- chat: connect an AI provider to enable plain text agent chat");
+    console.log(`- talk now: ${runtimeSurfaceCommand(commandSurface, "setup auto --live")}`);
   }
-  console.log(`- start product work: ${runtimeSurfaceCommand(commandSurface, "pm start")}`);
-  console.log(`- inspect setup: ${runtimeSurfaceCommand(commandSurface, "status")} | ${runtimeSurfaceCommand(commandSurface, "setup auto --from-env --live")}`);
+  console.log(`- control: ${runtimeSurfaceCommand(commandSurface, "pm start")}`);
+  console.log(`- inspect: ${runtimeSurfaceCommand(commandSurface, "status")}`);
 }
 
 async function printSetupFirstSuccessExperience(
@@ -12112,6 +12179,8 @@ function renderGeneralHelp(): string {
     "Talk to the connected AI agent:",
     "  rph",
     "    Enter the runtime. Plain text chats with the connected AI agent; slash commands control workflow state.",
+    "  rph home",
+    "    Show the chat-first operator home without entering the runtime.",
     "  rph shell",
     "    Explicit name for the same conversation runtime.",
     "  rph \"what should I do next?\"",

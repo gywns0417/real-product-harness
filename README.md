@@ -8,10 +8,11 @@ AI agent workflow CLI for real product delivery: PM interview, versioned documen
 rph
 /setup auto --live
 다음에 뭐 하면 돼?
+/home
 /status
 ```
 
-`rph` opens the top-layer runtime shell. In a fresh folder it guides setup first; after setup, plain text talks to the connected AI agent. Slash commands stay local control-plane actions, similar to Codex or Claude Code commands.
+`rph` opens the top-layer runtime shell. In a fresh folder it guides setup first; after setup, plain text talks to the connected AI agent. `rph home` or `/home` shows the chat-first operator home without entering the runtime. Slash commands stay local control-plane actions, similar to Codex or Claude Code commands.
 
 ## Install
 
@@ -69,6 +70,7 @@ Inside the runtime, type normal messages to chat with the connected AI agent. Us
 /setup auto --guide
 /setup auto --from-env --live --ai openai,anthropic,gemini --mcp all
 /doctor
+/home
 /status
 /workspace
 /ai status
@@ -126,12 +128,11 @@ Turn the current idea into a sharper MVP direction.
 /github setup-branches
 ```
 
-In a fresh non-interactive folder, `rph start` shows the same runtime opener plus a short recovery card:
-connect AI with `rph setup auto --live`, retry from `.env` with `rph setup auto --from-env --live`,
-or open `rph help setup`. In an interactive terminal, plain `rph start` launches the setup wizard
-directly, writes the fresh project state, and hands off to the connected chat/runtime after successful
-verification. Setup flags such as `--from-env --live --ai openai --mcp none` keep the same setup-first
-path for automation.
+In a fresh non-interactive folder, `rph start` shows the runtime opener plus a chat-first home and one
+setup CTA: `rph setup auto --live`. In an interactive terminal, plain `rph start` launches the setup
+wizard directly, writes the fresh project state, and hands off to the connected chat/runtime after
+successful verification. Setup flags such as `--from-env --live --ai openai --mcp none` keep the same
+setup-first path for automation.
 After live verification, setup also prints a `Capability summary` and runs one non-mutating
 `First demo turn` through the verified AI provider. That first turn is kept separate from connection
 proof: if the demo response fails, setup stays successful and the next action remains normal chat or

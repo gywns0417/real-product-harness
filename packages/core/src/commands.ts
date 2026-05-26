@@ -9,6 +9,7 @@ export const TOP_LEVEL_COMMANDS = [
   "help",
   "version",
   "update",
+  "home",
   "start",
   "go",
   "shell",
