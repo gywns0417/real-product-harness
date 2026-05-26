@@ -5,13 +5,13 @@ AI agent workflow CLI for real product delivery: PM interview, versioned documen
 ## Quick Start
 
 ```bash
-rph shell
+rph
 /setup auto --live
 다음에 뭐 하면 돼?
 /status
 ```
 
-Plain text talks to the connected AI agent. Slash commands stay local control-plane actions, similar to Codex or Claude Code commands.
+`rph` opens the top-layer runtime shell. In a fresh folder it guides setup first; after setup, plain text talks to the connected AI agent. Slash commands stay local control-plane actions, similar to Codex or Claude Code commands.
 
 ## Install
 
