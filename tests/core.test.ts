@@ -1640,13 +1640,59 @@ describe("command parser and env validation", () => {
 
   it("writes a top-layer live audit without treating audit completion as release readiness", async () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       const target = String(url);
       if (target.endsWith("/models")) {
         return new Response(JSON.stringify({ data: [{ id: "gpt-5.4" }] }), { status: 200 });
       }
       if (target.endsWith("/responses")) {
         return new Response(JSON.stringify({ output: [], usage: { input_tokens: 4, output_tokens: 0 } }), { status: 200 });
+      }
+      if (target === "https://stitch.googleapis.com/mcp") {
+        const body = JSON.parse(String(init?.body ?? "{}")) as {
+          id?: string;
+          method?: string;
+          params?: unknown;
+        };
+        if (body.method === "initialize") {
+          return new Response(JSON.stringify({
+            jsonrpc: "2.0",
+            id: body.id,
+            result: {
+              protocolVersion: "2025-06-18",
+              capabilities: { tools: {} },
+              serverInfo: { name: "stitch", version: "test" }
+            }
+          }), {
+            status: 200,
+            headers: {
+              "content-type": "application/json",
+              "Mcp-Session-Id": "session-stitch"
+            }
+          });
+        }
+        if (body.method === "notifications/initialized") {
+          return new Response(null, { status: 202 });
+        }
+        if (body.method === "tools/list") {
+          return new Response(JSON.stringify({
+            jsonrpc: "2.0",
+            id: body.id,
+            result: {
+              tools: [{ name: "echo" }]
+            }
+          }), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        if (body.method === "tools/call") {
+          return new Response(JSON.stringify({
+            jsonrpc: "2.0",
+            id: body.id,
+            result: {
+              content: [{ type: "text", text: "rph-readiness-probe" }],
+              isError: false
+            }
+          }), { status: 200, headers: { "content-type": "application/json" } });
+        }
       }
       return new Response(JSON.stringify({ error: { message: `unexpected ${target}` } }), { status: 500 });
     });
@@ -1670,7 +1716,7 @@ describe("command parser and env validation", () => {
       GITHUB_REPO: undefined,
       FIGMA_TOKEN: undefined,
       FIGMA_FILE_ID: undefined,
-      STITCH_API_KEY: undefined
+      STITCH_API_KEY: "stitch-test-key"
     }, async () => {
       const ok = await runParsedCommand(root, parseCli(["live", "audit"]));
 
@@ -1682,7 +1728,10 @@ describe("command parser and env validation", () => {
       expect(output).toContain("- release readiness: no");
       expect(output).toContain("release gate: blocked");
       expect(output).toContain("ai:openai status=failed");
+      expect(output).toContain("mcp:stitch status=passed trust=protocol-ready:protocol-tool-call");
+      expect(output).toContain("usable_action: mcp.tools.call target=stitch:echo verified_by=protocol-tool-call");
       expect(output).not.toContain("sk-test-live-audit-secret");
+      expect(output).not.toContain("stitch-test-key");
 
       const auditPath = path.join(root, ".rph", "live-audit", "latest.json");
       const markdownPath = path.join(root, ".rph", "live-audit", "latest.md");
@@ -1693,14 +1742,33 @@ describe("command parser and env validation", () => {
         schema: string;
         summary: { releaseReady: boolean; failed: number; skipped: number };
         failedTargets: string[];
+        checks: Array<{
+          kind: string;
+          id: string;
+          usableAction: {
+            status: string;
+            action: string | null;
+            targetId: string | null;
+            verifiedBy: string | null;
+          };
+        }>;
       };
       expect(audit.schema).toBe("rph-live-audit-v0");
       expect(audit.summary.releaseReady).toBe(false);
       expect(audit.summary.failed).toBeGreaterThanOrEqual(1);
       expect(audit.summary.skipped).toBeGreaterThan(0);
       expect(audit.failedTargets).toContain("ai:openai");
+      expect(audit.checks.find((check) => check.kind === "mcp" && check.id === "stitch")?.usableAction).toEqual({
+        status: "passed",
+        action: "mcp.tools.call",
+        targetId: "stitch:echo",
+        verifiedBy: "protocol-tool-call"
+      });
       expect(auditText).not.toContain("sk-test-live-audit-secret");
-      expect(fs.readFileSync(markdownPath, "utf8")).toContain("release_readiness: no");
+      expect(auditText).not.toContain("stitch-test-key");
+      const markdown = fs.readFileSync(markdownPath, "utf8");
+      expect(markdown).toContain("release_readiness: no");
+      expect(markdown).toContain("usable_action: mcp.tools.call target=stitch:echo verified_by=protocol-tool-call");
     });
   });
 

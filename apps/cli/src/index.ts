@@ -8974,6 +8974,9 @@ async function handleLiveAudit(
   console.log(`- audit_markdown: ${artifacts.markdownPath}`);
   for (const check of audit.checks) {
     console.log(`- ${check.kind}:${check.id} status=${check.status} trust=${check.trust}:${check.provenStage}`);
+    if (check.usableAction.status === "passed") {
+      console.log(`  usable_action: ${check.usableAction.action} target=${check.usableAction.targetId} verified_by=${check.usableAction.verifiedBy}`);
+    }
     if (check.cause) {
       console.log(`  cause: ${check.cause}`);
     }
@@ -9001,6 +9004,12 @@ interface CliLiveAuditCheck {
   missingEnv: string[];
   identity: unknown;
   firstActionProof: unknown;
+  usableAction: {
+    status: "passed" | "not-run";
+    action: string | null;
+    targetId: string | null;
+    verifiedBy: string | null;
+  };
   policy: unknown;
 }
 
@@ -9102,6 +9111,7 @@ function buildCliLiveAuditReport(input: {
       missingEnv: check.missingEnv,
       identity: check.identity ?? null,
       firstActionProof: check.firstActionProof ?? null,
+      usableAction: usableActionProof(check),
       policy: check.policy ?? null
     }) as CliLiveAuditCheck;
   });
@@ -9166,6 +9176,9 @@ function renderCliLiveAuditMarkdown(audit: CliLiveAuditReport): string {
   ];
   for (const check of audit.checks) {
     lines.push(`- ${check.kind}:${check.id} status=${check.status} trust=${check.trust}:${check.provenStage}`);
+    if (check.usableAction.status === "passed") {
+      lines.push(`  - usable_action: ${check.usableAction.action} target=${check.usableAction.targetId} verified_by=${check.usableAction.verifiedBy}`);
+    }
     if (check.cause) {
       lines.push(`  - cause: ${check.cause}`);
     }
@@ -9180,6 +9193,24 @@ function renderCliLiveAuditMarkdown(audit: CliLiveAuditReport): string {
     }
   }
   return `${lines.join("\n")}\n`;
+}
+
+function usableActionProof(check: ConnectionCheck): CliLiveAuditCheck["usableAction"] {
+  const proof = check.firstActionProof;
+  if (check.status === "passed" && proof?.action && proof.verifiedBy === "protocol-tool-call") {
+    return {
+      status: "passed",
+      action: proof.action,
+      targetId: proof.targetId,
+      verifiedBy: proof.verifiedBy
+    };
+  }
+  return {
+    status: "not-run",
+    action: null,
+    targetId: null,
+    verifiedBy: null
+  };
 }
 
 function sanitizeCliAuditJson(value: unknown): unknown {
