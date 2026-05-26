@@ -69,9 +69,13 @@ assertIncludes(init, "function /setup() { command rph /setup \"$@\"; }", "init.s
 assertIncludes(init, "function /home() { command rph /home \"$@\"; }", "init.sh");
 assertIncludes(init, "function /workspace() { command rph /workspace \"$@\"; }", "init.sh");
 assertIncludes(init, "function /live() { command rph /live \"$@\"; }", "init.sh");
+assertIncludes(init, "_rph_slash_helpers=\"/pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /productize /doctor /help\"", "init.sh");
 assertIncludes(init, 'if [ "${RPH_ENABLE_SLASH_COMMANDS:-1}" = "1" ]; then', "init.sh");
-assertIncludes(completion, "#compdef rph", "completion.zsh");
+assertIncludes(init, 'complete -F _rph_bash_complete "$helper" 2>/dev/null || true', "init.sh");
+assertIncludes(completion, "#compdef rph /pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /productize /doctor /help", "completion.zsh");
 assertIncludes(completion, "help version update home shell runtime init status workspace next pause resume cancel setup settings", "completion.zsh");
+assertIncludes(completion, "_rph_subcommands()", "completion.zsh");
+assertIncludes(completion, "compdef _rph rph /pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /productize /doctor /help", "completion.zsh");
 assertIncludes(completion, "setup_cmds=(auto repair detect apply check ai mcp custom)", "completion.zsh");
 assertIncludes(completion, "doctor_cmds=(status install shell)", "completion.zsh");
 assertIncludes(completion, "agent_cmds=(status roles catalog discover search import install use activate bind bindings unbind session journal replay handoffs actions action-approvals intents confirm-intent dismiss-intent lanes run continue recover pool worker claim heartbeat ack complete dead-letter approve-action reject-action clear reset)", "completion.zsh");
@@ -132,6 +136,17 @@ const pmStart = runChecked(wrapperPath, ["/pm", "start", "--project-name", "Inst
 assertIncludes(pmStart.stdout, "RPH project initialized: Install E2E Product", "installed slash pm start");
 assertIncludes(pmStart.stdout, "PM 워크플로우 시작", "installed slash pm start");
 assertFile(path.join(projectDir, ".rph", "state.json"), "project state");
+
+const pmStartPlainProjectDir = path.join(tmpRoot, "plain-pm-product");
+fs.mkdirSync(pmStartPlainProjectDir, { recursive: true });
+const pmStartPlain = runChecked(wrapperPath, ["pm", "start", "--project-name", "Install Plain PM Product"], {
+  cwd: pmStartPlainProjectDir,
+  env,
+  label: "installed pm start"
+});
+assertIncludes(pmStartPlain.stdout, "RPH project initialized: Install Plain PM Product", "installed pm start");
+assertIncludes(pmStartPlain.stdout, "PM 워크플로우 시작", "installed pm start");
+assertFile(path.join(pmStartPlainProjectDir, ".rph", "state.json"), "plain pm project state");
 
 const status = runChecked(wrapperPath, ["/status"], {
   cwd: projectDir,

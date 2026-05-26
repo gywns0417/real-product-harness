@@ -1141,6 +1141,10 @@ describe("command parser and env validation", () => {
     expect(parsed.options.summary).toBe("first draft");
   });
 
+  it("treats pm start and /pm start as the same top-level operator entry", () => {
+    expect(parseCli(["pm", "start"])).toEqual(parseCli(["/pm", "start"]));
+  });
+
   it("accepts slash-command argv for live audit", () => {
     const parsed = parseCli(["/live", "audit", "--strict", "--output", "reports/audit"]);
 

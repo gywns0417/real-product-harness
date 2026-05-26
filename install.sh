@@ -159,6 +159,7 @@ cat > "$init_file" <<EOF
 # Real Product Harness shell bootstrap.
 # Source this file from ~/.zshrc or ~/.bashrc for the installed rph command.
 export PATH="$RPH_BIN_DIR:\$PATH"
+_rph_slash_helpers="/pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /productize /doctor /help"
 
 rph_enable_slash_commands() {
   if [ -z "\${BASH_VERSION:-}" ] && [ -z "\${ZSH_VERSION:-}" ]; then
@@ -201,30 +202,47 @@ fi
 if [ -n "\${BASH_VERSION:-}" ]; then
   _rph_bash_complete() {
     local cur="\${COMP_WORDS[COMP_CWORD]}"
-    local command="\${COMP_WORDS[1]:-}"
+    local invoked="\${COMP_WORDS[0]:-}"
+    local command=""
     local words="help version update home shell runtime init status workspace next pause resume cancel setup settings ask agent chat ai mcp live doctor productize pm pd fe be qa notion docs github"
     local subcommands=""
-    if [ "\$COMP_CWORD" -gt 1 ]; then
-      case "\$command" in
-        setup) subcommands="auto repair detect apply check ai mcp custom" ;;
-        doctor) subcommands="status install shell" ;;
-        agent) subcommands="status roles catalog discover search import install use activate bind bindings unbind session journal replay handoffs actions action-approvals intents confirm-intent dismiss-intent lanes run continue recover pool worker claim heartbeat ack complete dead-letter approve-action reject-action clear reset" ;;
-        ai) subcommands="status test enable disable run" ;;
-        mcp) subcommands="status tools call test enable disable" ;;
-        live) subcommands="audit target ai:openai ai:anthropic ai:gemini mcp:stitch mcp:github mcp:notion mcp:figma" ;;
-        pm) subcommands="start interview draft revise approve diff rollback finalize" ;;
-        pd) subcommands="start references directions landing-preview design-system pages show revise approve export finalize" ;;
-        fe) subcommands="spec approve sprint-plan issue-create work pr" ;;
-        be) subcommands="spec api-contract approve sprint-plan issue-create work deploy-dev pr" ;;
-        qa) subcommands="review conflicts test security accessibility report" ;;
-        notion) subcommands="plan setup sync" ;;
-        docs) subcommands="list show diff rollback approve export" ;;
-        github) subcommands="create-repo setup-labels setup-templates setup-branches create-issue create-pr sync release-plan release-approve hotfix-plan" ;;
-      esac
+    if [ "\$invoked" = "rph" ]; then
+      if [ "\$COMP_CWORD" -le 1 ]; then
+        COMPREPLY=( \$(compgen -W "\$words" -- "\$cur") )
+        return 0
+      fi
+      command="\${COMP_WORDS[1]:-}"
+    else
+      command="\${invoked#/}"
     fi
-    COMPREPLY=( \$(compgen -W "\${subcommands:-\$words}" -- "\$cur") )
+    case "\$command" in
+      setup) subcommands="auto repair detect apply check ai mcp custom" ;;
+      doctor) subcommands="status install shell" ;;
+      agent) subcommands="status roles catalog discover search import install use activate bind bindings unbind session journal replay handoffs actions action-approvals intents confirm-intent dismiss-intent lanes run continue recover pool worker claim heartbeat ack complete dead-letter approve-action reject-action clear reset" ;;
+      ai) subcommands="status test enable disable run" ;;
+      mcp) subcommands="status tools call test enable disable" ;;
+      live) subcommands="audit target ai:openai ai:anthropic ai:gemini mcp:stitch mcp:github mcp:notion mcp:figma" ;;
+      pm) subcommands="start interview draft revise approve diff rollback finalize" ;;
+      pd) subcommands="start references directions landing-preview design-system pages show revise approve export finalize" ;;
+      fe) subcommands="spec approve sprint-plan issue-create work pr" ;;
+      be) subcommands="spec api-contract approve sprint-plan issue-create work deploy-dev pr" ;;
+      qa) subcommands="review conflicts test security accessibility report" ;;
+      notion) subcommands="plan setup sync" ;;
+      docs) subcommands="list show diff rollback approve export" ;;
+      github) subcommands="create-repo setup-labels setup-templates setup-branches create-issue create-pr sync release-plan release-approve hotfix-plan" ;;
+    esac
+    if [ "\$invoked" = "rph" ]; then
+      COMPREPLY=( \$(compgen -W "\${subcommands:-\$words}" -- "\$cur") )
+    elif [ -n "\$subcommands" ]; then
+      COMPREPLY=( \$(compgen -W "\$subcommands" -- "\$cur") )
+    else
+      COMPREPLY=()
+    fi
   }
   complete -F _rph_bash_complete rph 2>/dev/null || true
+  for helper in \$_rph_slash_helpers; do
+    complete -F _rph_bash_complete "\$helper" 2>/dev/null || true
+  done
 fi
 
 if [ -n "\${ZSH_VERSION:-}" ] && [ -f "$completion_file" ]; then
@@ -235,9 +253,28 @@ fi
 EOF
 
 cat > "$completion_file" <<'EOF'
-#compdef rph
+#compdef rph /pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /productize /doctor /help
+_rph_subcommands() {
+  case "$1" in
+    setup) print -r -- "auto repair detect apply check ai mcp custom" ;;
+    doctor) print -r -- "status install shell" ;;
+    agent) print -r -- "status roles catalog discover search import install use activate bind bindings unbind session journal replay handoffs actions action-approvals intents confirm-intent dismiss-intent lanes run continue recover pool worker claim heartbeat ack complete dead-letter approve-action reject-action clear reset" ;;
+    ai) print -r -- "status test enable disable run" ;;
+    mcp) print -r -- "status tools call test enable disable" ;;
+    live) print -r -- "audit target ai:openai ai:anthropic ai:gemini mcp:stitch mcp:github mcp:notion mcp:figma" ;;
+    pm) print -r -- "start interview draft revise approve diff rollback finalize" ;;
+    pd) print -r -- "start references directions landing-preview design-system pages show revise approve export finalize" ;;
+    fe) print -r -- "spec approve sprint-plan issue-create work pr" ;;
+    be) print -r -- "spec api-contract approve sprint-plan issue-create work deploy-dev pr" ;;
+    qa) print -r -- "review conflicts test security accessibility report" ;;
+    notion) print -r -- "plan setup sync" ;;
+    docs) print -r -- "list show diff rollback approve export" ;;
+    github) print -r -- "create-repo setup-labels setup-templates setup-branches create-issue create-pr sync release-plan release-approve hotfix-plan" ;;
+  esac
+}
 _rph() {
-  local -a commands setup_cmds doctor_cmds agent_cmds ai_cmds mcp_cmds live_cmds pm_cmds pd_cmds fe_cmds be_cmds qa_cmds notion_cmds docs_cmds github_cmds
+  local -a commands setup_cmds doctor_cmds agent_cmds ai_cmds mcp_cmds live_cmds pm_cmds pd_cmds fe_cmds be_cmds qa_cmds notion_cmds docs_cmds github_cmds subcommands
+  local invoked effective_command
   commands=(
     help version update home shell runtime init status workspace next pause resume cancel setup settings
     ask agent chat ai mcp live doctor productize pm pd fe be qa notion docs github
@@ -257,30 +294,46 @@ _rph() {
   docs_cmds=(list show diff rollback approve export)
   github_cmds=(create-repo setup-labels setup-templates setup-branches create-issue create-pr sync release-plan release-approve hotfix-plan)
 
-  if (( CURRENT == 2 )); then
-    _describe 'rph command' commands
+  invoked="${words[1]}"
+  if [[ "$invoked" == "rph" ]]; then
+    if (( CURRENT == 2 )); then
+      _describe 'rph command' commands
+      return
+    fi
+    effective_command="${words[2]}"
+  elif [[ "$invoked" == /* ]]; then
+    effective_command="${invoked#/}"
+  else
+    if (( CURRENT == 1 )); then
+      _describe 'rph command' commands
+      return
+    fi
+    effective_command="${words[1]}"
+  fi
+
+  if [[ -n "$effective_command" ]]; then
+    subcommands=(${(ps: :)$(_rph_subcommands "$effective_command")})
+  else
+    subcommands=()
+  fi
+
+  if [[ "$invoked" == /* ]]; then
+    if (( CURRENT == 2 )) && (( ${#subcommands[@]} > 0 )); then
+      _describe "${effective_command} command" subcommands
+    fi
     return
   fi
 
-  case "$words[2]" in
-    setup) _describe 'setup command' setup_cmds ;;
-    doctor) _describe 'doctor command' doctor_cmds ;;
-    agent) _describe 'agent command' agent_cmds ;;
-    ai) _describe 'ai command' ai_cmds ;;
-    mcp) _describe 'mcp command' mcp_cmds ;;
-    live) _describe 'live command' live_cmds ;;
-    pm) _describe 'pm command' pm_cmds ;;
-    pd) _describe 'pd command' pd_cmds ;;
-    fe) _describe 'fe command' fe_cmds ;;
-    be) _describe 'be command' be_cmds ;;
-    qa) _describe 'qa command' qa_cmds ;;
-    notion) _describe 'notion command' notion_cmds ;;
-    docs) _describe 'docs command' docs_cmds ;;
-    github) _describe 'github command' github_cmds ;;
-    *) _describe 'rph command' commands ;;
-  esac
+  if (( CURRENT == 3 )) && (( ${#subcommands[@]} > 0 )); then
+    _describe "${effective_command} command" subcommands
+    return
+  fi
+
+  if (( CURRENT == 2 )); then
+    _describe 'rph command' commands
+  fi
 }
-_rph "$@"
+compdef _rph rph /pm /pd /setup /status /home /workspace /next /qa /fe /be /ai /mcp /live /docs /github /notion /agent /productize /doctor /help
 EOF
 
 install_shell_profile_hook() {
@@ -343,6 +396,7 @@ info "disable automatic profile integration on install: RPH_AUTO_SHELL_INTEGRATI
 
 success "try: rph"
 success "one-shot: rph pm start"
-success "slash helper: /pm start"
+success "one-shot slash form: rph /pm start"
+success "shell helper: /pm start"
 info "if this shell has not sourced RPH yet: source \"$init_file\""
 info "inside runtime: /init --yes --project-name \"My Product\""

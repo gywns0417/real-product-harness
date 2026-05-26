@@ -6934,21 +6934,23 @@ describe("Hermes-like CLI contracts", () => {
     }
   }, 20000);
 
-  it("allows pm start to bootstrap an uninitialized top-level workflow", async () => {
-    const uninitializedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rph-pm-start-bootstrap-"));
-    try {
-      const result = await runCli(["pm", "start"], { cwd: uninitializedRoot });
+  it("allows pm start and /pm start to bootstrap an uninitialized top-level workflow", async () => {
+    for (const argv of [["pm", "start"], ["/pm", "start"]] as const) {
+      const uninitializedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rph-pm-start-bootstrap-"));
+      try {
+        const result = await runCli([...argv], { cwd: uninitializedRoot });
 
-      expect(result.exitCode).toBe(0);
-      expect(result.stdout).toContain("RPH project initialized");
-      expect(result.stdout).toContain("PM 워크플로우 시작");
-      expect(result.stdout).toContain("현재 단계: PM_PRODUCT_DEFINITION_INTERVIEW");
-      const state = JSON.parse(fs.readFileSync(path.join(uninitializedRoot, ".rph", "state.json"), "utf8")) as {
-        currentStage: string;
-      };
-      expect(state.currentStage).toBe("PM_PRODUCT_DEFINITION_INTERVIEW");
-    } finally {
-      fs.rmSync(uninitializedRoot, { recursive: true, force: true });
+        expect(result.exitCode).toBe(0);
+        expect(result.stdout).toContain("RPH project initialized");
+        expect(result.stdout).toContain("PM 워크플로우 시작");
+        expect(result.stdout).toContain("현재 단계: PM_PRODUCT_DEFINITION_INTERVIEW");
+        const state = JSON.parse(fs.readFileSync(path.join(uninitializedRoot, ".rph", "state.json"), "utf8")) as {
+          currentStage: string;
+        };
+        expect(state.currentStage).toBe("PM_PRODUCT_DEFINITION_INTERVIEW");
+      } finally {
+        fs.rmSync(uninitializedRoot, { recursive: true, force: true });
+      }
     }
   });
 

@@ -14,6 +14,16 @@ rph
 
 `rph` opens the top-layer runtime shell. In a fresh folder it guides setup first; after setup, plain text talks to the connected AI agent. `rph home` or `/home` shows the chat-first operator home without entering the runtime. Slash commands stay local control-plane actions, similar to Codex or Claude Code commands.
 
+Safe top-level entry paths:
+
+```bash
+rph
+rph pm start
+rph /pm start
+```
+
+If shell integration is loaded, the same PM kickoff is available directly as `/pm start`.
+
 ## Install
 
 One-command install:
@@ -244,6 +254,8 @@ Examples:
 ```bash
 /setup auto --live
 /pm start
+rph pm start
+rph /pm start
 /status
 /workspace
 /next
@@ -258,6 +270,8 @@ Examples:
 /be api-contract --ai
 /qa review --pr 12
 ```
+
+When `init.sh` is sourced, bash/zsh completion is attached to both `rph` and the slash helpers, so `/pm <TAB>` and `/agent <TAB>` complete like `rph pm <TAB>` and `rph agent <TAB>`.
 
 Exact limitations:
 

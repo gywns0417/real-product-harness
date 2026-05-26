@@ -362,8 +362,11 @@ const HELP_TOPIC_LINES: Record<string, string[]> = {
     "  rph",
     "  rph shell",
     "  rph runtime",
+    "  rph pm start",
+    "  rph /pm start",
     "",
     "Starts the top-layer conversation runtime. Plain text goes to the connected AI agent; slash commands are explicit workflow controls.",
+    "Use `rph pm start` or `rph /pm start` for one-shot PM kickoff without entering the runtime first.",
     "",
     "Typical flow:",
     "  /setup auto --live",
@@ -481,7 +484,7 @@ const HELP_TOPIC_LINES: Record<string, string[]> = {
     "  rph doctor shell",
     "  rph update",
     "",
-    "`doctor install` checks whether the installed wrapper, source checkout, built CLI, init file, completion, and JSON operator commands are current. `doctor shell` checks slash-helper shell integration. `rph update` reruns the installer from the current source checkout and refuses to overwrite a dirty installed checkout."
+    "`doctor install` checks whether the installed wrapper, source checkout, built CLI, init file, completion, and JSON operator commands are current. `doctor shell` checks slash-helper shell integration, including sourced helper entrypoints such as `/pm start`. `rph update` reruns the installer from the current source checkout and refuses to overwrite a dirty installed checkout."
   ],
   productize: [
     "Productize commands",
@@ -12314,8 +12317,10 @@ function renderGeneralHelp(): string {
     "    Diagnose stale installed wrappers, shell init, completion, and JSON operator command support.",
     "  rph update",
     "    Rerun the installer from the current source checkout.",
+    "  rph pm start",
+    "    Start the PM workflow directly from the shell.",
     "  rph /pm start",
-    "    Start the PM workflow directly.",
+    "    Same PM entry in slash-command form.",
     "",
     "Advanced execution:",
     "  rph ask --execute <message>",
