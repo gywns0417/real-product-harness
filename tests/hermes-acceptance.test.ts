@@ -6293,6 +6293,9 @@ describe("Hermes-like CLI contracts", () => {
       expect(result.stdout).toContain("setup live check passed");
       expect(result.stdout).toContain("Connected");
       expect(result.stdout).toContain("- AI: openai");
+      expect(result.stdout).toContain("Original goal resume");
+      expect(result.stdout).toContain("workflow: productize");
+      expect(result.stdout).toContain("suggested control: /productize");
       expect(result.stdout).toContain("이제 일반 텍스트를 입력하면 연결된 AI agent와 대화합니다.");
       expect(result.stdout).toContain("OK");
       expect(result.stdout).toContain("RPH runtime 종료");
@@ -6307,12 +6310,16 @@ describe("Hermes-like CLI contracts", () => {
         status: string;
         confirmedBy?: string;
       }>;
-      expect(intents).toHaveLength(1);
+      expect(intents).toHaveLength(2);
       expect(intents[0]).toMatchObject({
         command: "/setup auto --live --mcp none",
         status: "confirmed",
         confirmedBy: "runtime-chat"
       });
+      expect(intents[1]).toMatchObject({
+        status: "pending"
+      });
+      expect(intents[1].command).toContain("/productize");
       const config = JSON.parse(fs.readFileSync(path.join(uninitializedRoot, ".rph", "config.json"), "utf8")) as {
         activeAiProvider: string;
         aiProviders: {
@@ -6353,6 +6360,73 @@ describe("Hermes-like CLI contracts", () => {
       fs.rmSync(uninitializedRoot, { recursive: true, force: true });
     }
   }, 10000);
+
+  it("executes the resumed original goal after setup without restating the goal", async () => {
+    const uninitializedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rph-runtime-setup-resume-"));
+    try {
+      const result = await runCli(["shell"], {
+        cwd: uninitializedRoot,
+        env: withoutProviderEnv(),
+        stdinChunks: [
+          { text: "AI 회의록 SaaS를 만들고 싶어\n", delayMs: 0 },
+          { text: "confirm\n", delayMs: 200 },
+          { text: "1\n", delayMs: 200 },
+          { text: "test-openai-from-resume\n", delayMs: 200 },
+          { text: "\n", delayMs: 50 },
+          { text: "https://example.invalid/v1\n", delayMs: 50 },
+          { text: "이 계획 실행해줘\n", delayMs: 350 },
+          { text: "/exit\n", delayMs: 250 }
+        ],
+        preloadFetchOpenAiConnectionSuccess: true
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("Original goal resume");
+      expect(result.stdout).toContain("suggested control: /productize");
+      expect(result.stdout).toContain("plain confirm: /agent confirm-intent");
+      expect(result.stdout).toContain("agent action: /productize");
+      expect(result.stdout).toContain("Productize golden path complete");
+      expect(result.stdout.split("agent action: /setup auto --live --mcp none").length - 1).toBe(1);
+      const state = JSON.parse(fs.readFileSync(path.join(uninitializedRoot, ".rph", "state.json"), "utf8")) as {
+        currentStage: string;
+      };
+      expect(state.currentStage).toBe("PM_PRODUCT_DEFINITION_REVIEW");
+      expect(fs.existsSync(path.join(uninitializedRoot, ".rph", "golden-path", "latest.json"))).toBe(true);
+    } finally {
+      fs.rmSync(uninitializedRoot, { recursive: true, force: true });
+    }
+  }, 20000);
+
+  it("does not resume or persist a secret-like first input after setup confirmation", async () => {
+    const uninitializedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rph-runtime-setup-secret-guard-"));
+    const secretLikeFirstInput = "sk-test-secret-should-not-resume-1234567890";
+    try {
+      const result = await runCli(["shell"], {
+        cwd: uninitializedRoot,
+        env: withoutProviderEnv(),
+        stdinChunks: [
+          { text: `${secretLikeFirstInput}\n`, delayMs: 0 },
+          { text: "confirm\n", delayMs: 200 },
+          { text: "1\n", delayMs: 200 },
+          { text: "test-openai-secret-guard\n", delayMs: 200 },
+          { text: "\n", delayMs: 50 },
+          { text: "https://example.invalid/v1\n", delayMs: 50 },
+          { text: "/exit\n", delayMs: 250 }
+        ],
+        preloadFetchOpenAiConnectionSuccess: true
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("setup live check passed");
+      expect(result.stdout).not.toContain("Original goal resume");
+      expect(result.stdout).not.toContain(secretLikeFirstInput);
+      expect(readAllTextFiles(uninitializedRoot)).not.toContain(secretLikeFirstInput);
+    } finally {
+      fs.rmSync(uninitializedRoot, { recursive: true, force: true });
+    }
+  }, 20000);
 
   it("keeps one runtime shell session usable across setup, chat, status, chat, and explicit control", async () => {
     const uninitializedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rph-runtime-mixed-session-"));
@@ -7507,6 +7581,25 @@ function createFetchSequenceStub(projectRoot: string, captureFile: string): stri
     "};"
   ].join("\n"));
   return preloadPath;
+}
+
+function readAllTextFiles(rootDir: string): string {
+  if (!fs.existsSync(rootDir)) {
+    return "";
+  }
+  const chunks: string[] = [];
+  const visit = (current: string): void => {
+    const stat = fs.statSync(current);
+    if (stat.isDirectory()) {
+      for (const entry of fs.readdirSync(current)) {
+        visit(path.join(current, entry));
+      }
+      return;
+    }
+    chunks.push(fs.readFileSync(current, "utf8"));
+  };
+  visit(rootDir);
+  return chunks.join("\n");
 }
 
 async function writeChunks(

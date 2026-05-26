@@ -4245,21 +4245,26 @@ function appendRuntimeLog(projectRoot: string, sessionId: string, command: strin
   }
 }
 
-const ephemeralRuntimeSetupIntents = new Map<string, RuntimeActionPlan>();
+interface EphemeralRuntimeSetupIntent {
+  plan: RuntimeActionPlan;
+  resumeInput: string;
+}
+
+const ephemeralRuntimeSetupIntents = new Map<string, EphemeralRuntimeSetupIntent>();
 
 function ephemeralRuntimeSetupIntentKey(projectRoot: string, sessionId: string): string {
   return `${path.resolve(projectRoot)}\0${sessionId}`;
 }
 
-function rememberEphemeralRuntimeSetupIntent(projectRoot: string, sessionId: string, plan: RuntimeActionPlan): void {
-  ephemeralRuntimeSetupIntents.set(ephemeralRuntimeSetupIntentKey(projectRoot, sessionId), plan);
+function rememberEphemeralRuntimeSetupIntent(projectRoot: string, sessionId: string, plan: RuntimeActionPlan, resumeInput: string): void {
+  ephemeralRuntimeSetupIntents.set(ephemeralRuntimeSetupIntentKey(projectRoot, sessionId), { plan, resumeInput });
 }
 
-function takeEphemeralRuntimeSetupIntent(projectRoot: string, sessionId: string): RuntimeActionPlan | undefined {
+function takeEphemeralRuntimeSetupIntent(projectRoot: string, sessionId: string): EphemeralRuntimeSetupIntent | undefined {
   const key = ephemeralRuntimeSetupIntentKey(projectRoot, sessionId);
-  const plan = ephemeralRuntimeSetupIntents.get(key);
+  const intent = ephemeralRuntimeSetupIntents.get(key);
   ephemeralRuntimeSetupIntents.delete(key);
-  return plan;
+  return intent;
 }
 
 async function handleRuntimeAgentInput(
@@ -4278,7 +4283,7 @@ async function handleRuntimeAgentInput(
   const wasInitialized = isRuntimeProjectInitialized(projectRoot);
   if (!hasReadyAi && !wasInitialized && plan.kind === "chat") {
     plan = createRuntimeSetupOnboardingPlan();
-    rememberEphemeralRuntimeSetupIntent(projectRoot, sessionId, plan);
+    rememberEphemeralRuntimeSetupIntent(projectRoot, sessionId, plan, userInput);
     printExecutionPlanCard(userInput, plan, {
       confirmCommand: "confirm 또는 이 계획 실행해줘"
     });
@@ -4614,11 +4619,11 @@ async function tryConfirmRuntimeIntentFromPlainChat(
       return null;
     }
     ensureRuntimeProjectForSetupIntent(projectRoot, sessionId);
-    const intent = recordRuntimePlanIntent(projectRoot, sessionId, ephemeralSetup);
+    const intent = recordRuntimePlanIntent(projectRoot, sessionId, ephemeralSetup.plan);
     if (!intent) {
       return false;
     }
-    rememberPresentedIntent(projectRoot, sessionId, ephemeralSetup, intent);
+    rememberPresentedIntent(projectRoot, sessionId, ephemeralSetup.plan, intent);
     recordRuntimeSessionEvent(projectRoot, sessionId, {
       kind: "command",
       message: `plain confirm: /agent confirm-intent ${intent.id}`,
@@ -4629,6 +4634,9 @@ async function tryConfirmRuntimeIntentFromPlainChat(
       confirmedBy,
       commandContext
     });
+    if (ok) {
+      await resumeOriginalGoalAfterSetup(projectRoot, sessionId, ephemeralSetup.resumeInput);
+    }
     if (ok && confirmMode === "confirm-and-continue") {
       console.log("plain confirm continue: running safe local orchestration loop");
       await runAgentOrchestrationLoop(projectRoot, sessionId, {
@@ -6941,6 +6949,78 @@ function createRuntimeSetupOnboardingPlan(): RuntimeActionPlan {
     ],
     createdAt: new Date().toISOString()
   };
+}
+
+async function resumeOriginalGoalAfterSetup(projectRoot: string, sessionId: string, originalInput: string): Promise<void> {
+  if (!shouldResumeOriginalGoalAfterSetup(originalInput) || !safeHasReadyAiProvider(projectRoot)) {
+    return;
+  }
+  const plan = createRuntimePostSetupResumePlan(projectRoot, originalInput);
+  if (plan.kind === "chat" || !plan.command) {
+    return;
+  }
+  recordRuntimeSessionEvent(projectRoot, sessionId, {
+    kind: "plan",
+    message: "post-setup original goal resumed",
+    ok: true,
+    plan
+  });
+  const intent = recordRuntimePlanIntent(projectRoot, sessionId, plan);
+  console.log("");
+  console.log("Original goal resume");
+  printExecutionPlanCard(originalInput, plan, {
+    confirmCommand: intent ? `/agent confirm-intent ${intent.id}` : undefined,
+    dismissCommand: intent ? `/agent dismiss-intent ${intent.id}` : undefined
+  });
+  console.log(`suggested control: ${plan.command}`);
+  console.log("run explicitly: type the suggested control when you want to execute it.");
+  if (intent) {
+    rememberPresentedIntent(projectRoot, sessionId, plan, intent);
+    console.log(`intent saved: ${intent.id}`);
+    console.log(`confirm: /agent confirm-intent ${intent.id}`);
+    console.log(`dismiss: /agent dismiss-intent ${intent.id}`);
+  }
+}
+
+function createRuntimePostSetupResumePlan(projectRoot: string, originalInput: string): RuntimeActionPlan {
+  const plan = createRuntimePlan(projectRoot, originalInput);
+  if (plan.kind !== "chat" || !isLikelyProductBuildGoal(originalInput)) {
+    return plan;
+  }
+  const idea = extractProductIdea(originalInput);
+  return {
+    kind: "start-workflow",
+    confidence: 0.82,
+    reason: "resume original product goal after setup",
+    command: `/productize "${escapeRuntimeCommandArg(idea)}"`,
+    workflowTarget: "productize",
+    safeToAutoRun: true,
+    steps: [
+      "Turn the original product goal into a reviewable execution package.",
+      "Create product, design, FE, BE, QA, and PR draft artifacts.",
+      "Stop at the existing review and approval gate."
+    ],
+    createdAt: new Date().toISOString()
+  };
+}
+
+function shouldResumeOriginalGoalAfterSetup(input: string): boolean {
+  return isLikelyProductBuildGoal(input) && !looksLikeSecretInput(input);
+}
+
+function isLikelyProductBuildGoal(input: string): boolean {
+  const normalized = input.toLowerCase();
+  const buildTerms = ["만들", "개발", "구현", "출시", "빌드", "build", "create", "make", "launch"];
+  const productTerms = ["saas", "서비스", "앱", "제품", "프로덕트", "platform", "플랫폼", "web", "웹", "app", "tool", "툴"];
+  return buildTerms.some((term) => normalized.includes(term)) && productTerms.some((term) => normalized.includes(term));
+}
+
+function looksLikeSecretInput(input: string): boolean {
+  return /(?:\bsk-[A-Za-z0-9_-]{8,}|api[_ -]?key|token|secret|password|credential|BEGIN [A-Z ]*PRIVATE KEY)/i.test(input);
+}
+
+function escapeRuntimeCommandArg(value: string): string {
+  return value.replace(/["\\]/g, "");
 }
 
 function ensureRuntimeProjectForSetupIntent(projectRoot: string, sessionId: string): void {
