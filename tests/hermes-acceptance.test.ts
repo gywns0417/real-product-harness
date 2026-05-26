@@ -4669,6 +4669,150 @@ describe("Hermes-like CLI contracts", () => {
     });
   }, 10000);
 
+  it("continues safely after exact plain runtime confirm-and-continue phrasing", async () => {
+    const result = await runCli(["shell"], {
+      cwd: root,
+      stdinChunks: [
+        { text: "이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: AI 회의록 액션아이템 SaaS\n", delayMs: 0 },
+        { text: "이 계획 실행하고 가능한 데까지 계속해줘\n", delayMs: 50 },
+        { text: "/exit\n", delayMs: 50 }
+      ]
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("plain confirm: /agent confirm-intent");
+    expect(result.stdout).toContain("Productize golden path complete");
+    expect(result.stdout).toContain("plain confirm continue: running safe local orchestration loop");
+    expect(result.stdout).toContain("orchestration loop: max_steps=6 concurrency=3");
+    expect(result.stdout).toContain("orchestration blocked: approval or external action required before /docs approve product-definition");
+    expect(result.stdout).not.toContain("[승인 완료]");
+    const state = JSON.parse(fs.readFileSync(path.join(root, ".rph", "state.json"), "utf8")) as {
+      currentStage: string;
+    };
+    expect(state.currentStage).toBe("PM_PRODUCT_DEFINITION_REVIEW");
+    const productDefinition = JSON.parse(fs.readFileSync(path.join(root, ".rph", "documents", "product-definition", "index.json"), "utf8")) as {
+      status: string;
+      approvedVersion?: string | null;
+    };
+    expect(productDefinition.status).not.toBe("approved");
+    expect(productDefinition.approvedVersion ?? null).toBeNull();
+  }, 10000);
+
+  it("continues the last presented productize intent from ask --execute exact confirm-and-continue phrasing", async () => {
+    const planned = await runCli(["ask", "이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: 승인 게이트 SaaS"], { cwd: root });
+    expect(planned.exitCode).toBe(0);
+    expect(planned.stdout).toContain("Execution plan");
+
+    const result = await runCli(["ask", "--execute", "이 계획 실행하고 가능한 데까지 계속해줘"], {
+      cwd: root,
+      env: withoutProviderEnv()
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("plain confirm: /agent confirm-intent");
+    expect(result.stdout).toContain("plain confirm continue: running safe local orchestration loop");
+    expect(result.stdout).toContain("intent confirmed: intent_");
+    expect(result.stdout).toContain("agent action: /productize");
+    expect(result.stdout).toContain("Productize golden path complete");
+    expect(result.stdout).toContain("orchestration blocked: approval or external action required before /docs approve product-definition");
+    const state = JSON.parse(fs.readFileSync(path.join(root, ".rph", "state.json"), "utf8")) as {
+      currentStage: string;
+    };
+    expect(state.currentStage).toBe("PM_PRODUCT_DEFINITION_REVIEW");
+  }, 10000);
+
+  it("does not execute the presented productize intent from question-shaped confirm-and-continue text", async () => {
+    const planned = await runCli(["ask", "이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: 승인 게이트 SaaS"], { cwd: root });
+    expect(planned.exitCode).toBe(0);
+
+    const result = await runCli(["ask", "--execute", "이 계획 실행하고 가능한 데까지 계속해줘?"], {
+      cwd: root,
+      env: withoutProviderEnv()
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("plain confirm skipped: question-shaped confirmation text does not execute runtime intents.");
+    expect(result.stdout).not.toContain("plain confirm: /agent confirm-intent");
+    expect(result.stdout).not.toContain("plain confirm continue: running safe local orchestration loop");
+    expect(result.stdout).not.toContain("agent action: /productize");
+    expect(result.stdout).not.toContain("Productize golden path complete");
+    const intents = JSON.parse(fs.readFileSync(path.join(root, ".rph", "runtime", "intents.json"), "utf8")) as Array<{
+      status: string;
+    }>;
+    expect(intents[0].status).toBe("pending");
+  }, 10000);
+
+  it.each(["ok", "go ahead"])("does not execute the presented productize intent from broad approval text: %s", async (phrase) => {
+    const planned = await runCli(["ask", "이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: 승인 게이트 SaaS"], { cwd: root });
+    expect(planned.exitCode).toBe(0);
+
+    const result = await runCli(["ask", "--execute", phrase], {
+      cwd: root,
+      env: withoutProviderEnv()
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("AI agent is not connected yet.");
+    expect(result.stdout).not.toContain("plain confirm: /agent confirm-intent");
+    expect(result.stdout).not.toContain("agent action: /productize");
+    expect(result.stdout).not.toContain("Productize golden path complete");
+    const intents = JSON.parse(fs.readFileSync(path.join(root, ".rph", "runtime", "intents.json"), "utf8")) as Array<{
+      status: string;
+    }>;
+    expect(intents[0].status).toBe("pending");
+  }, 10000);
+
+  it("does not execute a stale presented productize intent from exact confirm-and-continue text", async () => {
+    const first = await runCli(["ask", "이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: 첫 번째 SaaS"], { cwd: root });
+    expect(first.exitCode).toBe(0);
+    const second = await runCli(["ask", "이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: 두 번째 SaaS"], { cwd: root });
+    expect(second.exitCode).toBe(0);
+
+    const intentPath = path.join(root, ".rph", "runtime", "intents.json");
+    const intents = JSON.parse(fs.readFileSync(intentPath, "utf8")) as Array<{
+      id: string;
+      status: string;
+      command: string;
+    }>;
+    const staleIntent = intents.find((record) => record.command.includes("첫 번째 SaaS"));
+    const currentIntent = intents.find((record) => record.command.includes("두 번째 SaaS"));
+    expect(staleIntent).toBeTruthy();
+    expect(currentIntent).toBeTruthy();
+
+    const dismissed = await runCli(["agent", "dismiss-intent", staleIntent!.id, "--by", "tester", "--reason", "stale plan"], {
+      cwd: root,
+      env: withoutProviderEnv()
+    });
+    expect(dismissed.exitCode).toBe(0);
+
+    const sessionPath = path.join(root, ".rph", "runtime", "current-session.json");
+    const session = JSON.parse(fs.readFileSync(sessionPath, "utf8")) as {
+      lastPresentedIntentId?: string | null;
+    };
+    fs.writeFileSync(sessionPath, JSON.stringify({
+      ...session,
+      lastPresentedIntentId: staleIntent!.id
+    }, null, 2));
+
+    const result = await runCli(["ask", "--execute", "이 계획 실행하고 가능한 데까지 계속해줘"], {
+      cwd: root,
+      env: withoutProviderEnv()
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain(`intent blocked: presented runtime intent is no longer pending: ${staleIntent!.id}`);
+    expect(result.stdout).toContain("inspect: /agent intents");
+    expect(result.stdout).not.toContain("intent confirmed:");
+    expect(result.stdout).not.toContain("agent action: /productize");
+    expect(result.stdout).not.toContain("Productize golden path complete");
+    const updated = JSON.parse(fs.readFileSync(intentPath, "utf8")) as Array<{
+      id: string;
+      status: string;
+    }>;
+    expect(updated.find((record) => record.id === staleIntent!.id)?.status).toBe("dismissed");
+    expect(updated.find((record) => record.id === currentIntent!.id)?.status).toBe("pending");
+  }, 10000);
+
   it("treats bare multi-word natural language as one-shot chat", async () => {
     const captureFile = path.join(root, "bare-chat-capture.json");
     writeOpenAiEnv(root, "https://example.invalid/v1");

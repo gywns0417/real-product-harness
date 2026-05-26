@@ -134,9 +134,10 @@ step, and confirm/dismiss controls. The shown control is saved as a durable runt
 `/agent intents` to review it, `/agent confirm-intent <intent-id>` to run it, or
 `/agent dismiss-intent <intent-id>` to discard it. In the runtime and one-shot ask surfaces, exact
 execution phrases such as `confirm` or `이 계획 실행해줘` confirm only the last intent that was
-presented in that session. Question-shaped text such as `confirm?` stays non-executing. External live
-writes still become explicit action approvals after confirmation; user-approval commands still require
-the normal approval path.
+presented in that session. `이 계획 실행하고 가능한 데까지 계속해줘` confirms the shown plan and
+then runs the bounded safe local orchestration loop until the next approval gate. Question-shaped text
+such as `confirm?` stays non-executing. External live writes still become explicit action approvals
+after confirmation; user-approval commands still require the normal approval path.
 
 For one-shot operation, use natural language or a slash command from the shell:
 
@@ -147,6 +148,7 @@ rph "다음에 뭐 하면 돼?"
 rph "이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: AI 회의록을 액션아이템과 담당자 추적으로 바꾸는 SaaS"
 rph ask "이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: AI 회의록을 액션아이템과 담당자 추적으로 바꾸는 SaaS"
 rph ask "이 계획 실행해줘"
+rph ask --execute "이 계획 실행하고 가능한 데까지 계속해줘"
 rph ask --execute "이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: AI 회의록을 액션아이템과 담당자 추적으로 바꾸는 SaaS"
 rph status --json
 rph workspace --json

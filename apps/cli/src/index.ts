@@ -364,7 +364,7 @@ const HELP_TOPIC_LINES: Record<string, string[]> = {
     "  /agent confirm-intent <id>",
     "  /agent dismiss-intent <id>",
     "",
-    "Plain confirm only runs the last intent shown in this session. Use exact execution phrases such as `confirm` or `이 계획 실행해줘`; question-shaped text like `confirm?` does not execute.",
+    "Plain confirm only runs the last intent shown in this session. Use exact execution phrases such as `confirm` or `이 계획 실행해줘`; `이 계획 실행하고 가능한 데까지 계속해줘` confirms it and then runs the bounded safe local loop until the next approval gate. Question-shaped text like `confirm?` does not execute.",
     "",
     "Explicit execution mode:",
     "  rph ask --execute <message>",
@@ -449,6 +449,7 @@ const HELP_TOPIC_LINES: Record<string, string[]> = {
     "  rph \"이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: <idea>\"",
     "  rph ask \"이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: <idea>\"",
     "  rph ask --execute \"이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: <idea>\"",
+    "  rph ask --execute \"이 계획 실행하고 가능한 데까지 계속해줘\"",
     "  rph ask --execute --loop \"PM부터 승인 대기 전까지 진행해줘: <idea>\"",
     "",
     "Creates a review-ready package: PM docs, PD artifacts, FE/BE/API specs, sprint plans, FE/BE issues, PR drafts, QA reports, and a local deployment plan.",
@@ -4541,7 +4542,8 @@ async function tryConfirmRuntimeIntentFromPlainChat(
   userInput: string,
   confirmedBy = "runtime-chat"
 ): Promise<boolean | null> {
-  if (naturalRuntimeIntent(userInput) !== "approve") {
+  const confirmMode = plainRuntimeConfirmMode(userInput);
+  if (!confirmMode) {
     return null;
   }
   if (!isRuntimeProjectInitialized(projectRoot)) {
@@ -4587,9 +4589,47 @@ async function tryConfirmRuntimeIntentFromPlainChat(
     ok: true
   });
   console.log(`plain confirm: /agent confirm-intent ${confirmable.id}`);
-  return confirmAndRunRuntimeIntent(projectRoot, confirmable.id, {
+  const ok = await confirmAndRunRuntimeIntent(projectRoot, confirmable.id, {
     confirmedBy
   });
+  if (ok && confirmMode === "confirm-and-continue") {
+    console.log("plain confirm continue: running safe local orchestration loop");
+    await runAgentOrchestrationLoop(projectRoot, sessionId, {
+      maxSteps: loopMaxSteps({}),
+      concurrency: loopConcurrency({})
+    });
+  }
+  return ok;
+}
+
+function plainRuntimeConfirmMode(input: string): "confirm" | "confirm-and-continue" | null {
+  if (/[?？]/.test(input)) {
+    return null;
+  }
+  const text = normalizeNaturalRuntimeText(input);
+  if (!text) {
+    return null;
+  }
+  const continuePhrases = [
+    "이 계획 실행하고 계속해줘",
+    "이 계획 실행하고 가능한 데까지 계속해줘",
+    "이 계획 실행하고 가능한 데까지 진행해줘",
+    "이 계획 실행하고 승인 전까지 진행해줘",
+    "이 계획 실행하고 로컬로 가능한 데까지 계속해줘",
+    "confirm and continue",
+    "execute plan and continue",
+    "run plan and continue"
+  ];
+  if (continuePhrases.includes(text)) {
+    return "confirm-and-continue";
+  }
+  if (/^이 계획 실행하고 (?:(?:가능한 데까지|승인 전까지|로컬로 가능한 데까지) )?(?:계속|진행)해줘$/.test(text)) {
+    return "confirm-and-continue";
+  }
+  if (/^(?:confirm|execute plan|run plan) and continue$/.test(text)) {
+    return "confirm-and-continue";
+  }
+  return naturalRuntimeIntent(input) === "approve" ? "confirm" : null;
 }
 
 function rememberPresentedIntent(
@@ -4629,7 +4669,7 @@ function shouldSkipConfirmQuestionForPendingIntent(projectRoot: string, sessionI
     return false;
   }
   const withoutQuestion = userInput.replace(/[?？]+/g, "").trim();
-  if (naturalRuntimeIntent(withoutQuestion) !== "approve") {
+  if (!plainRuntimeConfirmMode(withoutQuestion)) {
     return false;
   }
   return loadRuntimeIntents(projectRoot).some((record) => record.status === "pending" && record.sessionId === sessionId);
