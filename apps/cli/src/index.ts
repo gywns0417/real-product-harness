@@ -6953,16 +6953,7 @@ async function handleSetup(
           printFirstValueActions(checks);
           printSetupRecoveryHints(checks, commandSurfaceFromOptions(options));
           console.log(`report: ${filePath}`);
-          assertLiveSetupSucceeded(checks, options);
-          await printSetupFirstSuccessExperience(projectRoot, checks, options);
-          if ((server.agentReadOnlyTools ?? []).length > 0) {
-            const binding = await bindMcpReadOnlyToolContracts(projectRoot, server.id, process.env);
-            console.log(`MCP read-only tool contracts bound: ${server.id}`);
-            console.log(`bound tools: ${binding.boundTools.join(",") || "none"}`);
-            if (binding.missingTools.length > 0) {
-              console.log(`missing allowlisted tools: ${binding.missingTools.join(",")}`);
-            }
-          }
+          await finishLiveConnectionOnboarding(projectRoot, checks, options);
         }
         return;
       }
@@ -7018,9 +7009,7 @@ async function printSetupAutoSummary(
     console.log("auto --live: env 감지 결과를 적용한 뒤 live check까지 실행합니다.");
     const appliedConfig = syncHarnessConfigFromEnv(projectRoot);
     const checks = await runSetupChecks(projectRoot, appliedConfig, commandSurfaceFromOptions(options));
-    await bindVerifiedMcpReadOnlyContracts(projectRoot, checks, options);
-    assertLiveSetupSucceeded(checks, options);
-    await printSetupFirstSuccessExperience(projectRoot, checks, options);
+    await finishLiveConnectionOnboarding(projectRoot, checks, options);
     return;
   }
   console.log("대화형 연결 마법사로 값 입력까지 진행하려면 TTY에서 `rph setup auto`를 실행하세요.");
@@ -7117,9 +7106,7 @@ async function runSetupRepair(
       prompter,
       canPrompt
     );
-    await bindVerifiedMcpReadOnlyContracts(projectRoot, checks, repairOptions);
-    assertLiveSetupSucceeded(checks, repairOptions);
-    await printSetupFirstSuccessExperience(projectRoot, checks, repairOptions);
+    await finishLiveConnectionOnboarding(projectRoot, checks, repairOptions);
   });
 }
 
@@ -7195,13 +7182,11 @@ async function runAutoSetupWizard(
       prompter,
       !fromEnv
     );
-    await bindVerifiedMcpReadOnlyContracts(projectRoot, checks, options);
+    await finishLiveConnectionOnboarding(projectRoot, checks, options);
 
     console.log("");
     console.log("최종 상태");
     console.log(renderSetupGuide(syncHarnessConfigFromEnv(projectRoot)));
-    assertLiveSetupSucceeded(checks, options);
-    await printSetupFirstSuccessExperience(projectRoot, checks, options);
   });
 }
 
@@ -7330,9 +7315,33 @@ async function bindVerifiedMcpReadOnlyContracts(
     boundAny = true;
   }
   if (boundAny) {
-    const filePath = writeLiveConnectionReport(projectRoot, checks);
-    console.log(`report refreshed after MCP contract binding: ${filePath}`);
+    refreshLatestLiveConnectionReportAfterMcpBinding(projectRoot, checks);
   }
+}
+
+function refreshLatestLiveConnectionReportAfterMcpBinding(
+  projectRoot: string,
+  checks = readLatestConnectionChecks(projectRoot)
+): string | null {
+  if (checks.length === 0) {
+    return null;
+  }
+  const filePath = writeLiveConnectionReport(projectRoot, checks);
+  console.log(`report refreshed after MCP contract binding: ${filePath}`);
+  return filePath;
+}
+
+async function finishLiveConnectionOnboarding(
+  projectRoot: string,
+  checks: ConnectionCheck[],
+  options: Record<string, string | boolean>
+): Promise<void> {
+  if (!optionBool(options, "live")) {
+    return;
+  }
+  await bindVerifiedMcpReadOnlyContracts(projectRoot, checks, options);
+  assertLiveSetupSucceeded(checks, options);
+  await printSetupFirstSuccessExperience(projectRoot, checks, options);
 }
 
 function assertLiveSetupSucceeded(checks: ConnectionCheck[], options: Record<string, string | boolean>): void {
@@ -7348,7 +7357,11 @@ function assertLiveSetupSucceeded(checks: ConnectionCheck[], options: Record<str
   }
   console.log("setup live check passed");
   printSetupConnectedHandoff(checks, options);
-  console.log("이제 일반 텍스트를 입력하면 연결된 AI agent와 대화합니다.");
+  if (checks.some((check) => check.kind === "ai" && check.status === "passed")) {
+    console.log("이제 일반 텍스트를 입력하면 연결된 AI agent와 대화합니다.");
+  } else {
+    console.log("AI provider가 아직 없어 plain text chat은 AI 연결 후 활성화됩니다.");
+  }
   console.log("handoff: runtime ready");
   console.log(`next: ${runtimeSurfaceCommand(commandSurfaceFromOptions(options), "pm start")}`);
 }
@@ -7362,7 +7375,11 @@ function printSetupConnectedHandoff(checks: ConnectionCheck[], options: Record<s
   console.log(`- AI: ${ai}`);
   console.log(`- MCP: ${mcp}`);
   console.log("- secrets: stored in .env only; .rph/config.json stores redacted connection state");
-  console.log("- chat: plain text goes to the connected AI agent");
+  if (ai !== "none") {
+    console.log("- chat: plain text goes to the connected AI agent");
+  } else {
+    console.log("- chat: connect an AI provider to enable plain text agent chat");
+  }
   console.log(`- start product work: ${runtimeSurfaceCommand(commandSurface, "pm start")}`);
   console.log(`- inspect setup: ${runtimeSurfaceCommand(commandSurface, "status")} | ${runtimeSurfaceCommand(commandSurface, "setup auto --from-env --live")}`);
 }
@@ -7386,13 +7403,19 @@ async function printSetupFirstSuccessExperience(
   console.log("Capability summary");
   console.log(`- connected AI: ${aiChecks.map((check) => check.id).join(", ") || "none"}`);
   console.log(`- connected MCP: ${mcpChecks.map((check) => `${check.id} (${connectionTrustLabel(check)})`).join(", ") || "none"}`);
-  console.log("- plain text: describe the product you want and the connected AI agent will answer in this runtime");
+  if (aiChecks.length > 0) {
+    console.log("- plain text: describe the product you want and the connected AI agent will answer in this runtime");
+  } else {
+    console.log("- plain text: connect an AI provider to enable agent chat in this runtime");
+  }
   console.log(`- first product workflow: ${runtimeSurfaceCommand(commandSurface, "pm start")}`);
   console.log(`- setup proof: ${runtimeSurfaceCommand(commandSurface, "status")} shows the verified connection state`);
 
   const demoProvider = aiChecks[0]?.id;
   if (!demoProvider) {
-    console.log("- first demo turn: skipped because no AI provider was selected and verified");
+    console.log("");
+    console.log("First demo turn");
+    console.log("- skipped: no AI provider was selected and verified");
     return;
   }
   try {
@@ -7979,6 +8002,7 @@ async function handleMcp(
         if (result.missingTools.length > 0) {
           console.log(`missing allowlisted tools: ${result.missingTools.join(",")}`);
         }
+        refreshLatestLiveConnectionReportAfterMcpBinding(projectRoot);
         printMcpStatus(result.config);
         return;
       }
@@ -8953,7 +8977,11 @@ function printFirstValueActions(checks: ConnectionCheck[]): void {
   console.log("");
   console.log("Ready actions");
   actions.forEach((action) => console.log(`- ${action}`));
-  console.log("- workflow: /pm start 또는 제품 아이디어를 그냥 입력");
+  if (checks.some((check) => check.kind === "ai" && check.status === "passed")) {
+    console.log("- workflow: /pm start 또는 제품 아이디어를 그냥 입력");
+  } else {
+    console.log("- workflow: AI provider를 연결하면 제품 아이디어를 일반 텍스트로 바로 입력할 수 있음");
+  }
 }
 
 function firstValueActionForCheck(check: ConnectionCheck): string | null {
@@ -8983,7 +9011,11 @@ function connectionTrustLabel(check: ConnectionCheck): string {
 function printSetupRecoveryHints(checks: ConnectionCheck[], commandSurface: CommandSurface = "rph"): void {
   const failing = checks.filter((check) => check.status !== "passed");
   if (failing.length === 0) {
-    console.log(`next: 일반 텍스트로 AI agent와 대화하거나 ${runtimeSurfaceCommand(commandSurface, "pm start")}`);
+    if (checks.some((check) => check.kind === "ai" && check.status === "passed")) {
+      console.log(`next: 일반 텍스트로 AI agent와 대화하거나 ${runtimeSurfaceCommand(commandSurface, "pm start")}`);
+    } else {
+      console.log(`next: ${runtimeSurfaceCommand(commandSurface, "setup auto --ai openai --live")} 또는 ${runtimeSurfaceCommand(commandSurface, "pm start")}`);
+    }
     return;
   }
   console.log("");

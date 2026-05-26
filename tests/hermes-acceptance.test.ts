@@ -5605,6 +5605,20 @@ describe("Hermes-like CLI contracts", () => {
       expect(setup.stdout).toContain("mcp:custom-echo trust=protocol-ready:protocol-tool-call");
       expect(setup.stdout).toContain("detail=mcp.tools.call target_id=custom-echo:echo verified_by=protocol-tool-call");
       expect(setup.stdout).toContain("MCP policy");
+      expect(setup.stdout).toContain("report refreshed after MCP contract binding");
+      expect(setup.stdout).toContain("setup live check passed");
+      expect(setup.stdout).toContain("Connected");
+      expect(setup.stdout).toContain("- AI: none");
+      expect(setup.stdout).toContain("- MCP: custom-echo");
+      expect(setup.stdout).toContain("- chat: connect an AI provider to enable plain text agent chat");
+      expect(setup.stdout).toContain("Capability summary");
+      expect(setup.stdout).toContain("- connected AI: none");
+      expect(setup.stdout).toContain("- connected MCP: custom-echo (protocol-ready:protocol-tool-call)");
+      expect(setup.stdout).toContain("First demo turn");
+      expect(setup.stdout).toContain("- skipped: no AI provider was selected and verified");
+      expect(setup.stdout).toContain("AI provider가 아직 없어 plain text chat은 AI 연결 후 활성화됩니다.");
+      expect(setup.stdout).not.toContain("이제 일반 텍스트를 입력하면 연결된 AI agent와 대화합니다.");
+      expect(setup.stdout).not.toContain("next: 일반 텍스트로 AI agent와 대화하거나 rph pm start");
 
       const config = JSON.parse(fs.readFileSync(path.join(uninitializedRoot, ".rph", "config.json"), "utf8")) as {
         mcpPolicyRegistry?: { servers: Record<string, { kind?: string; protocolReadiness?: string; protocolToolCallProbe?: { toolName?: string; arguments?: Record<string, unknown> }; agentReadOnlyTools?: string[] }> };
@@ -5650,6 +5664,37 @@ describe("Hermes-like CLI contracts", () => {
         }
       });
 
+      const report = JSON.parse(fs.readFileSync(path.join(uninitializedRoot, ".rph", "connections", "latest.json"), "utf8")) as {
+        checks: Array<{ kind: string; id: string; policy?: { state?: string; satisfied?: boolean; requireReadOnlyToolContracts?: boolean; toolContractCount?: number; agentReadOnlyTools?: string[] } }>;
+        onboardingProof: Array<{ kind: string; id: string; policy?: { state?: string; satisfied?: boolean; requireReadOnlyToolContracts?: boolean; toolContractCount?: number; agentReadOnlyTools?: string[] } }>;
+      };
+      expect(report.checks).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          kind: "mcp",
+          id: "custom-echo",
+          policy: expect.objectContaining({
+            state: "proved-now",
+            satisfied: true,
+            requireReadOnlyToolContracts: true,
+            toolContractCount: 1,
+            agentReadOnlyTools: ["echo"]
+          })
+        })
+      ]));
+      expect(report.onboardingProof).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          kind: "mcp",
+          id: "custom-echo",
+          policy: expect.objectContaining({
+            state: "proved-now",
+            satisfied: true,
+            requireReadOnlyToolContracts: true,
+            toolContractCount: 1,
+            agentReadOnlyTools: ["echo"]
+          })
+        })
+      ]));
+
       const tools = await runCli(["mcp", "tools", "custom-echo"], {
         cwd: uninitializedRoot,
         env: {
@@ -5663,6 +5708,92 @@ describe("Hermes-like CLI contracts", () => {
       expect(tools.stdout).toContain("\"echo\"");
       expect(tools.stdout).toContain("\"tools\": [");
       expect(tools.stdout).not.toContain("custom-secret");
+    } finally {
+      fs.rmSync(uninitializedRoot, { recursive: true, force: true });
+    }
+  }, 10000);
+
+  it("refreshes latest live proof after mcp tools bind updates read-only contracts", async () => {
+    const uninitializedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rph-mcp-tools-bind-refresh-"));
+    try {
+      const setup = await runCli([
+        "setup",
+        "mcp",
+        "add",
+        "custom-echo",
+        "--url",
+        "https://mcp.example.test/echo",
+        "--auth",
+        "bearer",
+        "--auth-env",
+        "CUSTOM_ECHO_MCP_TOKEN",
+        "--allow-tool",
+        "echo"
+      ], {
+        cwd: uninitializedRoot,
+        env: {
+          ...withoutProviderEnv(),
+          CUSTOM_ECHO_MCP_TOKEN: "custom-secret"
+        }
+      });
+      expect(setup.exitCode).toBe(0);
+      expect(setup.stderr).toBe("");
+
+      const live = await runCli(["live", "mcp:custom-echo"], {
+        cwd: uninitializedRoot,
+        env: {
+          ...withoutProviderEnv(),
+          CUSTOM_ECHO_MCP_TOKEN: "custom-secret"
+        },
+        preloadFetchMcpRuntime: true
+      });
+      expect(live.exitCode).toBe(0);
+      expect(live.stdout).toContain("mcp:custom-echo trust=protocol-ready:protocol-tools-list");
+
+      const bind = await runCli(["mcp", "tools", "custom-echo", "--bind"], {
+        cwd: uninitializedRoot,
+        env: {
+          ...withoutProviderEnv(),
+          CUSTOM_ECHO_MCP_TOKEN: "custom-secret"
+        },
+        preloadFetchMcpRuntime: true
+      });
+      expect(bind.exitCode).toBe(0);
+      expect(bind.stderr).toBe("");
+      expect(bind.stdout).toContain("MCP read-only tool contracts bound: custom-echo");
+      expect(bind.stdout).toContain("bound tools: echo");
+      expect(bind.stdout).toContain("report refreshed after MCP contract binding");
+
+      const report = JSON.parse(fs.readFileSync(path.join(uninitializedRoot, ".rph", "connections", "latest.json"), "utf8")) as {
+        checks: Array<{ kind: string; id: string; policy?: { state?: string; satisfied?: boolean; requireReadOnlyToolContracts?: boolean; toolContractCount?: number; agentReadOnlyTools?: string[] } }>;
+        onboardingProof: Array<{ kind: string; id: string; policy?: { state?: string; satisfied?: boolean; requireReadOnlyToolContracts?: boolean; toolContractCount?: number; agentReadOnlyTools?: string[] } }>;
+      };
+      expect(report.checks).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          kind: "mcp",
+          id: "custom-echo",
+          policy: expect.objectContaining({
+            state: "proved-now",
+            satisfied: true,
+            requireReadOnlyToolContracts: true,
+            toolContractCount: 1,
+            agentReadOnlyTools: ["echo"]
+          })
+        })
+      ]));
+      expect(report.onboardingProof).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          kind: "mcp",
+          id: "custom-echo",
+          policy: expect.objectContaining({
+            state: "proved-now",
+            satisfied: true,
+            requireReadOnlyToolContracts: true,
+            toolContractCount: 1,
+            agentReadOnlyTools: ["echo"]
+          })
+        })
+      ]));
     } finally {
       fs.rmSync(uninitializedRoot, { recursive: true, force: true });
     }
