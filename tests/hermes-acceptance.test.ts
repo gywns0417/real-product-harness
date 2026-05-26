@@ -4707,6 +4707,64 @@ describe("Hermes-like CLI contracts", () => {
     }
   });
 
+  it("applies custom setup settings during setup auto without widening connection scope", async () => {
+    const uninitializedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rph-setup-auto-custom-"));
+    try {
+      const result = await runCli([
+        "setup",
+        "auto",
+        "--from-env",
+        "--ai",
+        "none",
+        "--mcp",
+        "none",
+        "--deployment",
+        "docker",
+        "--stack",
+        "custom",
+        "--theme",
+        "minimal",
+        "--color",
+        "false",
+        "--boot-animation",
+        "false"
+      ], {
+        cwd: uninitializedRoot,
+        env: withoutProviderEnv()
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("3. Custom settings");
+      expect(result.stdout).toContain("- deployment: docker");
+      expect(result.stdout).toContain("- stack: custom");
+      expect(result.stdout).toContain("- ui.theme: minimal");
+      expect(result.stdout).toContain("- ui.color: false");
+      expect(result.stdout).toContain("- ui.bootAnimation: false");
+      expect(result.stdout).toContain("custom settings saved: deployment, stack, ui.theme, ui.color, ui.bootAnimation");
+      expect(result.stdout).not.toContain("ai:openai");
+      expect(result.stdout).not.toContain("mcp:notion");
+      const config = JSON.parse(fs.readFileSync(path.join(uninitializedRoot, ".rph", "config.json"), "utf8")) as {
+        deployment: string;
+        stack: string;
+        ui: {
+          theme: string;
+          color: boolean;
+          bootAnimation: boolean;
+        };
+      };
+      expect(config.deployment).toBe("docker");
+      expect(config.stack).toBe("custom");
+      expect(config.ui).toMatchObject({
+        theme: "minimal",
+        color: false,
+        bootAnimation: false
+      });
+    } finally {
+      fs.rmSync(uninitializedRoot, { recursive: true, force: true });
+    }
+  }, 10000);
+
   it("fails setup auto --live when a selected provider cannot be verified", async () => {
     const uninitializedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rph-setup-live-fail-"));
     try {

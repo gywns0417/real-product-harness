@@ -456,6 +456,8 @@ const HELP_TOPIC_LINES: Record<string, string[]> = {
     "    Run live connection checks against the currently applied config.",
     "  rph setup auto",
     "    Guided assistant. In TTY it can collect/apply/check end-to-end.",
+    "    Also accepts --deployment <local|docker|aws|gcp|vercel|render|fly|railway|custom|later>, --stack <recommended|custom|analyze-existing>, --theme <hacker|mono|minimal>.",
+    "    Use --customize with plain `rph setup auto` to force the custom settings questions.",
     "    GitHub can use an existing gh login without copying the gh token into project .env.",
     "  rph setup repair --live",
     "    Re-run only the failed AI/MCP checks from the latest live report, prompting for replacement values when possible.",
@@ -7158,6 +7160,10 @@ async function runAutoSetupWizard(
     for (const serverId of selectedMcp) {
       Object.assign(envValues, await collectMcpEnvValues(prompter, serverId, projectRoot, fromEnv));
     }
+    const changedCustomSettings = await configureSetupCustomSettings(prompter, projectRoot, options, fromEnv);
+    if (changedCustomSettings.length > 0) {
+      console.log(`custom settings saved: ${changedCustomSettings.join(", ")}`);
+    }
 
     const savedKeys = saveSetupEnvValues(projectRoot, envValues);
     if (savedKeys.length === 0) {
@@ -7197,6 +7203,105 @@ async function runAutoSetupWizard(
     assertLiveSetupSucceeded(checks, options);
     await printSetupFirstSuccessExperience(projectRoot, checks, options);
   });
+}
+
+async function configureSetupCustomSettings(
+  prompter: SetupPrompter,
+  projectRoot: string,
+  options: Record<string, string | boolean>,
+  fromEnv: boolean
+): Promise<string[]> {
+  const explicit = explicitSetupCustomSettings(options);
+  const shouldPrompt = shouldPromptSetupCustomSettings(options, fromEnv);
+  if (!shouldPrompt && Object.keys(explicit).length === 0) {
+    return [];
+  }
+  const current = syncHarnessConfigFromEnv(projectRoot);
+  const values = { ...explicit };
+  console.log("");
+  console.log("3. Custom settings");
+  if (shouldPrompt && values.deployment === undefined) {
+    console.log("배포 방식을 선택하세요: local, docker, aws, gcp, vercel, render, fly, railway, custom, later");
+    values.deployment = parseDeploymentChoice(await askText(prompter, "Deployment", current.deployment));
+  }
+  if (shouldPrompt && values.stack === undefined) {
+    console.log("기술 스택을 선택하세요: recommended, custom, analyze-existing");
+    values.stack = parseStackChoice(await askText(prompter, "Stack", current.stack));
+  }
+  if (shouldPrompt && values["ui.theme"] === undefined) {
+    console.log("터미널 UI 테마를 선택하세요: hacker, mono, minimal");
+    values["ui.theme"] = parseUiThemeChoice(await askText(prompter, "Theme", current.ui.theme));
+  }
+  if (shouldPrompt && values["ui.color"] === undefined) {
+    values["ui.color"] = parseSetupBoolean(await askText(prompter, "Color output", String(current.ui.color)));
+  }
+  if (shouldPrompt && values["ui.bootAnimation"] === undefined) {
+    values["ui.bootAnimation"] = parseSetupBoolean(await askText(prompter, "Boot animation", String(current.ui.bootAnimation)));
+  }
+
+  const changed: string[] = [];
+  for (const [key, value] of Object.entries(values)) {
+    if (value === undefined) {
+      continue;
+    }
+    setHarnessConfigValue(projectRoot, key, value);
+    changed.push(key);
+  }
+  if (changed.length === 0) {
+    console.log("- custom settings unchanged");
+  } else {
+    for (const key of changed) {
+      console.log(`- ${key}: ${values[key]}`);
+    }
+  }
+  return changed;
+}
+
+function explicitSetupCustomSettings(options: Record<string, string | boolean>): Record<string, string> {
+  const values: Record<string, string> = {};
+  const deployment = setupOptionValue(options, "deployment");
+  if (deployment !== undefined) {
+    values.deployment = parseDeploymentChoice(deployment);
+  }
+  const stack = setupOptionValue(options, "stack");
+  if (stack !== undefined) {
+    values.stack = parseStackChoice(stack);
+  }
+  const theme = setupOptionValue(options, "theme") ?? setupOptionValue(options, "ui-theme");
+  if (theme !== undefined) {
+    values["ui.theme"] = parseUiThemeChoice(theme);
+  }
+  const color = setupOptionValue(options, "color");
+  if (color !== undefined) {
+    values["ui.color"] = parseSetupBoolean(color);
+  }
+  const bootAnimation = setupOptionValue(options, "boot-animation") ?? setupOptionValue(options, "boot");
+  if (bootAnimation !== undefined) {
+    values["ui.bootAnimation"] = parseSetupBoolean(bootAnimation);
+  }
+  return values;
+}
+
+function shouldPromptSetupCustomSettings(options: Record<string, string | boolean>, fromEnv: boolean): boolean {
+  if (fromEnv) {
+    return false;
+  }
+  if (optionBool(options, "customize") || optionBool(options, "settings")) {
+    return true;
+  }
+  const scopedConnectionSetup = Boolean(optionString(options, "ai") ?? optionString(options, "provider") ?? optionString(options, "mcp"));
+  return !scopedConnectionSetup;
+}
+
+function setupOptionValue(options: Record<string, string | boolean>, key: string): string | undefined {
+  const value = options[key];
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "boolean") {
+    return String(value);
+  }
+  return undefined;
 }
 
 async function bindVerifiedMcpReadOnlyContracts(
@@ -10514,7 +10619,8 @@ function parseAiProvider(value: string): SetupChoices["aiProvider"] {
 }
 
 function parseDeploymentChoice(value: string): SetupChoices["deployment"] {
-  return {
+  const normalized = value.trim().toLowerCase();
+  const mapped = {
     "1": "local",
     "2": "docker",
     "3": "aws",
@@ -10525,15 +10631,49 @@ function parseDeploymentChoice(value: string): SetupChoices["deployment"] {
     "8": "railway",
     "9": "custom",
     "10": "later"
-  }[value] as SetupChoices["deployment"] ?? "later";
+  }[normalized] as SetupChoices["deployment"] | undefined;
+  if (mapped) {
+    return mapped;
+  }
+  if (["local", "docker", "aws", "gcp", "vercel", "render", "fly", "railway", "custom", "later"].includes(normalized)) {
+    return normalized as SetupChoices["deployment"];
+  }
+  throw new Error(`invalid deployment choice: ${value}`);
 }
 
 function parseStackChoice(value: string): SetupChoices["stack"] {
-  return {
+  const normalized = value.trim().toLowerCase();
+  const mapped = {
     "1": "recommended",
     "2": "custom",
     "3": "analyze-existing"
-  }[value] as SetupChoices["stack"] ?? "recommended";
+  }[normalized] as SetupChoices["stack"] | undefined;
+  if (mapped) {
+    return mapped;
+  }
+  if (normalized === "recommended" || normalized === "custom" || normalized === "analyze-existing") {
+    return normalized;
+  }
+  throw new Error(`invalid stack choice: ${value}`);
+}
+
+function parseUiThemeChoice(value: string): "hacker" | "mono" | "minimal" {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "hacker" || normalized === "mono" || normalized === "minimal") {
+    return normalized;
+  }
+  throw new Error(`invalid theme choice: ${value}`);
+}
+
+function parseSetupBoolean(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "y", "on"].includes(normalized)) {
+    return "true";
+  }
+  if (["0", "false", "no", "n", "off"].includes(normalized)) {
+    return "false";
+  }
+  throw new Error(`invalid boolean choice: ${value}`);
 }
 
 function printVersion(): void {
