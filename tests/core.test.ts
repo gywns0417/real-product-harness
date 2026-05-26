@@ -84,6 +84,7 @@ import {
   repairPersistedConfigDrift,
   readProofLedgerEvents,
   readProofLedgerLatest,
+  renderOperatorWorkspace,
   renderSetupGuide,
   setupGitHubLabels,
   showDocument,
@@ -980,7 +981,7 @@ describe("operator workspace", () => {
       saveRuntimeSession(root, {
         ...createRuntimeSessionManifest(root, "session-workspace-ai-blocked", "2026-05-26T00:00:00.000Z"),
         status: "blocked",
-        blocker: "AI generation failed for configured providers: openai: AI request failed (401) Incorrect API key provided: test-openai."
+        blocker: "AI generation failed for configured providers: openai: AI request failed (401) Incorrect API key provided: test-openai. You can find your API key at https://platform.openai.com/account/api-keys."
       });
 
       const snapshot = buildOperatorWorkspace(root, { now: new Date("2026-05-26T00:01:00.000Z") });
@@ -989,12 +990,74 @@ describe("operator workspace", () => {
       expect(snapshot.nextAction).toMatchObject({
         kind: "readiness",
         command: "/doctor --live",
-        safeToAutoRun: true
+        safeToAutoRun: true,
+        reason: "live AI/MCP verification is not current"
       });
+      expect(snapshot.nextAction.blockedBy).toContain("live verification not current: missing-report");
       expect(snapshot.nextAction.blockedBy.join("\n")).toContain("AI generation failed");
+      expect(snapshot.nextAction.blockedBy.join("\n")).toContain("Incorrect API key provided: <redacted>");
+      expect(snapshot.nextAction.blockedBy.join("\n")).toContain("https://platform.openai.com/account/api-keys");
+      expect(JSON.stringify(snapshot)).not.toContain("test-openai");
     } finally {
       delete process.env.OPENAI_API_KEY;
     }
+  });
+
+  it("explains readiness next actions with failed target ids and stale proof reasons", () => {
+    process.env.OPENAI_API_KEY = "test-openai";
+    try {
+      syncHarnessConfigFromEnv(root);
+      const failedCheck: ConnectionCheck = {
+        id: "openai",
+        kind: "ai",
+        status: "failed",
+        message: "credential: request failed (401); generation: skipped",
+        requiredEnv: ["OPENAI_API_KEY"],
+        missingEnv: [],
+        endpoint: "https://api.openai.com/v1/responses",
+        readiness: {
+          mode: "unverified",
+          provenStage: "none",
+          stages: [{
+            stage: "credential-probe",
+            status: "failed",
+            message: "request failed (401)",
+            endpoint: "https://api.openai.com/v1/models"
+          }]
+        },
+        checkedAt: "2026-05-26T00:00:00.000Z"
+      };
+      writeConnectionReport(root, [failedCheck], {
+        source: "live",
+        runner: "test",
+        command: "test fixture",
+        projectInitialized: true,
+        selectedTargets: ["ai:openai"],
+        checkedTargetCount: 1
+      });
+
+      const snapshot = buildOperatorWorkspace(root, { now: new Date("2026-05-26T00:02:00.000Z") });
+
+      expect(snapshot.readiness.status).toBe("degraded");
+      expect(snapshot.readiness.degradedChecks).toContain("ai:openai");
+      expect(snapshot.nextAction).toMatchObject({
+        kind: "readiness",
+        command: "/doctor --live",
+        safeToAutoRun: true,
+        reason: "live AI/MCP verification has failed checks"
+      });
+      expect(snapshot.nextAction.blockedBy).toEqual(expect.arrayContaining(["connection failed: ai:openai"]));
+      expect(snapshot.blockers).toEqual(expect.arrayContaining(["connection failed: ai:openai"]));
+    } finally {
+      delete process.env.OPENAI_API_KEY;
+    }
+  });
+
+  it("renders workspace next actions in copy-ready shell or slash form", () => {
+    const snapshot = buildOperatorWorkspace(root, { now: new Date("2026-05-26T00:03:00.000Z") });
+
+    expect(renderOperatorWorkspace(snapshot, { commandSurface: "rph" })).toContain("- next action: rph setup auto --live");
+    expect(renderOperatorWorkspace(snapshot, { commandSurface: "slash" })).toContain("- next action: /setup auto --live");
   });
 
   it("aggregates PR and QA blockers into the operator snapshot", () => {

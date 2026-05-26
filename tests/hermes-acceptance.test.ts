@@ -5117,7 +5117,7 @@ describe("Hermes-like CLI contracts", () => {
     expect(statusBefore.exitCode).toBe(0);
     expect(statusBefore.stdout).toContain("RPH status");
     expect(statusBefore.stdout).toContain("- current: PM_PRODUCT_DEFINITION_REVIEW");
-    expect(statusBefore.stdout).toContain("- next: /docs approve product-definition");
+    expect(statusBefore.stdout).toContain("- next: rph docs approve product-definition");
     expect(statusBefore.stdout).toContain("- blocked: required approval missing: product-definition");
     expect(statusBefore.stdout).toContain("- chat: rph shell (plain text goes to the connected AI agent)");
     expect(statusBefore.stdout).toContain("- one-shot chat: rph ask \"다음에 뭐 하면 돼?\"");
@@ -7020,6 +7020,11 @@ describe("Hermes-like CLI contracts", () => {
       runner: "test",
       command: "mock setup proof"
     });
+    saveRuntimeSession(root, {
+      ...createRuntimeSessionManifest(root, "session-home-redaction", "2026-05-26T00:00:00.000Z"),
+      status: "blocked",
+      blocker: "AI request failed (401) Incorrect API key provided: test-openai. You can find your API key at https://platform.openai.com/account/api-keys."
+    });
 
     const result = await runCli(["home"], {
       cwd: root,
@@ -7034,6 +7039,12 @@ describe("Hermes-like CLI contracts", () => {
     expect(result.stdout).toContain("RPH home");
     expect(result.stdout).toContain("- chat lane: configured openai; run live setup to verify");
     expect(result.stdout).toContain("- proof lane: live proof needs refresh (non-live-source)");
+    expect(result.stdout).toContain("- blocker: AI request failed (401) Incorrect API key provided: <redacted>. You can find your API key at https://platform.openai.com/account/api-keys.");
+    expect(result.stdout).toContain("- blocked by: live verification not current: non-live-source; last-known passed check is not current: ai:openai");
+    expect(result.stdout).toContain("- do now: rph doctor --live");
+    expect(result.stdout).toContain("- why: live AI/MCP verification is not current");
+    expect(result.stdout).toContain("- control: rph doctor --live");
+    expect(result.stdout).not.toContain("test-openai");
     expect(result.stdout).not.toContain("- chat lane: ready via verified openai");
   }, 10000);
 

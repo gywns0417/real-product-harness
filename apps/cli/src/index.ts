@@ -747,7 +747,7 @@ export async function runParsedCommand(
         });
         break;
       case "workspace":
-        handleWorkspace(projectRoot, parsed.subcommand, parsed.options);
+        handleWorkspace(projectRoot, parsed.subcommand, parsed.options, context);
         break;
       case "next":
         await handleNext(projectRoot, parsed.options);
@@ -6981,7 +6981,6 @@ function printRuntimeHomeCard(
   const passedMcp = trustedChecks.filter((check) => check.kind === "mcp" && check.status === "passed").map((check) => check.id);
   const configuredAi = configuredAiProviders(config).map((provider) => provider.id);
   const configuredMcp = configuredMcpServers(config).map((server) => server.id);
-  const failed = checks.filter((check) => check.status === "failed");
   const pendingExternal = workspace.approvals.externalActions.filter((action) => action.status === "pending");
   const trust = initialized ? readConnectionReportTrust(projectRoot) : { trusted: false as const, reason: "missing-report" as const };
   const chatLane = passedAi.length > 0
@@ -7002,13 +7001,11 @@ function printRuntimeHomeCard(
   const proofLane = trust.trusted
     ? "live proof current"
     : `live proof needs refresh (${trust.reason ?? workspace.readiness.connectionProofReason ?? "missing-report"})`;
-  const primaryNext = options.proposedCommand
-    ? runtimeSurfaceCommand(commandSurface, options.proposedCommand.replace(/^\//, ""))
-    : failed.length > 0
-      ? runtimeSurfaceCommand(commandSurface, "doctor --live")
-      : configuredAi.length > 0
-        ? (commandSurface === "rph" ? `rph "다음에 뭐 하면 돼?"` : "일반 텍스트로 AI agent와 대화")
-        : runtimeSurfaceCommand(commandSurface, "setup auto --live");
+  const controlCommand = options.proposedCommand ?? workspace.nextAction.command;
+  const primaryNext = renderSurfaceNextCommand(commandSurface, controlCommand);
+  const talkNow = configuredAi.length > 0 && workspace.nextAction.kind === "none"
+    ? (commandSurface === "rph" ? `rph "다음에 뭐 하면 돼?"` : "일반 텍스트로 AI agent와 대화")
+    : primaryNext;
   console.log("RPH home");
   console.log(`- chat lane: ${chatLane}`);
   console.log(`- connector lane: ${connectorLane}`);
@@ -7019,8 +7016,13 @@ function printRuntimeHomeCard(
   } else {
     console.log("- approval lane: clear");
   }
-  console.log(`- blocker: ${options.reason}`);
-  console.log(`- talk now: ${configuredAi.length > 0 ? primaryNext : "connect an AI provider first"}`);
+  console.log(`- blocker: ${sanitizeRuntimeHomeText(options.reason)}`);
+  if (workspace.nextAction.blockedBy.length > 0) {
+    console.log(`- blocked by: ${workspace.nextAction.blockedBy.slice(0, 3).join("; ")}`);
+  }
+  console.log(`- do now: ${primaryNext}`);
+  console.log(`- why: ${workspace.nextAction.reason}`);
+  console.log(`- talk now: ${configuredAi.length > 0 ? talkNow : "connect an AI provider first"}`);
   console.log(`- control: ${primaryNext}`);
 }
 
@@ -7397,7 +7399,8 @@ async function handleInit(projectRoot: string, options: Record<string, string | 
 function handleWorkspace(
   projectRoot: string,
   subcommand: string | undefined,
-  options: Record<string, string | boolean> = {}
+  options: Record<string, string | boolean> = {},
+  context: CommandContext = {}
 ): void {
   if (subcommand && subcommand !== "status") {
     throw new Error(`unsupported workspace command: ${subcommand}. available: workspace [status] [--json]`);
@@ -7407,7 +7410,9 @@ function handleWorkspace(
     console.log(JSON.stringify(snapshot, null, 2));
     return;
   }
-  console.log(renderOperatorWorkspace(snapshot));
+  console.log(renderOperatorWorkspace(snapshot, {
+    commandSurface: context.runtimeShell ? "slash" : "rph"
+  }));
 }
 
 function handleStatus(projectRoot: string, options: { commandSurface?: "rph" | "slash"; json?: boolean; verbose?: boolean } = {}): void {
@@ -7429,9 +7434,12 @@ function handleStatus(projectRoot: string, options: { commandSurface?: "rph" | "
   const digestCommand = advance.canAdvance
     ? advance.nextCommand ?? (advance.nextStage ? recommendedCommand(state, advance.nextStage) : undefined)
     : commandForWorkflowStage(state.currentStage) ?? advance.nextCommand ?? (advance.nextStage ? recommendedCommand(state, advance.nextStage) : undefined);
+  const renderedNext = digestCommand
+    ? renderSurfaceNextCommand(options.commandSurface ?? "rph", digestCommand)
+    : "none";
   console.log("RPH status");
   console.log(`- current: ${stage.id} (${stage.name}) owner=${stage.ownerAgent}`);
-  console.log(`- next: ${digestCommand ?? "none"}`);
+  console.log(`- next: ${renderedNext}`);
   console.log(`- blocked: ${advance.canAdvance ? "none" : advance.reasons[0] ?? "unknown"}`);
   console.log("- chat: rph shell (plain text goes to the connected AI agent)");
   console.log("- one-shot chat: rph ask \"다음에 뭐 하면 돼?\"");
@@ -7500,6 +7508,19 @@ function handleStatus(projectRoot: string, options: { commandSurface?: "rph" | "
   for (const pr of prs.slice(0, 8)) {
     console.log(`- PR #${pr.prNumber} issue #${pr.issueNumber} ${pr.sourceBranch} -> ${pr.targetBranch} qa=${pr.qaStatus}`);
   }
+}
+
+function renderSurfaceNextCommand(surface: CommandSurface, command: string): string {
+  return runtimeSurfaceCommand(surface, command.replace(/^\//, ""));
+}
+
+function sanitizeRuntimeHomeText(text: string): string {
+  return text
+    .replace(/(Incorrect API key provided:\s*)([^.\n]+)(\.)?/gi, "$1<redacted>$3")
+    .replace(/(Bearer\s+)[^\s;,)]+/gi, "$1<redacted>")
+    .replace(/([?&](?:key|token|api_key|access_token)=)[^&\s]+/gi, "$1<redacted>")
+    .replace(/\b((?:api[_-]?key|token|secret|authorization)\s*[:=]\s*)(["']?)[^"'\s;,)]+/gi, "$1$2<redacted>$2")
+    .replace(/\b(?:sk|rk|ghp|gho|ghu|ghs|ghr|github_pat|xoxb|xoxp|xoxa|xoxr|AIza)[A-Za-z0-9_-]{8,}\b/g, "<redacted>");
 }
 
 async function handleNext(projectRoot: string, options: Record<string, string | boolean> = {}): Promise<void> {

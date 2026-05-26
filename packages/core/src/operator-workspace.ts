@@ -161,6 +161,10 @@ export interface BuildOperatorWorkspaceOptions {
   env?: NodeJS.ProcessEnv;
 }
 
+export interface RenderOperatorWorkspaceOptions {
+  commandSurface?: "rph" | "slash";
+}
+
 export function buildOperatorWorkspace(
   projectRoot: string,
   options: BuildOperatorWorkspaceOptions = {}
@@ -246,7 +250,10 @@ export function buildOperatorWorkspace(
   const report = readConnectionReport(projectRoot);
   const passedAi = trustedChecks.filter((check) => check.kind === "ai" && check.status === "passed");
   const passedMcp = trustedChecks.filter((check) => check.kind === "mcp" && check.status === "passed");
-  const failedChecks = trustedChecks.filter((check) => check.status === "failed");
+  const failedChecks = uniqueConnectionChecks([
+    ...trustedChecks.filter((check) => check.status === "failed"),
+    ...(report?.checks ?? []).filter((check) => check.status === "failed")
+  ]);
   const configuredProviders = configuredAiProviders(config).map((provider) => provider.id);
   const configuredServers = configuredMcpServers(config).map((server) => server.id);
   const externalActions = loadRuntimeActionApprovals(projectRoot)
@@ -265,10 +272,16 @@ export function buildOperatorWorkspace(
     passedAiCount: passedAi.length,
     failedCount: failedChecks.length
   });
+  const readinessBlockers = readinessBlockersFor({
+    trustReason: trust.trusted ? null : trust.reason ?? "missing-report",
+    failedChecks,
+    reportChecks: report?.checks ?? []
+  });
   const workflowCommand = actionCommandForWorkflow(state.currentStage, advance.nextStage, advance.canAdvance);
   const blockers = uniqueStrings([
-    ...(session?.blocker ? [session.blocker] : []),
+    ...(session?.blocker ? [sanitizeOperatorText(session.blocker)] : []),
     ...(session?.waitCondition ? [`runtime wait: ${session.waitCondition.kind}`] : []),
+    ...readinessBlockers,
     ...advance.reasons,
     ...externalActions.filter((action) => action.status === "pending").map((action) => `external action pending: ${action.id}`),
     ...pullRequests.flatMap((pr) => pr.blockerReasons.map((reason) => `PR #${pr.prNumber}: ${reason}`)),
@@ -281,9 +294,11 @@ export function buildOperatorWorkspace(
     workflowCommand,
     advanceReasons: advance.reasons,
     readinessStatus,
+    readinessLiveVerification: trust.trusted ? "current" : "not-current",
     chatConfigured: configuredProviders.length > 0 && config.activeAiProvider !== "none",
     trustedAi: passedAi.length > 0,
     externalActions,
+    readinessBlockers,
     blockers
   });
 
@@ -302,7 +317,7 @@ export function buildOperatorWorkspace(
           stage: session.stage,
           ownerAgent: session.ownerAgent,
           checkpoint: session.checkpoint,
-          blocker: session.blocker,
+          blocker: session.blocker ? sanitizeOperatorText(session.blocker) : null,
           pendingActionCommand: session.pendingAction?.command ?? null,
           pendingExternalActionId: session.pendingExternalActionId ?? null,
           waitConditionKind: session.waitCondition?.kind ?? null
@@ -355,14 +370,18 @@ export function buildOperatorWorkspace(
     proofs: {
       events: proofLatest?.eventCount ?? 0,
       counts: proofLatest?.counts ?? {},
-      latestFailures: proofLatest?.latestFailures.slice(0, 5).map((event) => `${event.subject}: ${event.summary}`) ?? []
+      latestFailures: proofLatest?.latestFailures.slice(0, 5).map((event) => sanitizeOperatorText(`${event.subject}: ${event.summary}`)) ?? []
     },
     blockers,
     nextAction
   };
 }
 
-export function renderOperatorWorkspace(snapshot: OperatorWorkspaceSnapshot): string {
+export function renderOperatorWorkspace(
+  snapshot: OperatorWorkspaceSnapshot,
+  options: RenderOperatorWorkspaceOptions = {}
+): string {
+  const nextCommand = renderOperatorCommand(snapshot.nextAction.command, options.commandSurface ?? "slash");
   const lines = [
     "Operator workspace",
     `- project: ${snapshot.project.name ?? "not initialized"}`,
@@ -372,8 +391,11 @@ export function renderOperatorWorkspace(snapshot: OperatorWorkspaceSnapshot): st
     `- readiness: ${snapshot.readiness.status} chat=${snapshot.readiness.chat} tools=${snapshot.readiness.tools} live=${snapshot.readiness.liveVerification}`,
     `- artifacts: docs=${snapshot.artifacts.documents.length} approved=${snapshot.artifacts.counts.documents.approved} design=${snapshot.artifacts.designArtifacts.length} approved=${snapshot.artifacts.counts.designArtifacts.approved}`,
     `- work: issues=${snapshot.issues.length} prs=${snapshot.pullRequests.length} qa=${snapshot.qaReports.length}`,
-    `- next: ${snapshot.nextAction.command} (${snapshot.nextAction.safeToAutoRun ? "safe" : "manual"}; ${snapshot.nextAction.reason})`
+    `- next action: ${nextCommand} (${snapshot.nextAction.safeToAutoRun ? "safe" : "manual"}; ${snapshot.nextAction.reason})`
   ];
+  if (snapshot.nextAction.blockedBy.length > 0) {
+    lines.push(`- why now: ${snapshot.nextAction.blockedBy.slice(0, 3).join("; ")}`);
+  }
   if (snapshot.blockers.length > 0) {
     lines.push("", "Blockers:");
     lines.push(...snapshot.blockers.slice(0, 8).map((blocker) => `- ${blocker}`));
@@ -536,9 +558,11 @@ function chooseNextAction(input: {
   workflowCommand: string | null;
   advanceReasons: string[];
   readinessStatus: OperatorWorkspaceSnapshot["readiness"]["status"];
+  readinessLiveVerification: OperatorWorkspaceSnapshot["readiness"]["liveVerification"];
   chatConfigured: boolean;
   trustedAi: boolean;
   externalActions: OperatorWorkspaceExternalAction[];
+  readinessBlockers: string[];
   blockers: string[];
 }): OperatorWorkspaceAction {
   if (!input.initialized) {
@@ -586,12 +610,15 @@ function chooseNextAction(input: {
   }
 
   if (!input.trustedAi && (input.readinessStatus === "configured" || input.readinessStatus === "degraded")) {
+    const reason = input.readinessLiveVerification === "current"
+      ? "live AI/MCP verification has failed checks"
+      : "live AI/MCP verification is not current";
     return {
       kind: "readiness",
       command: "/doctor --live",
       safeToAutoRun: true,
-      reason: "live AI/MCP verification is not current",
-      blockedBy: input.blockers
+      reason,
+      blockedBy: uniqueStrings([...input.readinessBlockers, ...input.blockers])
     };
   }
 
@@ -663,6 +690,57 @@ function statusCounts(artifacts: AgentContextArtifact[]): Record<DocumentStatus,
 
 function formatConnectionCheckId(check: ConnectionCheck): string {
   return `${check.kind}:${check.id}`;
+}
+
+function uniqueConnectionChecks(checks: ConnectionCheck[]): ConnectionCheck[] {
+  const seen = new Set<string>();
+  const unique = [];
+  for (const check of checks) {
+    const key = formatConnectionCheckId(check);
+    if (!seen.has(key)) {
+      seen.add(key);
+      unique.push(check);
+    }
+  }
+  return unique;
+}
+
+function readinessBlockersFor(input: {
+  trustReason: string | null;
+  failedChecks: ConnectionCheck[];
+  reportChecks: ConnectionCheck[];
+}): string[] {
+  const blockers = [];
+  if (input.trustReason) {
+    blockers.push(`live verification not current: ${input.trustReason}`);
+  }
+  for (const check of input.failedChecks) {
+    blockers.push(`connection failed: ${formatConnectionCheckId(check)}`);
+  }
+  if (input.trustReason && input.reportChecks.some((check) => check.status === "passed")) {
+    const passed = input.reportChecks
+      .filter((check) => check.status === "passed")
+      .map(formatConnectionCheckId)
+      .slice(0, 5);
+    blockers.push(`last-known passed check is not current: ${passed.join(", ")}`);
+  }
+  return uniqueStrings(blockers);
+}
+
+function renderOperatorCommand(command: string, surface: "rph" | "slash"): string {
+  if (surface === "slash") {
+    return command.startsWith("/") ? command : `/${command}`;
+  }
+  return `rph ${command.replace(/^\//, "")}`;
+}
+
+function sanitizeOperatorText(text: string): string {
+  return text
+    .replace(/(Incorrect API key provided:\s*)([^.\n]+)(\.)?/gi, "$1<redacted>$3")
+    .replace(/(Bearer\s+)[^\s;,)]+/gi, "$1<redacted>")
+    .replace(/([?&](?:key|token|api_key|access_token)=)[^&\s]+/gi, "$1<redacted>")
+    .replace(/\b((?:api[_-]?key|token|secret|authorization)\s*[:=]\s*)(["']?)[^"'\s;,)]+/gi, "$1$2<redacted>$2")
+    .replace(/\b(?:sk|rk|ghp|gho|ghu|ghs|ghr|github_pat|xoxb|xoxp|xoxa|xoxr|AIza)[A-Za-z0-9_-]{8,}\b/g, "<redacted>");
 }
 
 function uniqueStrings(values: string[]): string[] {
