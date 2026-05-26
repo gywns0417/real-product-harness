@@ -88,8 +88,8 @@ const start = runCli([
   "stitch",
   "protocol MCP echo tool로 top-level-golden-ok 확인해줘"
 ], env, "start golden path");
-assertIncludes(start.stdout, "RPH start: setup required", "start output");
-assertIncludes(start.stdout, "launching: rph setup auto --live", "start output");
+assertIncludes(start.stdout, "RPH runtime: setup needed before agent chat", "start output");
+assertIncludes(start.stdout, "setup assistant: rph setup auto --live", "start output");
 assertIncludes(start.stdout, "setup live check passed", "start output");
 assertIncludes(start.stdout, "next: rph pm start", "start output");
 assertIncludes(start.stdout, "MCP read-only tool contracts bound: stitch", "start output");

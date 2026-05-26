@@ -6840,8 +6840,8 @@ describe("Hermes-like CLI contracts", () => {
 
       expect(result.exitCode).toBe(0);
       expect(result.stderr).toBe("");
-      expect(result.stdout).toContain("RPH start: setup required");
-      expect(result.stdout).toContain("launching: rph setup auto --live");
+      expect(result.stdout).toContain("RPH runtime: setup needed before agent chat");
+      expect(result.stdout).toContain("setup assistant: rph setup auto --live");
       expect(result.stdout).toContain("RPH Setup Auto");
       expect(result.stdout).toContain("ai:openai trust=protocol-ready:protocol-tool-call");
       expect(result.stdout).toContain("setup live check passed");

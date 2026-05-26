@@ -1519,8 +1519,8 @@ describe("command parser and env validation", () => {
 
       expect(ok).toBe(true);
       const output = logSpy.mock.calls.flat().join("\n");
-      expect(output).toContain("RPH start: setup required");
-      expect(output).toContain("launching: rph setup auto --live");
+      expect(output).toContain("RPH runtime: setup needed before agent chat");
+      expect(output).toContain("setup assistant: rph setup auto --live");
       expect(output).toContain("RPH Setup Auto");
       expect(output).toContain("ai:openai trust=protocol-ready:protocol-tool-call");
       expect(output).toContain("setup live check passed");

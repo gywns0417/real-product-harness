@@ -5022,8 +5022,8 @@ async function handleStart(
   const message = args.join(" ").trim();
   if (!isRuntimeProjectInitialized(projectRoot)) {
     if (shouldStartLaunchSetup(options, context)) {
-      console.log("RPH start: setup required");
-      console.log("launching: rph setup auto --live");
+      console.log("RPH runtime: setup needed before agent chat");
+      console.log("setup assistant: rph setup auto --live");
       const projectName = optionString(options, "project-name") ?? (path.basename(projectRoot) || "RPH Project");
       initProject(projectRoot, { projectName });
       console.log(`RPH project initialized: ${projectName}`);
@@ -5040,8 +5040,8 @@ async function handleStart(
       return;
     }
     if (process.stdin.isTTY && process.stdout.isTTY) {
-      console.log("RPH start: setup required");
-      console.log("launching: rph setup auto --live");
+      console.log("RPH runtime: setup needed before agent chat");
+      console.log("setup assistant: rph setup auto --live");
       const projectName = optionString(options, "project-name") ?? (path.basename(projectRoot) || "RPH Project");
       initProject(projectRoot, { projectName });
       console.log(`RPH project initialized: ${projectName}`);
@@ -8076,11 +8076,6 @@ function printSetupConnectedHandoff(projectRoot: string, checks: ConnectionCheck
   }
   console.log(`- start product work: ${runtimeSurfaceCommand(commandSurface, "pm start")}`);
   console.log(`- inspect setup: ${runtimeSurfaceCommand(commandSurface, "status")} | ${runtimeSurfaceCommand(commandSurface, "setup auto --from-env --live")}`);
-  console.log("");
-  printRuntimeHomeCard(projectRoot, {
-    reason: "none",
-    commandSurface
-  });
 }
 
 async function printSetupFirstSuccessExperience(
