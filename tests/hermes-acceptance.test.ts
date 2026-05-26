@@ -228,7 +228,7 @@ describe("Hermes-like runtime acceptance", () => {
     expect(result.stdout).toContain("agent proposed command: /status");
     expect(result.stdout).toContain("agent action: /status");
     expect(result.stdout).toContain("execution-policy: runtime chat allowed read-only command");
-    expect(result.stdout).toContain("현재 단계: SETUP");
+    expect(result.stdout).toContain("- current: SETUP");
     expect(result.stdout).not.toContain("auto-run: skipped");
   }, 10000);
 
@@ -241,14 +241,14 @@ describe("Hermes-like runtime acceptance", () => {
         { text: "PM 작업을 시작해줘\n", delayMs: 0 },
         { text: "/exit\n", delayMs: 50 }
       ],
-      preloadFetchLocalCommandProposal: true
+      preloadFetchLocalCommandProposal: "/next --execute"
     });
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("agent proposed command: /pm start");
-    expect(result.stdout).toContain("agent action: /pm start");
+    expect(result.stdout).toContain("agent proposed command: /next --execute");
+    expect(result.stdout).toContain("agent action: /next --execute");
     expect(result.stdout).toContain("execution-policy: runtime chat allowed current autonomous local command");
-    expect(result.stdout).toContain("PM 워크플로우 시작");
+    expect(result.stdout).toContain("stage queue 실행 완료: SETUP -> PM_PRODUCT_DEFINITION_INTERVIEW");
     const state = JSON.parse(fs.readFileSync(path.join(root, ".rph", "state.json"), "utf8")) as {
       currentStage: string;
     };
@@ -628,7 +628,7 @@ describe("Hermes-like runtime acceptance", () => {
       expect(fs.existsSync(path.join(root, ".rph", "github", "live-pr-latest-readback.json"))).toBe(false);
     }, 10000);
 
-    it("approves a pending external action from natural-language ask execution", async () => {
+    it("approves a pending external action from an explicit slash control", async () => {
       writeOpenAiEnv(root, "https://example.invalid/v1");
       fs.appendFileSync(path.join(root, ".env"), "\nNOTION_TOKEN=test-notion\nNOTION_PARENT_PAGE_ID=123456781234123412341234567890ab\n");
 
@@ -646,13 +646,12 @@ describe("Hermes-like runtime acceptance", () => {
       expect(approvals).toHaveLength(1);
       expect(approvals[0].status).toBe("pending");
 
-      const approved = await runCli(["ask", "--execute", "승인해"], {
+      const approved = await runCli(["agent", "approve-action", approvals[0].id], {
         cwd: root,
         preloadFetchMutableNotionProposal: true
       });
 
       expect(approved.exitCode).toBe(0);
-      expect(approved.stdout).toContain(`natural approval: external action ${approvals[0].id}`);
       expect(approved.stdout).toContain(`external action approved: ${approvals[0].id}`);
       expect(approved.stdout).toContain("Notion live workspace 생성");
       expect(approved.stdout).toContain("readback: dashboard-page-id");
@@ -690,7 +689,7 @@ describe("Hermes-like runtime acceptance", () => {
     expect(approvals.find((record) => record.id === "action-recovery")?.status).toBe("pending");
   }, 10000);
 
-    it("rejects a pending external action from natural-language ask execution", async () => {
+    it("rejects a pending external action from an explicit slash control", async () => {
       writeOpenAiEnv(root, "https://example.invalid/v1");
       fs.appendFileSync(path.join(root, ".env"), "\nNOTION_TOKEN=test-notion\nNOTION_PARENT_PAGE_ID=123456781234123412341234567890ab\n");
 
@@ -708,10 +707,10 @@ describe("Hermes-like runtime acceptance", () => {
       expect(approvals).toHaveLength(1);
       expect(approvals[0].status).toBe("pending");
 
-      const rejected = await runCli(["ask", "--execute", "거절해"], { cwd: root });
+      const rejected = await runCli(["agent", "reject-action", approvals[0].id], { cwd: root });
 
       expect(rejected.exitCode).toBe(0);
-      expect(rejected.stdout).toContain(`natural rejection: external action ${approvals[0].id}`);
+      expect(rejected.stdout).toContain(`external action rejected: ${approvals[0].id}`);
       const rejectedApprovals = JSON.parse(fs.readFileSync(approvalsPath, "utf8")) as Array<{
         status: string;
         rejectedAt?: string;
@@ -721,16 +720,14 @@ describe("Hermes-like runtime acceptance", () => {
       expect(fs.existsSync(path.join(root, ".rph", "notion", "live-workspace.json"))).toBe(false);
     }, 10000);
 
-  it("does not approve or reject ambiguous multiple pending external actions from natural language", async () => {
+  it("keeps natural approval/rejection text conversational when multiple external actions are pending", async () => {
     writeMultiplePendingExternalActions(root);
     const approvalsPath = path.join(root, ".rph", "runtime", "action-approvals.json");
 
     const approved = await runCli(["ask", "--execute", "승인해"], { cwd: root });
     expect(approved.exitCode).toBe(0);
-    expect(approved.stdout).toContain("natural approval: multiple pending external actions");
-    expect(approved.stdout).toContain("- action-one: /notion setup --live --title \"One\"");
-    expect(approved.stdout).toContain("- action-two: /github setup-labels");
-    expect(approved.stdout).toContain("명확히 선택하려면 /agent approve-action <action-id>");
+    expect(approved.stdout).toContain("AI agent is not connected yet.");
+    expect(approved.stdout).not.toContain("external action approved");
     let approvals = JSON.parse(fs.readFileSync(approvalsPath, "utf8")) as Array<{
       id: string;
       status: string;
@@ -746,10 +743,8 @@ describe("Hermes-like runtime acceptance", () => {
 
     const rejected = await runCli(["ask", "--execute", "거절해"], { cwd: root });
     expect(rejected.exitCode).toBe(0);
-    expect(rejected.stdout).toContain("natural rejection: multiple pending external actions");
-    expect(rejected.stdout).toContain("- action-one: /notion setup --live --title \"One\"");
-    expect(rejected.stdout).toContain("- action-two: /github setup-labels");
-    expect(rejected.stdout).toContain("명확히 선택하려면 /agent reject-action <action-id>");
+    expect(rejected.stdout).toContain("AI agent is not connected yet.");
+    expect(rejected.stdout).not.toContain("external action rejected");
     approvals = JSON.parse(fs.readFileSync(approvalsPath, "utf8")) as Array<{
       id: string;
       status: string;
@@ -763,7 +758,7 @@ describe("Hermes-like runtime acceptance", () => {
     expect(fs.existsSync(path.join(root, ".rph", "notion", "live-workspace.json"))).toBe(false);
   }, 10000);
 
-  it("does not approve ambiguous multiple pending user approval targets from natural language", async () => {
+  it("keeps natural approval text conversational when multiple user approval targets are pending", async () => {
     const feSpec = createDocumentVersion(root, "fe-technical-spec", {
       body: "FE spec ready for review",
       changeSummary: "ambiguous approval fixture"
@@ -784,11 +779,8 @@ describe("Hermes-like runtime acceptance", () => {
     const result = await runCli(["ask", "--execute", "승인해"], { cwd: root });
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("natural approval: multiple pending approval targets");
-    expect(result.stdout).toContain("- /fe approve spec");
-    expect(result.stdout).toContain("- /be approve spec");
-    expect(result.stdout).toContain("- /be approve api-contract");
-    expect(result.stdout).toContain("명확히 선택하려면 해당 승인 명령을 직접 입력하세요.");
+    expect(result.stdout).toContain("AI agent is not connected yet.");
+    expect(result.stdout).not.toContain("[승인 완료]");
     for (const docId of ["fe-technical-spec", "be-technical-spec", "api-contract"]) {
       const index = JSON.parse(fs.readFileSync(path.join(root, ".rph", "documents", docId, "index.json"), "utf8")) as {
         status: string;
@@ -809,7 +801,7 @@ describe("Hermes-like runtime acceptance", () => {
 
     const rejected = await runCli(["ask", "--execute", "거절해"], { cwd: root });
     expect(rejected.exitCode).toBe(0);
-    expect(rejected.stdout).toContain("natural rejection: pending external action not found");
+    expect(rejected.stdout).toContain("AI agent is not connected yet.");
     expect(rejected.stdout).not.toContain("[승인 완료]");
     for (const docId of ["fe-technical-spec", "be-technical-spec", "api-contract"]) {
       const index = JSON.parse(fs.readFileSync(path.join(root, ".rph", "documents", docId, "index.json"), "utf8")) as {
@@ -832,9 +824,8 @@ describe("Hermes-like runtime acceptance", () => {
 
     const result = await runCli(["ask", "--execute", "승인해"], { cwd: root, env: withoutProviderEnv() });
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("natural approval: multiple pending gate types");
-    expect(result.stdout).toContain("- external action: action-recovery: /github create-repo --public");
-    expect(result.stdout).toContain("- approval target: /docs approve product-definition");
+    expect(result.stdout).toContain("AI agent is not connected yet.");
+    expect(result.stdout).not.toContain("external action approved");
 
     const approvals = JSON.parse(fs.readFileSync(path.join(root, ".rph", "runtime", "action-approvals.json"), "utf8")) as Array<{ id: string; status: string }>;
     expect(approvals.find((record) => record.id === "action-recovery")?.status).toBe("pending");
@@ -3657,7 +3648,7 @@ describe("Hermes-like runtime acceptance", () => {
     expect(result.stdout).toContain("pending command: /status");
     expect(result.stdout).toContain("recovery step 1/3");
     expect(result.stdout).toContain("recovery action: /status");
-    expect(result.stdout).toContain("현재 단계: SETUP");
+    expect(result.stdout).toContain("- current: SETUP");
     expect(result.stdout).toContain("recovery paused: next action unchanged after /status");
   }, 10000);
 
@@ -3701,13 +3692,11 @@ describe("Hermes-like runtime acceptance", () => {
     expect(manifest.blocker).toContain("recovery command failed: /agent run --steps nope");
   }, 10000);
 
-  it("routes natural continue through recovery without approving external actions", async () => {
+  it("routes explicit recovery without approving external actions", async () => {
     writeRecoveryBriefFixture(root);
 
-    const result = await runCli(["ask", "--execute", "계속 진행해"], { cwd: root, env: withoutProviderEnv() });
+    const result = await runCli(["agent", "recover", "--steps", "3"], { cwd: root, env: withoutProviderEnv() });
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("agent action: /agent recover");
-    expect(result.stdout).toContain("execution-policy: natural runtime control");
     expect(result.stdout).toContain("next safe command: /agent approve-action action-recovery");
     expect(result.stdout).toContain("recovery blocked: explicit action required before /agent approve-action action-recovery");
 
@@ -3715,17 +3704,15 @@ describe("Hermes-like runtime acceptance", () => {
     expect(approvals.find((record) => record.id === "action-recovery")?.status).toBe("pending");
   }, 10000);
 
-  it("routes natural continue through the safe local recovery step", async () => {
+  it("routes explicit recovery through the safe local recovery step", async () => {
     writeSafeRecoveryBriefFixture(root);
 
-    const result = await runCli(["ask", "--execute", "계속 진행해"], { cwd: root, env: withoutProviderEnv() });
+    const result = await runCli(["agent", "recover", "--steps", "3"], { cwd: root, env: withoutProviderEnv() });
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("agent action: /agent recover");
-    expect(result.stdout).toContain("execution-policy: natural runtime control");
     expect(result.stdout).toContain("pending command: /status");
     expect(result.stdout).toContain("recovery step 1/3");
     expect(result.stdout).toContain("recovery action: /status");
-    expect(result.stdout).toContain("현재 단계: SETUP");
+    expect(result.stdout).toContain("- current: SETUP");
     expect(result.stdout).toContain("recovery paused: next action unchanged after /status");
   }, 10000);
 
@@ -3816,7 +3803,8 @@ describe("Hermes-like runtime acceptance", () => {
     expect(laneFiles).toHaveLength(0);
   }, 10000);
 
-  it("runs conversational continue intent through the local orchestration loop", async () => {
+  it("keeps conversational continue intent in runtime chat", async () => {
+    const captureFile = path.join(root, "runtime-continue-chat-capture.json");
     writeOpenAiEnv(root, "https://example.invalid/v1");
 
     const result = await runCli(["shell"], {
@@ -3825,72 +3813,70 @@ describe("Hermes-like runtime acceptance", () => {
         { text: "계속 진행해\n", delayMs: 0 },
         { text: "/exit\n", delayMs: 50 }
       ],
-      preloadFetchMarkdown: "# 제품 정의서\n\n## 제품명\n자연어 계속 SaaS\n\n## 한 줄 설명\n자연어 continue가 안전한 로컬 오케스트레이션으로 이어진다."
+      preloadFetchCapture: captureFile
     });
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("agent proposed command: /agent run --steps 6");
-    expect(result.stdout).toContain("agent action: /agent run --steps 6");
-    expect(result.stdout).toContain("execution-policy: natural runtime control");
-    expect(result.stdout).toContain("orchestration loop: max_steps=6");
-    expect(result.stdout).toContain("orchestration blocked: user approval required: /pm approve product-definition");
+    expect(readCapturedPrompt(captureFile)).toContain("Current user message:\n계속 진행해");
+    expect(result.stdout).not.toContain("agent action: /agent run --steps 6");
+    expect(result.stdout).not.toContain("execution-policy: natural runtime control");
+    expect(result.stdout).not.toContain("orchestration loop: max_steps=6");
     const state = JSON.parse(fs.readFileSync(path.join(root, ".rph", "state.json"), "utf8")) as {
       currentStage: string;
     };
-    const productDefinition = fs.readFileSync(path.join(root, ".rph", "documents", "product-definition", "v1.0.0.md"), "utf8");
-    expect(state.currentStage).toBe("PM_PRODUCT_DEFINITION_REVIEW");
-    expect(productDefinition).toContain("자연어 계속 SaaS");
+    expect(state.currentStage).toBe("SETUP");
   }, 10000);
 
-  it("runs ask --execute start intent as the PM workflow start command", async () => {
+  it("does not treat ask --execute start text as an implicit slash control", async () => {
     const result = await runCli(["ask", "--execute", "시작해"], { cwd: root });
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("agent action: /pm start");
-    expect(result.stdout).toContain("execution-policy: natural runtime control");
-    expect(result.stdout).toContain("PM 워크플로우 시작");
+    expect(result.stdout).toContain("AI agent is not connected yet.");
+    expect(result.stdout).not.toContain("agent action: /pm start");
+    expect(result.stdout).not.toContain("execution-policy: natural runtime control");
     const state = JSON.parse(fs.readFileSync(path.join(root, ".rph", "state.json"), "utf8")) as {
       currentStage: string;
     };
-    expect(state.currentStage).toBe("PM_PRODUCT_DEFINITION_INTERVIEW");
+    expect(state.currentStage).toBe("SETUP");
   }, 10000);
 
-  it("runs ask --execute status intent as the status command", async () => {
+  it("does not treat ask --execute status text as an implicit slash control", async () => {
     const result = await runCli(["ask", "--execute", "현재 상태 보여줘"], { cwd: root, env: withoutProviderEnv() });
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("agent action: /status");
-    expect(result.stdout).toContain("execution-policy: natural runtime control");
-    expect(result.stdout).toContain("Harness readiness");
+    expect(result.stdout).toContain("AI agent is not connected yet.");
+    expect(result.stdout).not.toContain("agent action: /status");
+    expect(result.stdout).not.toContain("Harness readiness");
     expect(result.stdout).not.toContain("agent proposed command");
   }, 10000);
 
-  it("runs product-definition natural intent as PM start from setup", async () => {
+  it("does not treat product-definition text as PM start without a slash command", async () => {
     const result = await runCli(["ask", "--execute", "제품 정의 시작해줘"], { cwd: root, env: withoutProviderEnv() });
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("agent action: /pm start");
-    expect(result.stdout).toContain("execution-policy: natural runtime control");
-    expect(result.stdout).toContain("PM 워크플로우 시작");
+    expect(result.stdout).toContain("AI agent is not connected yet.");
+    expect(result.stdout).not.toContain("agent action: /pm start");
+    expect(result.stdout).not.toContain("execution-policy: natural runtime control");
     const state = JSON.parse(fs.readFileSync(path.join(root, ".rph", "state.json"), "utf8")) as {
       currentStage: string;
     };
-    expect(state.currentStage).toBe("PM_PRODUCT_DEFINITION_INTERVIEW");
+    expect(state.currentStage).toBe("SETUP");
   }, 10000);
 
-  it("runs ask --execute continue intent and stops at the approval gate", async () => {
+  it("keeps ask --execute continue text out of the orchestration loop unless the user types a slash command", async () => {
+    const captureFile = path.join(root, "ask-continue-chat-capture.json");
     writeOpenAiEnv(root, "https://example.invalid/v1");
 
     const result = await runCli(["ask", "--execute", "계속 진행해"], {
       cwd: root,
-      preloadFetchMarkdown: "# 제품 정의서\n\n## 제품명\n자연어 ask 계속 SaaS\n\n## 한 줄 설명\nask execute continue가 승인 게이트에서 멈춘다."
+      preloadFetchCapture: captureFile
     });
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("agent action: /agent run --steps 6");
-    expect(result.stdout).toContain("execution-policy: natural runtime control");
-    expect(result.stdout).toContain("orchestration loop: max_steps=6");
-    expect(result.stdout).toContain("orchestration blocked: user approval required: /pm approve product-definition");
+    expect(readCapturedPrompt(captureFile)).toContain("Current user message:\n계속 진행해");
+    expect(result.stdout).not.toContain("agent action: /agent run --steps 6");
+    expect(result.stdout).not.toContain("execution-policy: natural runtime control");
+    expect(result.stdout).not.toContain("orchestration loop: max_steps=6");
     const state = JSON.parse(fs.readFileSync(path.join(root, ".rph", "state.json"), "utf8")) as {
       currentStage: string;
     };
@@ -3898,52 +3884,53 @@ describe("Hermes-like runtime acceptance", () => {
       status?: string;
       blocker?: string | null;
     };
-    expect(state.currentStage).toBe("PM_PRODUCT_DEFINITION_REVIEW");
-    expect(manifest.status).toBe("blocked");
-    expect(manifest.blocker).toContain("user approval required");
+    expect(state.currentStage).toBe("SETUP");
+    expect(manifest.status).not.toBe("blocked");
+    expect(manifest.blocker).toBeFalsy();
   }, 10000);
 
-  it("runs expanded continue phrasing through the natural control path", async () => {
+  it("keeps expanded continue phrasing in chat", async () => {
+    const captureFile = path.join(root, "ask-expanded-continue-chat-capture.json");
     writeOpenAiEnv(root, "https://example.invalid/v1");
 
     const result = await runCli(["ask", "--execute", "이어서 진행해"], {
       cwd: root,
-      preloadFetchMarkdown: "# 제품 정의서\n\n## 제품명\n확장 자연어 계속 SaaS\n\n## 한 줄 설명\n확장된 continue 표현도 안전한 로컬 오케스트레이션으로 이어진다."
+      preloadFetchCapture: captureFile
     });
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("agent action: /agent run --steps 6");
-    expect(result.stdout).toContain("execution-policy: natural runtime control");
-    expect(result.stdout).toContain("orchestration blocked: user approval required: /pm approve product-definition");
+    expect(readCapturedPrompt(captureFile)).toContain("Current user message:\n이어서 진행해");
+    expect(result.stdout).not.toContain("agent action: /agent run --steps 6");
+    expect(result.stdout).not.toContain("execution-policy: natural runtime control");
     const state = JSON.parse(fs.readFileSync(path.join(root, ".rph", "state.json"), "utf8")) as {
       currentStage: string;
     };
-    expect(state.currentStage).toBe("PM_PRODUCT_DEFINITION_REVIEW");
+    expect(state.currentStage).toBe("SETUP");
   }, 10000);
 
-  it("routes bare English continue intent through the natural control path", async () => {
+  it("routes bare English continue intent as one-shot chat", async () => {
+    const captureFile = path.join(root, "bare-continue-chat-capture.json");
     writeOpenAiEnv(root, "https://example.invalid/v1");
 
     const result = await runCli(["continue"], {
       cwd: root,
-      preloadFetchMarkdown: "# 제품 정의서\n\n## 제품명\nBare Continue SaaS\n\n## 한 줄 설명\nbare English continue도 runtime control로 동작한다."
+      preloadFetchCapture: captureFile
     });
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("agent action: /agent run --steps 6");
-    expect(result.stdout).toContain("execution-policy: natural runtime control");
-    expect(result.stdout).toContain("orchestration blocked: user approval required: /pm approve product-definition");
+    expect(readCapturedPrompt(captureFile)).toContain("Current user message:\ncontinue");
+    expect(result.stdout).not.toContain("agent action: /agent run --steps 6");
+    expect(result.stdout).not.toContain("execution-policy: natural runtime control");
     const state = JSON.parse(fs.readFileSync(path.join(root, ".rph", "state.json"), "utf8")) as {
       currentStage: string;
     };
-    expect(state.currentStage).toBe("PM_PRODUCT_DEFINITION_REVIEW");
+    expect(state.currentStage).toBe("SETUP");
   }, 10000);
 
   it("does not execute negated continue text through ask --execute", async () => {
     const result = await runCli(["ask", "--execute", "계속하지마"], { cwd: root });
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("auto-run: blocked because the workflow-control intent is not an exact execution phrase");
     expect(result.stdout).not.toContain("agent action: /agent run --steps 6");
     const state = JSON.parse(fs.readFileSync(path.join(root, ".rph", "state.json"), "utf8")) as {
       currentStage: string;
@@ -4122,7 +4109,8 @@ describe("Hermes-like runtime acceptance", () => {
     expect(records.at(-1)?.manifest.lastCommandOk).toBe(true);
   }, 10000);
 
-  it("routes exact natural continue while paused through recovery resume", async () => {
+  it("keeps natural continue while paused in chat instead of recovery resume", async () => {
+    const captureFile = path.join(root, "paused-continue-chat-capture.json");
     writeOpenAiEnv(root, "https://example.invalid/v1");
 
     const result = await runCli(["shell"], {
@@ -4131,20 +4119,21 @@ describe("Hermes-like runtime acceptance", () => {
         { text: "/pause\n", delayMs: 0 },
         { text: "계속 진행해\n", delayMs: 50 },
         { text: "/exit\n", delayMs: 50 }
-      ]
+      ],
+      preloadFetchCapture: captureFile
     });
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("agent action: /agent recover");
-    expect(result.stdout).toContain("next safe command: /resume");
-    expect(result.stdout).toContain("recovery action: /resume");
-    expect(result.stdout).toContain("워크플로우 재개");
+    expect(readCapturedPrompt(captureFile)).toContain("Current user message:\n계속 진행해");
+    expect(result.stdout).not.toContain("agent action: /agent recover");
+    expect(result.stdout).not.toContain("recovery action: /resume");
+    expect(result.stdout).not.toContain("워크플로우 재개");
     const manifest = JSON.parse(fs.readFileSync(path.join(root, ".rph", "runtime", "current-session.json"), "utf8")) as {
       status: string;
       blocker: string | null;
     };
-    expect(manifest.status).toBe("active");
-    expect(manifest.blocker).toBeNull();
+    expect(manifest.status).toBe("paused");
+    expect(manifest.blocker).toBe("workflow paused by user");
   });
 });
 
@@ -4209,6 +4198,20 @@ describe("Hermes-like CLI contracts", () => {
     expect(result.stdout + result.stderr).not.toMatch(/unknown command/i);
   }, 10000);
 
+  it("treats single-token unknown text as one-shot chat unless it is a command typo", async () => {
+    const captureFile = path.join(root, "single-token-chat-capture.json");
+    writeOpenAiEnv(root, "https://example.invalid/v1");
+
+    const result = await runCli(["hello"], {
+      cwd: root,
+      preloadFetchCapture: captureFile
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(readCapturedPrompt(captureFile)).toContain("Current user message:\nhello");
+    expect(result.stdout + result.stderr).not.toMatch(/unknown command/i);
+  }, 10000);
+
   it("continues one-shot ask inside the active runtime chat session", async () => {
     const firstCapture = path.join(root, "ask-first-capture.json");
     const secondCapture = path.join(root, "ask-second-capture.json");
@@ -4259,13 +4262,13 @@ describe("Hermes-like CLI contracts", () => {
     expect(productDefinition).not.toContain("이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘");
   });
 
-  it("continues the productize package through status and first natural-language approval", async () => {
+  it("continues the productize package through status and first explicit approval", async () => {
     const productize = await runCli(["ask", "--execute", "이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: 승인 게이트 SaaS"], {
       cwd: root
     });
     expect(productize.exitCode).toBe(0);
 
-    const statusBefore = await runCli(["status"], { cwd: root });
+    const statusBefore = await runCli(["status", "--verbose"], { cwd: root });
     expect(statusBefore.exitCode).toBe(0);
     expect(statusBefore.stdout).toContain("RPH status");
     expect(statusBefore.stdout).toContain("- current: PM_PRODUCT_DEFINITION_REVIEW");
@@ -4275,12 +4278,11 @@ describe("Hermes-like CLI contracts", () => {
     expect(statusBefore.stdout).toContain("현재 단계: PM_PRODUCT_DEFINITION_REVIEW");
     expect(statusBefore.stdout).toContain("승인 필요: product-definition");
 
-    const approve = await runCli(["ask", "--execute", "승인해"], { cwd: root });
+    const approve = await runCli(["docs", "approve", "product-definition"], { cwd: root });
     expect(approve.exitCode).toBe(0);
-    expect(approve.stdout).toContain("natural approval: /docs approve product-definition");
     expect(approve.stdout).toContain("[승인 완료] product-definition");
 
-    const statusAfter = await runCli(["status"], { cwd: root });
+    const statusAfter = await runCli(["status", "--verbose"], { cwd: root });
     expect(statusAfter.exitCode).toBe(0);
     expect(statusAfter.stdout).toContain("현재 단계: PM_PRODUCT_DEFINITION_APPROVED");
     expect(statusAfter.stdout).toContain("승인 완료: product-definition");
@@ -4328,9 +4330,10 @@ describe("Hermes-like CLI contracts", () => {
 
       expect(result.exitCode).toBe(0);
       expect(result.stderr).not.toContain("RPH project not initialized");
-      expect(result.stdout).toContain("RPH project: not initialized");
-      expect(result.stdout).toContain("RPH Setup Assistant");
-      expect(result.stdout).toContain("rph setup auto");
+      expect(result.stdout).toContain("Real Product Harness");
+      expect(result.stdout).toContain("RPH status");
+      expect(result.stdout).toContain("project not initialized");
+      expect(result.stdout).toContain("- rph setup auto --live");
       expect(fs.existsSync(path.join(uninitializedRoot, ".rph"))).toBe(false);
     } finally {
       fs.rmSync(uninitializedRoot, { recursive: true, force: true });
@@ -4348,8 +4351,9 @@ describe("Hermes-like CLI contracts", () => {
       expect(result.exitCode).toBe(0);
       expect(result.stderr).not.toContain("no configured AI provider");
       expect(result.stdout).toContain("AI agent is not connected yet.");
-      expect(result.stdout).toContain("agent proposed command: rph setup auto");
-      expect(result.stdout).toContain("RPH Setup Assistant");
+      expect(result.stdout).toContain("대화하려면 먼저 AI provider를 연결해야 합니다.");
+      expect(result.stdout).toContain("Real Product Harness");
+      expect(result.stdout).toContain("- rph setup auto --live");
       expect(fs.existsSync(path.join(uninitializedRoot, ".rph"))).toBe(false);
     } finally {
       fs.rmSync(uninitializedRoot, { recursive: true, force: true });
@@ -4685,7 +4689,7 @@ describe("Hermes-like CLI contracts", () => {
       const rawReport = fs.readFileSync(path.join(uninitializedRoot, ".rph", "connections", "latest.json"), "utf8");
       expect(rawReport).not.toContain("test-openai");
       expect(rawReport).not.toContain("OPENAI_API_KEY=test-openai");
-      const status = await runCli(["status"], {
+      const status = await runCli(["status", "--verbose"], {
         cwd: uninitializedRoot,
         env: withoutProviderEnv()
       });
@@ -4734,7 +4738,7 @@ describe("Hermes-like CLI contracts", () => {
       expect(report.provenance.command).toContain("--ai openai");
       expect(report.provenance.command).toContain("--mcp none");
 
-      const status = await runCli(["status"], {
+      const status = await runCli(["status", "--verbose"], {
         cwd: uninitializedRoot,
         env: withoutProviderEnv()
       });
@@ -4839,7 +4843,7 @@ describe("Hermes-like CLI contracts", () => {
       checkedTargetCount: 1
     });
 
-    const status = await runCli(["status"], { cwd: root, env: withoutProviderEnv() });
+    const status = await runCli(["status", "--verbose"], { cwd: root, env: withoutProviderEnv() });
 
     expect(status.exitCode).toBe(0);
     expect(status.stdout).toContain("Harness readiness");
@@ -4872,7 +4876,7 @@ describe("Hermes-like CLI contracts", () => {
       cwd: root,
       env: withoutProviderEnv(),
       stdinChunks: [
-        { text: "/status\n", delayMs: 0 },
+        { text: "/status --verbose\n", delayMs: 0 },
         { text: "/exit\n", delayMs: 50 }
       ]
     });
@@ -4896,10 +4900,11 @@ describe("Hermes-like CLI contracts", () => {
       });
 
       expect(shell.exitCode).toBe(0);
-      expect(shell.stdout).toContain("RPH project: not initialized");
-      expect(shell.stdout).toContain("- /setup auto");
+      expect(shell.stdout).toContain("RPH status");
+      expect(shell.stdout).toContain("project not initialized");
       expect(shell.stdout).toContain("- /setup auto --live");
-      expect(shell.stdout).toContain("- /pm start");
+      expect(shell.stdout).toContain("- /setup auto --from-env --live");
+      expect(shell.stdout).toContain("- /help setup");
       expect(shell.stdout).not.toContain("next:\n- rph setup auto");
     } finally {
       fs.rmSync(uninitializedRoot, { recursive: true, force: true });
@@ -4999,7 +5004,7 @@ describe("Hermes-like CLI contracts", () => {
       expect(agentStatus.stdout).toContain("mcp.tools.call");
       expect(agentStatus.stdout).toContain("acceptance-mcp-ok");
 
-      const status = await runCli(["status"], {
+      const status = await runCli(["status", "--verbose"], {
         cwd: uninitializedRoot,
         env: withoutProviderEnv(),
         preloadFetchMcpRuntime: true
@@ -5127,7 +5132,7 @@ describe("Hermes-like CLI contracts", () => {
       expect(proofs.stdout).toContain("connection:mcp:custom-echo");
       expect(proofs.stdout).toContain("protocol-ready:protocol-tools-list");
 
-      const projectStatus = await runCli(["status"], {
+      const projectStatus = await runCli(["status", "--verbose"], {
         cwd: uninitializedRoot,
         env: withoutProviderEnv()
       });
@@ -5401,10 +5406,13 @@ describe("Hermes-like CLI contracts", () => {
       const result = await runCli(["start"], { cwd: uninitializedRoot });
 
       expect(result.exitCode).toBe(0);
-      expect(result.stdout).toContain("RPH start: setup required");
-      expect(result.stdout).toContain("next: rph setup auto --live");
-      expect(result.stdout).toContain("fallback: rph pm start");
-      expect(result.stdout).toContain("help: rph help setup");
+      expect(result.stdout).toContain("Real Product Harness");
+      expect(result.stdout).toContain("control plane online");
+      expect(result.stdout).toContain("RPH start");
+      expect(result.stdout).toContain("setup required before agent chat can run");
+      expect(result.stdout).toContain("next:");
+      expect(result.stdout).toContain("- rph setup auto --live");
+      expect(result.stdout).toContain("- rph help setup");
       expect(fs.existsSync(path.join(uninitializedRoot, ".rph"))).toBe(false);
     } finally {
       fs.rmSync(uninitializedRoot, { recursive: true, force: true });
@@ -5437,12 +5445,12 @@ describe("Hermes-like CLI contracts", () => {
     }
   }, 10000);
 
-  it("exits with code 2 and a suggestion for unknown commands", async () => {
-    const result = await runCli(["unknown-command"], { cwd: root });
+  it("exits with code 2 and a suggestion for likely command typos", async () => {
+    const result = await runCli(["statsu"], { cwd: root });
 
     expect(result.exitCode).toBe(2);
     expect(result.stdout + result.stderr).toMatch(/unknown command/i);
-    expect(result.stdout + result.stderr).toContain("/help");
+    expect(result.stdout + result.stderr).toContain("Did you mean: /status");
   });
 
   it("supports setup detect as a read-only detection pass", async () => {

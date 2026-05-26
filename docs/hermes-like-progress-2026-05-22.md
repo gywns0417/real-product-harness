@@ -724,10 +724,12 @@ pnpm run live:configured
    - GitHub issue/PR readback은 local approval snapshot과 per-artifact proof에 묶였다.
    - mutable MCP write의 approval-local readback rail은 들어갔고, deploy 계열 readback과 실계정 mutable MCP canary는 아직 확대가 필요하다.
 
-4. Natural runtime control
-   - 시작/계속/승인/거절의 command-like 자연어 alias는 구현됐다.
-   - top-level English bare command symmetry도 추가됐다.
-   - 남은 단계는 shared natural-intent helper를 core/CLI 양쪽에 통합하는 것이다.
+4. Runtime chat/control boundary
+   - 이전에 구현했던 command-like 자연어 alias는 기본 실행 경로에서 제거됐다.
+   - 일반 텍스트는 `계속 진행해`, `현재 상태 보여줘`, `승인해`, `continue`처럼 command-like로 보여도 chat으로 들어간다.
+   - control은 slash command 또는 명시 실행 표면으로만 확정된다.
+   - top-level bare text는 one-shot chat으로 라우팅되고, `statsu`처럼 실제 command typo로 보이는 단일 토큰만 suggestion을 유지한다.
+   - 남은 단계는 setup/start/status/help의 모든 fallback copy를 같은 runtime-first 언어로 계속 압축하는 것이다.
 
 4. Runtime generation fallback
    - 준비 상태 fallback과 request-time generation failover가 구현됐다.

@@ -13,7 +13,7 @@ The repo is a TypeScript workspace with a top-level product runtime and focused 
 
 ## Runtime Layer
 
-`rph` is the control-plane entrypoint. Running it without arguments opens a long-lived runtime shell where normal text chats with the connected AI agent and slash commands such as `/pm start`, `/pd references`, `/fe spec`, and `/qa review --pr 1` control workflow state. Connected chat proposals can execute read-only commands and the current autonomous local workflow step directly, so the agent can move the harness without forcing every safe action back through manual slash input. A narrow set of command-like natural inputs is treated as deterministic control aliases: `시작해` maps to `/pm start`, `제품 정의 시작해줘` starts the PM product-definition path, `현재 상태 보여줘` maps to `/status`, `세션 타임라인` maps to `/agent replay`, `계속 진행해` and `이어서 진행해` map to `/agent run --steps 6` or `/agent recover`, `승인해` resolves the single pending approval target, and `거절해` resolves the single pending external action rejection. These aliases run only after CLI preflight; questions, negated text, multiple pending targets, user-approval model proposals, unsupported local proposals, and external live writes stay blocked until the explicit command or approval path is used.
+`rph` is the control-plane entrypoint. Running it without arguments opens a long-lived runtime shell where normal text chats with the connected AI agent and slash commands such as `/pm start`, `/pd references`, `/fe spec`, and `/qa review --pr 1` control workflow state. Connected chat proposals can execute read-only commands and the current autonomous local workflow step directly, so the agent can move the harness without forcing every safe action back through manual slash input. User-authored non-slash text remains conversation, even when it looks command-like: `시작해`, `현재 상태 보여줘`, `계속 진행해`, `승인해`, and `continue` are sent to chat rather than silently promoted into local workflow execution. Workflow control requires a slash/control command (`/status`, `/agent run --steps 6`, `/agent recover`, `/agent approve-action <id>`, `/pm start`) or an explicit automation surface.
 
 The design mirrors a Hermes-style separation:
 
@@ -26,8 +26,7 @@ The design mirrors a Hermes-style separation:
 - Resident workers: `/agent pool run` is the handoff-only supervisor loop, `/agent pool start` starts it as a detached background process, and `/agent pool service install` writes a per-project macOS LaunchAgent that runs `agent pool run` directly under launchd ownership. The service uses the existing `.rph/runtime/worker-pool.json` health contract rather than a second scheduler.
 - Handoff contract: every command either advances state, writes an artifact, reports a blocker, or recommends the next slash command.
 
-Automation can still call the same surface one-shot with `rph /pm start`; the old positional form is kept internally for compatibility but is no longer the primary UX.
-Exact bare natural controls such as `rph continue`, `rph approve`, and `rph reject` are routed through the same `ask --execute` preflight instead of falling through to unknown-command handling.
+Automation can still call the same surface one-shot with `rph /pm start`; the old positional form is kept internally for compatibility but is no longer the primary UX. Unknown bare text such as `rph continue` is treated as one-shot chat unless it is a likely typo for a real command.
 
 ## State
 
@@ -114,10 +113,9 @@ and MCP protocol readiness failures point to a concrete next action and retry co
 Approval commands are outside the AI auto-execution surface. Even with `ask --execute`, proposals for
 `/pm approve ...`, `/docs approve ...`, or `/pd approve ...` are blocked and recorded as a runtime
 blocker so approval gates cannot be crossed by model output alone.
-User-authored natural approval is a separate deterministic alias: it is accepted only for a single
-pending target already visible in local runtime state. External writes remain two-step actions:
-the proposal creates `.rph/runtime/action-approvals.json`, and only `/agent approve-action <id>` or
-the single-target `승인해` alias can execute it. Approval mutation uses the same fail-closed
+External writes remain two-step actions:
+the proposal creates `.rph/runtime/action-approvals.json`, and only `/agent approve-action <id>` can
+execute it. Approval mutation uses the same fail-closed
 file-lock pattern as handoffs, recovers stale lockfiles, and transitions `pending -> running` in one
 step so the approved action cannot be started twice. Execution is session-bound: an action can run
 only from the runtime session that owns the pending external-write wait condition. Completion still

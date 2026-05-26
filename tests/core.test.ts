@@ -1460,12 +1460,13 @@ describe("command parser and env validation", () => {
 
     expect(ok).toBe(true);
     const output = logSpy.mock.calls.flat().join("\n");
-    expect(output).toContain("Primary flows:");
+    expect(output).toContain("Primary controls:");
     expect(output).toContain("rph start");
     expect(output).toContain("rph setup auto --live");
     expect(output).toContain("rph live ai:openai");
     expect(output).toContain("rph status");
-    expect(output).toContain("rph agent graph status");
+    expect(output).toContain("rph \"what should I do next?\"");
+    expect(output).toContain("Unknown bare text is treated as conversation");
     expect(output).toContain("rph help setup");
     expect(output).toContain("rph help live");
     expect(output).not.toContain("One-shot slash commands:");
@@ -5308,12 +5309,12 @@ describe("command parser and env validation", () => {
 describe("runtime planner and context bundle", () => {
   it("classifies runtime input deterministically", () => {
     expect(planAgentAction({ text: "/pm draft requirements --ai", initialized: true }).kind).toBe("slash-command");
-    expect(planAgentAction({ text: "현재 상태 알려줘", initialized: true }).kind).toBe("status");
+    expect(planAgentAction({ text: "현재 상태 알려줘", initialized: true }).kind).toBe("chat");
 
     const workflowPlan = planAgentAction({ text: "FE 시작", initialized: true, hasConfiguredAi: true });
-    expect(workflowPlan.kind).toBe("start-workflow");
-    expect(workflowPlan.command).toBe("/fe spec --ai");
-    expect(workflowPlan.workflowTarget).toBe("fe");
+    expect(workflowPlan.kind).toBe("chat");
+    expect(workflowPlan.command).toBeUndefined();
+    expect(workflowPlan.workflowTarget).toBeUndefined();
 
     const productizePlan = planAgentAction({
       text: "이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: AI 회의록 액션아이템 SaaS",
@@ -5446,7 +5447,7 @@ describe("runtime session manifest", () => {
     const manifest = createRuntimeSessionManifest(root, "session-test", "2026-05-21T00:00:00.000Z", "FE 시작");
     expect(manifest.stage).toBe("SETUP");
     expect(manifest.ownerAgent).toBe("Orchestrator");
-    expect(manifest.pendingAction?.kind).toBe("start-workflow");
+    expect(manifest.pendingAction?.kind).toBe("chat");
 
     saveRuntimeSession(root, manifest);
     const updated = updateRuntimeSession(root, "session-test", {

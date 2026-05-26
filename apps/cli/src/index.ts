@@ -333,19 +333,26 @@ const HERMES_OPERATOR_AGENT_PACK = [
 
 const HELP_TOPIC_LINES: Record<string, string[]> = {
   runtime: [
-    "Runtime commands",
+    "Runtime conversation",
     "",
-    "Enter runtime: rph",
-    "Setup-first entrypoint: rph start",
-    "Bare one-shot chat: rph \"what should I do next?\"",
-    "One-shot natural language: rph ask <message>",
-    "One-shot natural language execution: rph ask --execute <message>",
-    "Looped local orchestration: rph ask --execute --loop <message>",
-    "Consume pending runtime work: rph agent run --steps 5",
-    "One-shot golden path: rph /productize <product idea>",
-    "One-shot: rph /pm start",
+    "Default mode is conversation with the connected AI agent.",
+    "Slash commands are explicit workflow controls, like Codex or Claude Code slash commands.",
     "",
-    "Core commands:",
+    "Talk:",
+    "  rph",
+    "  rph \"what should I do next?\"",
+    "  rph 다음에 뭐 하면 돼?",
+    "  rph ask <message>",
+    "",
+    "Explicit execution mode:",
+    "  rph ask --execute <message>",
+    "  rph ask --execute --loop <message>",
+    "  rph agent run --steps 5",
+    "",
+    "Setup-first entrypoint:",
+    "  rph start",
+    "",
+    "Runtime slash controls:",
     "  /status",
     "  /workspace [--json]",
     "  /next",
@@ -591,23 +598,30 @@ async function main(): Promise<void> {
   }
 
   const parsed = parseCli(argv);
-  const bareInput = argv.join(" ").trim();
+  const commandSuggestion = suggestCommand(parsed.command);
   if (
     !isKnownTopLevelCommand(parsed.command)
-    && argv.length > 0
+    && argv.length === 1
+    && isLikelyBareCommandTypo(argv[0], commandSuggestion)
     && !argv[0].startsWith("/")
     && !argv[0].startsWith("-")
-    && naturalRuntimeIntent(bareInput)
   ) {
-    await runParsedCommand(cwd, parseCli(["ask", "--execute", ...argv]));
+    await runParsedCommand(cwd, parsed);
     return;
   }
-  const maybeBareConversation = argv.length > 1 || /[가-힣?!.,]/.test(argv.join(" "));
-  if (!isKnownTopLevelCommand(parsed.command) && maybeBareConversation && argv.length > 0 && !argv[0].startsWith("/") && !argv[0].startsWith("-")) {
+  if (!isKnownTopLevelCommand(parsed.command) && argv.length > 0 && !argv[0].startsWith("/") && !argv[0].startsWith("-")) {
     await runParsedCommand(cwd, parseCli(["ask", ...argv]));
     return;
   }
   await runParsedCommand(cwd, parsed);
+}
+
+function isLikelyBareCommandTypo(input: string, suggestion?: string): boolean {
+  const normalized = input.trim().toLowerCase();
+  if (!suggestion || suggestion === "help" || !normalized) {
+    return false;
+  }
+  return /^[a-z][a-z0-9_-]*$/.test(normalized);
 }
 
 export async function runParsedCommand(
@@ -640,7 +654,8 @@ export async function runParsedCommand(
       case "status":
         handleStatus(projectRoot, {
           commandSurface: context.runtimeShell ? "slash" : "rph",
-          json: optionBool(parsed.options, "json")
+          json: optionBool(parsed.options, "json"),
+          verbose: optionBool(parsed.options, "verbose")
         });
         break;
       case "workspace":
@@ -3826,10 +3841,6 @@ async function handleRuntimeAgentInput(
   if (plan.kind !== "chat" && plan.command) {
     console.log(`agent proposed command: ${plan.command}`);
   }
-  const naturalControl = await handleRuntimeNaturalControl(projectRoot, sessionId, userInput, plan);
-  if (naturalControl.handled) {
-    return naturalControl.ok;
-  }
   if (plan.kind !== "chat" && plan.command) {
     console.log("auto-run: skipped for conversational input; type the slash command to run it.");
   }
@@ -3838,45 +3849,6 @@ async function handleRuntimeAgentInput(
     return false;
   }
   return handleRuntimeChat(projectRoot, sessionId, chatHistory, userInput);
-}
-
-async function handleRuntimeNaturalControl(
-  projectRoot: string,
-  sessionId: string,
-  userInput: string,
-  plan: ReturnType<typeof createRuntimePlan>
-): Promise<{ handled: boolean; ok: boolean }> {
-  const intent = naturalRuntimeIntent(userInput);
-  if (intent === "approve") {
-    return approveRuntimeNaturalPendingAction(projectRoot, sessionId);
-  }
-  if (intent === "reject") {
-    return rejectRuntimeNaturalPendingAction(projectRoot, sessionId);
-  }
-  const command = naturalWorkflowCommand(projectRoot, intent, plan);
-  if (!command) {
-    return { handled: false, ok: false };
-  }
-  if (!isSafeNaturalRuntimeCommand(command)) {
-    console.log("auto-run: blocked because the natural-language command is external or unsupported");
-    return { handled: true, ok: false };
-  }
-  console.log(`agent action: ${command}`);
-  console.log("execution-policy: natural runtime control");
-  const ok = await runParsedCommand(projectRoot, parseCli(parseCommandLine(command)), false);
-  if (isRuntimeProjectInitialized(projectRoot) && !isAgentOrchestrationCommand(command)) {
-    recordRuntimeSessionEvent(projectRoot, sessionId, {
-      kind: ok ? "command" : "error",
-      message: command,
-      ok,
-      plan
-    });
-  }
-  return { handled: true, ok };
-}
-
-function isAgentOrchestrationCommand(command: string): boolean {
-  return /^\/agent (?:run|continue|recover)\b/.test(command.trim());
 }
 
 type NaturalRuntimeIntent = "start" | "continue" | "approve" | "reject" | "status" | "session" | "productDefinition";
@@ -3970,98 +3942,6 @@ function normalizeNaturalRuntimeText(input: string): string {
     .replace(/\s+/g, " ");
 }
 
-function naturalWorkflowCommand(
-  projectRoot: string,
-  intent: NaturalRuntimeIntent | null,
-  plan?: ReturnType<typeof createRuntimePlan>
-): string | undefined {
-  if (intent === "start") {
-    return canRunNaturalStart(projectRoot) ? "/pm start" : undefined;
-  }
-  if (intent === "status") {
-    return "/status";
-  }
-  if (intent === "session") {
-    return "/agent replay";
-  }
-  if (intent === "productDefinition") {
-    return naturalProductDefinitionCommand(projectRoot, plan);
-  }
-  if (intent === "continue") {
-    if (shouldPreferNaturalRecover(projectRoot)) {
-      return "/agent recover";
-    }
-    if (canRunNaturalContinue(projectRoot)) {
-      return "/agent run --steps 6";
-    }
-    return canRunNaturalRecover(projectRoot) ? "/agent recover" : undefined;
-  }
-  return undefined;
-}
-
-function naturalProductDefinitionCommand(
-  projectRoot: string,
-  plan?: ReturnType<typeof createRuntimePlan>
-): string | undefined {
-  if (!isRuntimeProjectInitialized(projectRoot)) {
-    return "/pm start";
-  }
-  const state = loadState(projectRoot);
-  if (state.currentStage === "SETUP") {
-    return "/pm start";
-  }
-  const planned = plan?.command?.trim();
-  if (planned && /^\/pm draft product-definition\b/.test(planned)) {
-    return planned;
-  }
-  return safeHasReadyAiProvider(projectRoot) ? "/pm draft product-definition --ai" : "/pm draft product-definition";
-}
-
-function canRunNaturalStart(projectRoot: string): boolean {
-  if (!isRuntimeProjectInitialized(projectRoot)) {
-    return true;
-  }
-  const state = loadState(projectRoot);
-  const session = loadRuntimeSession(projectRoot);
-  return state.currentStage === "SETUP" && !state.paused && !hasPendingNaturalGate(projectRoot, session);
-}
-
-function canRunNaturalContinue(projectRoot: string): boolean {
-  if (!isRuntimeProjectInitialized(projectRoot)) {
-    return false;
-  }
-  const state = loadState(projectRoot);
-  const session = loadRuntimeSession(projectRoot);
-  if (state.paused || hasPendingNaturalGate(projectRoot, session)) {
-    return false;
-  }
-  const nextAction = selectNextOrchestrationAction(projectRoot);
-  return typeof nextAction.command === "string" && !nextAction.blocker && isAutonomousLocalCommand(nextAction.command);
-}
-
-function canRunNaturalRecover(projectRoot: string): boolean {
-  if (!isRuntimeProjectInitialized(projectRoot)) {
-    return false;
-  }
-  const session = loadRuntimeSession(projectRoot);
-  return Boolean(session && runtimeRecoveryState(projectRoot, session).actionable);
-}
-
-function shouldPreferNaturalRecover(projectRoot: string): boolean {
-  if (!isRuntimeProjectInitialized(projectRoot)) {
-    return false;
-  }
-  const session = loadRuntimeSession(projectRoot);
-  if (!session) {
-    return false;
-  }
-  return session.status !== "active"
-    || Boolean(session.waitCondition)
-    || Boolean(session.blocker)
-    || Boolean(session.pendingExternalActionId)
-    || Boolean(session.handoffPacket);
-}
-
 function hasPendingNaturalGate(projectRoot: string, session: RuntimeSessionManifest | null): boolean {
   if (session?.pendingExternalActionId) {
     return true;
@@ -4070,121 +3950,6 @@ function hasPendingNaturalGate(projectRoot: string, session: RuntimeSessionManif
     return true;
   }
   return pendingRuntimeExternalActions(projectRoot).length > 0;
-}
-
-function isSafeNaturalRuntimeCommand(command: string): boolean {
-  if (classifyMutableAgentCommand(command) || isUserApprovalAgentCommand(command)) {
-    return false;
-  }
-  try {
-    const parsed = parseCli(parseCommandLine(command));
-    switch (parsed.command) {
-      case "init":
-      case "setup":
-      case "status":
-      case "next":
-      case "help":
-      case "productize":
-      case "pm":
-      case "pd":
-      case "fe":
-      case "be":
-      case "qa":
-        return true;
-      case "agent":
-        return ["run", "continue", "recover", "status", "handoffs", "session", "replay"].includes(parsed.subcommand ?? "status");
-      case "docs":
-        return ["list", "show", "diff"].includes(parsed.subcommand ?? "");
-      default:
-        return false;
-    }
-  } catch {
-    return false;
-  }
-}
-
-async function approveRuntimeNaturalPendingAction(
-  projectRoot: string,
-  sessionId: string
-): Promise<{ handled: boolean; ok: boolean }> {
-  if (!isRuntimeProjectInitialized(projectRoot)) {
-    console.log("natural approval: no initialized project");
-    return { handled: true, ok: false };
-  }
-  const pendingExternal = pendingRuntimeExternalActions(projectRoot);
-  const approvalCommands = pendingUserApprovalCommands(projectRoot);
-  if (pendingExternal.length > 0 && approvalCommands.length > 0) {
-    console.log("natural approval: multiple pending gate types");
-    pendingExternal.forEach((record) => console.log(`- external action: ${record.id}: ${record.command}`));
-    approvalCommands.forEach((command) => console.log(`- approval target: ${command}`));
-    console.log("명확히 선택하려면 /agent approve-action <action-id> 또는 해당 승인 명령을 직접 입력하세요.");
-    return { handled: true, ok: false };
-  }
-  if (pendingExternal.length === 1) {
-    console.log(`natural approval: external action ${pendingExternal[0].id}`);
-    const ok = await approveAndExecuteRuntimeAction(projectRoot, pendingExternal[0].id, "user");
-    return { handled: true, ok };
-  }
-  if (pendingExternal.length > 1) {
-    console.log("natural approval: multiple pending external actions");
-    pendingExternal.forEach((record) => console.log(`- ${record.id}: ${record.command}`));
-    console.log("명확히 선택하려면 /agent approve-action <action-id> 를 사용하세요.");
-    return { handled: true, ok: false };
-  }
-  if (approvalCommands.length === 1) {
-    const command = approvalCommands[0];
-    console.log(`natural approval: ${command}`);
-    const ok = await runParsedCommand(projectRoot, parseCli(parseCommandLine(command)), false);
-    recordRuntimeSessionEvent(projectRoot, sessionId, {
-      kind: ok ? "command" : "error",
-      message: command,
-      ok,
-      plan: planAgentAction({
-        text: command,
-        initialized: true,
-        currentStage: loadState(projectRoot).currentStage
-      })
-    });
-    return { handled: true, ok };
-  }
-  if (approvalCommands.length > 1) {
-    console.log("natural approval: multiple pending approval targets");
-    approvalCommands.forEach((command) => console.log(`- ${command}`));
-    console.log("명확히 선택하려면 해당 승인 명령을 직접 입력하세요.");
-    return { handled: true, ok: false };
-  }
-  console.log("natural approval: pending approval not found");
-  return { handled: true, ok: false };
-}
-
-function rejectRuntimeNaturalPendingAction(
-  projectRoot: string,
-  sessionId: string
-): { handled: boolean; ok: boolean } {
-  if (!isRuntimeProjectInitialized(projectRoot)) {
-    console.log("natural rejection: no initialized project");
-    return { handled: true, ok: false };
-  }
-  const pendingExternal = pendingRuntimeExternalActions(projectRoot);
-  if (pendingExternal.length === 1) {
-    const record = rejectRuntimeAction(projectRoot, pendingExternal[0].id, "rejected by natural-language user input", "user");
-    updateRuntimeSession(projectRoot, sessionId, {
-      pendingExternalActionId: null,
-      blocker: null,
-      note: `external action rejected: ${record.id}`
-    });
-    console.log(`natural rejection: external action ${record.id}`);
-    console.log(`reason: ${record.rejectReason}`);
-    return { handled: true, ok: true };
-  }
-  if (pendingExternal.length > 1) {
-    console.log("natural rejection: multiple pending external actions");
-    pendingExternal.forEach((record) => console.log(`- ${record.id}: ${record.command}`));
-    console.log("명확히 선택하려면 /agent reject-action <action-id> 를 사용하세요.");
-    return { handled: true, ok: false };
-  }
-  console.log("natural rejection: pending external action not found");
-  return { handled: true, ok: false };
 }
 
 function pendingRuntimeExternalActions(projectRoot: string): RuntimeActionApprovalRecord[] {
@@ -4281,12 +4046,6 @@ async function handleAsk(
   const plan = createRuntimePlan(projectRoot, prompt);
   const sessionId = resolveRuntimeSessionId(projectRoot);
   const executePlannedCommand = optionBool(options, "execute");
-  if (executePlannedCommand) {
-    const naturalControl = await handleRuntimeNaturalControl(projectRoot, sessionId, prompt, plan);
-    if (naturalControl.handled) {
-      return;
-    }
-  }
   if (plan.kind === "blocked") {
     console.log(`[blocked] ${plan.reason}`);
     return;
@@ -4297,6 +4056,7 @@ async function handleAsk(
       return;
     }
     console.log(`agent action: ${plan.command}`);
+    console.log("execution-policy: ask --execute allowed local workflow command");
     const parsed = parseCli(parseCommandLine(plan.command));
     const ok = await runParsedCommand(projectRoot, parsed, false);
     if (ok && executePlannedCommand && optionBool(options, "loop") && isRuntimeProjectInitialized(projectRoot)) {
@@ -4431,10 +4191,11 @@ async function handleStart(
       }
       return;
     }
-    console.log("RPH start: setup required");
-    console.log("next: rph setup auto --live");
-    console.log("fallback: rph pm start");
-    console.log("help: rph help setup");
+    printRuntimeRecoveryCard(projectRoot, {
+      title: "RPH start",
+      reason: "setup required before agent chat can run",
+      commandSurface: "rph"
+    });
     return;
   }
   if (message) {
@@ -4442,7 +4203,7 @@ async function handleStart(
     return;
   }
   if (!safeHasReadyAiProvider(projectRoot)) {
-    printMissingAiAgentGuidance(projectRoot, "/setup auto");
+    printMissingAiAgentGuidance(projectRoot);
     return;
   }
   if (process.stdin.isTTY) {
@@ -6182,31 +5943,56 @@ function safeHasReadyAiProvider(projectRoot: string): boolean {
   }
 }
 
-function printFreshProjectStatus(projectRoot: string, commandSurface: CommandSurface = "rph"): void {
-  const config = createHarnessConfig(process.env);
-  console.log("RPH project: not initialized");
-  console.log(`root: ${projectRoot}`);
-  console.log("status: setup required");
+function guidanceHarnessConfig(projectRoot: string) {
+  try {
+    const existing = isRuntimeProjectInitialized(projectRoot) ? loadHarnessConfig(projectRoot) : undefined;
+    return createHarnessConfig(process.env, undefined, existing);
+  } catch {
+    return createHarnessConfig(process.env);
+  }
+}
+
+function printRuntimeRecoveryCard(
+  projectRoot: string,
+  options: {
+    title: string;
+    reason: string;
+    proposedCommand?: string;
+    commandSurface?: CommandSurface;
+  }
+): void {
+  const commandSurface = options.commandSurface ?? "rph";
+  console.log(renderRuntimeHero(projectRoot, resolveRuntimeSessionId(projectRoot), guidanceHarnessConfig(projectRoot)));
   console.log("");
-  console.log(renderSetupGuide(config));
+  console.log(options.title);
+  console.log(`- current: ${options.reason}`);
+  if (options.proposedCommand) {
+    console.log(`- suggested control: ${runtimeSurfaceCommand(commandSurface, options.proposedCommand.replace(/^\//, ""))}`);
+  }
+  console.log("- chat: connect an AI provider, then type plain text");
   console.log("");
   console.log("next:");
-  console.log(`- ${runtimeSurfaceCommand(commandSurface, "setup auto")}`);
   console.log(`- ${runtimeSurfaceCommand(commandSurface, "setup auto --live")}`);
-  console.log(`- ${runtimeSurfaceCommand(commandSurface, "pm start")}`);
+  console.log(`- ${runtimeSurfaceCommand(commandSurface, "setup auto --from-env --live")}`);
+  console.log(`- ${runtimeSurfaceCommand(commandSurface, "help setup")}`);
+}
+
+function printFreshProjectStatus(projectRoot: string, commandSurface: CommandSurface = "rph"): void {
+  printRuntimeRecoveryCard(projectRoot, {
+    title: "RPH status",
+    reason: "project not initialized",
+    commandSurface
+  });
 }
 
 function printMissingAiAgentGuidance(projectRoot: string, proposedCommand?: string, commandSurface: CommandSurface = "rph"): void {
-  const config = createHarnessConfig(process.env, undefined, loadHarnessConfig(projectRoot));
-  console.log("AI agent is not connected yet.");
-  console.log(`agent proposed command: ${proposedCommand ?? runtimeSurfaceCommand(commandSurface, "setup auto")}`);
-  console.log("");
-  console.log(renderSetupGuide(config));
-  console.log("");
-  console.log("next:");
-  console.log(`- ${runtimeSurfaceCommand(commandSurface, "setup auto")}`);
-  console.log(`- ${runtimeSurfaceCommand(commandSurface, "setup auto --live")}`);
-  console.log(`- ${runtimeSurfaceCommand(commandSurface, "setup auto --from-env --live")}`);
+  printRuntimeRecoveryCard(projectRoot, {
+    title: "AI agent is not connected yet.",
+    reason: "AI provider missing; plain text chat is unavailable until setup passes",
+    proposedCommand,
+    commandSurface
+  });
+  console.log("대화하려면 먼저 AI provider를 연결해야 합니다. 연결 후에는 일반 텍스트가 곧 agent chat입니다.");
 }
 
 function isReadOnlyAgentCommand(command: string): boolean {
@@ -6465,7 +6251,7 @@ function handleWorkspace(
   console.log(renderOperatorWorkspace(snapshot));
 }
 
-function handleStatus(projectRoot: string, options: { commandSurface?: "rph" | "slash"; json?: boolean } = {}): void {
+function handleStatus(projectRoot: string, options: { commandSurface?: "rph" | "slash"; json?: boolean; verbose?: boolean } = {}): void {
   if (options.json) {
     console.log(JSON.stringify(buildOperatorWorkspace(projectRoot), null, 2));
     return;
@@ -6491,6 +6277,9 @@ function handleStatus(projectRoot: string, options: { commandSurface?: "rph" | "
   console.log(`- chat: rph ask "다음에 뭐 하면 돼?"`);
   for (const line of runtimeDigestLines(projectRoot, session)) {
     console.log(line);
+  }
+  if (!options.verbose) {
+    return;
   }
   console.log(`프로젝트: ${project.name}`);
   console.log(`현재 단계: ${stage.id} (${stage.name})`);
@@ -10301,7 +10090,15 @@ function renderGeneralHelp(): string {
   return [
     "real-product-harness",
     "",
-    "Primary flows:",
+    "Talk to the connected AI agent:",
+    "  rph",
+    "    Enter the runtime. Plain text chats with the connected AI agent; slash commands control workflow state.",
+    "  rph \"what should I do next?\"",
+    "    Send a one-shot chat message to the current runtime session.",
+    "  rph 다음에 뭐 하면 돼?",
+    "    Unknown bare text is treated as conversation, not as a failed command.",
+    "",
+    "Primary controls:",
     "  rph start",
     "    Setup-first entrypoint. In a fresh TTY it opens the runtime and offers live setup before workflow work.",
     "  rph setup auto --live",
@@ -10316,15 +10113,10 @@ function renderGeneralHelp(): string {
     "    Diagnose stale installed wrappers, shell init, completion, and JSON operator command support.",
     "  rph update",
     "    Rerun the installer from the current source checkout.",
-    "  rph agent graph status",
-    "    Inspect the execution graph behind the current agent runtime.",
-    "  rph",
-    "    Enter the runtime. Plain text chats with the connected AI agent; slash commands control workflow state.",
     "  rph /pm start",
     "    Start the PM workflow directly.",
     "",
-    "Natural language:",
-    "  rph ask <message>",
+    "Advanced execution:",
     "  rph ask --execute <message>",
     "  rph ask --execute --loop <message>",
     "  rph /productize <product idea>",

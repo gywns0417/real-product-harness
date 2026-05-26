@@ -110,19 +110,18 @@ Turn the current idea into a sharper MVP direction.
 /github setup-branches
 ```
 
-In a fresh non-interactive folder, `rph start` keeps the first-run handoff short: `next: rph setup auto --live`,
-`fallback: rph pm start`, and `help: rph help setup`. In an interactive terminal, plain `rph start`
-now launches the setup wizard directly as `rph setup auto --live`, writes the fresh project state, and
-hands off to the connected chat/runtime after successful verification. Setup flags such as
-`--from-env --live --ai openai --mcp none` keep the same setup-first path for automation.
+In a fresh non-interactive folder, `rph start` shows the same runtime opener plus a short recovery card:
+connect AI with `rph setup auto --live`, retry from `.env` with `rph setup auto --from-env --live`,
+or open `rph help setup`. In an interactive terminal, plain `rph start` launches the setup wizard
+directly, writes the fresh project state, and hands off to the connected chat/runtime after successful
+verification. Setup flags such as `--from-env --live --ai openai --mcp none` keep the same setup-first
+path for automation.
 
-Short command-like natural inputs are deterministic runtime controls, not model guesses:
-`시작해` runs `/pm start`, `제품 정의 시작해줘` starts the PM product-definition path,
-`현재 상태 보여줘` runs `/status`, `세션 타임라인` runs `/agent replay`, `계속 진행해` and
-`이어서 진행해` run `/agent run --steps 6` or `/agent recover` when no approval or external-write
-gate is pending, `승인해` approves the single pending document or external action, and `거절해`
-rejects the single pending external action. Question-shaped or negated text such as `계속하지마`
-stays out of the auto-run path.
+Plain text is chat. Command-like natural phrases such as `계속 진행해`, `현재 상태 보여줘`, `승인해`,
+or `continue` are sent to the connected AI agent instead of being silently promoted into local workflow
+execution. To control the harness, type the slash/control command explicitly: `/status`,
+`/agent run --steps 6`, `/agent recover`, `/agent approve-action <id>`, `/pm start`, or their
+`rph ...` one-shot forms.
 
 Connected AI chat can also move the harness directly when the proposed command is safe and current:
 read-only proposals such as `/status` run immediately, and local workflow proposals run only when
@@ -133,21 +132,17 @@ For one-shot operation, use natural language or a slash command from the shell:
 
 ```bash
 rph start
+rph hello
 rph "다음에 뭐 하면 돼?"
 rph "이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: AI 회의록을 액션아이템과 담당자 추적으로 바꾸는 SaaS"
 rph ask "이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: AI 회의록을 액션아이템과 담당자 추적으로 바꾸는 SaaS"
 rph ask --execute "이 아이디어를 MVP spec과 FE/BE 작업으로 만들어줘: AI 회의록을 액션아이템과 담당자 추적으로 바꾸는 SaaS"
-rph ask --execute "계속 진행해"
-rph ask --execute "현재 상태 보여줘"
 rph status --json
 rph workspace --json
-rph ask --execute "제품 정의 시작해줘"
-rph ask --execute "세션 타임라인"
-rph ask --execute "승인해"
-rph ask --execute "거절해"
-rph continue
-rph approve
-rph reject
+rph /agent run --steps 6
+rph /agent recover
+rph /agent approve-action <action-id>
+rph /agent reject-action <action-id>
 rph productize "AI 회의록을 액션아이템과 담당자 추적으로 바꾸는 SaaS"
 rph /productize "AI 회의록을 액션아이템과 담당자 추적으로 바꾸는 SaaS"
 rph status
@@ -161,12 +156,14 @@ and a `.rph/golden-path/latest.md` summary. Merge, deployment, and credential-ga
 writes still require explicit user approval. If the current folder is not initialized yet,
 `/productize` initializes the local `.rph` project first.
 `rph pm start` also bootstraps an uninitialized folder and moves directly into the PM kickoff stage.
-Plain `rph ask "..."` and bare multi-word input such as `rph "다음에 뭐 하면 돼?"` are
+Plain `rph ask "..."`, bare multi-word input such as `rph "다음에 뭐 하면 돼?"`, and ordinary
+single-token text such as `rph hello` are
 conversational by default: they can propose the matching slash command but do not run mutating
 workflow commands. Add `--execute` or run the proposed slash command when you want one-shot
-execution. Natural approval and rejection only resolve when exactly one pending target is available;
-multiple pending actions print the explicit `/agent approve-action <id>` or `/agent reject-action <id>`
-path instead. `rph start` is the setup-first entrypoint: in a fresh folder it either opens the
+execution. Approval and rejection require explicit controls such as `/agent approve-action <id>`,
+`/agent reject-action <id>`, or the relevant document approval command; ordinary approval text stays
+chat. Close command typos such as `statsu` still get command suggestions, but ordinary unknown
+bare text goes to the connected AI agent instead of failing as a command error. `rph start` is the setup-first entrypoint: in a fresh folder it either opens the
 setup wizard immediately (interactive) or prints the short setup handoff (non-interactive) without
 creating `.rph`; in a configured project it drops into the runtime or routes the supplied message to
 chat.
@@ -499,7 +496,7 @@ pnpm run release:live
 `release:check` runs lint, build, tests, productize smoke, Hermes e2e smoke, setup-live-chat smoke,
 provider-onboarding smoke for OpenAI/Anthropic/Gemini/local, MCP-runtime smoke, Notion write/readback smoke, GitHub repo/label/push readback smoke, mutable-action approval smoke, GitHub setup-to-first-live-action onboarding smoke, isolated install smoke, and clean-home install E2E smoke. Productize smoke covers both sides of the conversation contract:
 plain `ask` must propose without mutating, while `ask --execute` must create the golden path package.
-Hermes acceptance tests also cover runtime `/setup auto` from credential entry to successful selected-provider connection, in-wizard recovery from missing or bad credentials without widening the selected check scope, first-value ready-action output after passed checks, protocol-partial trust reporting when credential probes pass but generation fails, setup recovery hints, runtime env-overlay immutability, approval-command proposal blocking, natural-language fail-closed behavior for ambiguous internal and external approvals, request-time provider failover, persisted failover metadata in chat/session/run records, runtime session journal/replay output, and recovery from an unreadable runtime session head.
+Hermes acceptance tests also cover runtime `/setup auto` from credential entry to successful selected-provider connection, in-wizard recovery from missing or bad credentials without widening the selected check scope, first-value ready-action output after passed checks, protocol-partial trust reporting when credential probes pass but generation fails, setup recovery hints, runtime env-overlay immutability, approval-command proposal blocking, natural-language chat boundaries for command-like text, request-time provider failover, persisted failover metadata in chat/session/run records, runtime session journal/replay output, and recovery from an unreadable runtime session head.
 Setup-live-chat smoke joins fresh setup, selected-provider live verification, and a real agent ask
 turn in one temp project. MCP-runtime smoke joins fresh setup, protocol MCP `tools/list` readiness,
 an agent tool-call turn, guarded `mcp.tools.call`, and persisted tool observations in one temp
