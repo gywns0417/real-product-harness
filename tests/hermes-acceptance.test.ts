@@ -5614,6 +5614,8 @@ describe("Hermes-like CLI contracts", () => {
       expect(setup.stdout).toContain("Capability summary");
       expect(setup.stdout).toContain("- connected AI: none");
       expect(setup.stdout).toContain("- connected MCP: custom-echo (protocol-ready:protocol-tool-call)");
+      expect(setup.stdout).toContain("After AI provider connection, you can ask me to");
+      expect(setup.stdout).toContain("custom-echo MCP 도구로 읽을 수 있는 정보를 확인해줘");
       expect(setup.stdout).toContain("First demo turn");
       expect(setup.stdout).toContain("- skipped: no AI provider was selected and verified");
       expect(setup.stdout).toContain("AI provider가 아직 없어 plain text chat은 AI 연결 후 활성화됩니다.");

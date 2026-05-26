@@ -79,6 +79,8 @@ for (const provider of providers) {
   assertIncludes(setup.stdout, "setup live check passed", `${provider.id} setup`);
   assertIncludes(setup.stdout, "Ready actions", `${provider.id} setup`);
   assertIncludes(setup.stdout, "Capability summary", `${provider.id} setup`);
+  assertIncludes(setup.stdout, "You can now ask me to", `${provider.id} setup`);
+  assertIncludes(setup.stdout, "제품 아이디어를 검증 가능한 MVP 계획으로 바꿔줘", `${provider.id} setup`);
   assertIncludes(setup.stdout, "First demo turn", `${provider.id} setup`);
   assertIncludes(setup.stdout, `ai:${provider.id} chat: /ai run --provider ${provider.id}`, `${provider.id} setup`);
 

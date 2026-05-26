@@ -7410,6 +7410,7 @@ async function printSetupFirstSuccessExperience(
   }
   console.log(`- first product workflow: ${runtimeSurfaceCommand(commandSurface, "pm start")}`);
   console.log(`- setup proof: ${runtimeSurfaceCommand(commandSurface, "status")} shows the verified connection state`);
+  printSetupAskExamples(aiChecks, mcpChecks);
 
   const demoProvider = aiChecks[0]?.id;
   if (!demoProvider) {
@@ -9006,6 +9007,43 @@ function connectionTrustLabel(check: ConnectionCheck): string {
   const mode = check.readiness?.mode ?? "unverified";
   const stage = check.readiness?.provenStage ?? "none";
   return `${mode}:${stage}`;
+}
+
+function printSetupAskExamples(
+  aiChecks: ConnectionCheck[],
+  mcpChecks: ConnectionCheck[]
+): void {
+  const examples: string[] = [];
+  if (aiChecks.length > 0) {
+    examples.push("제품 아이디어를 검증 가능한 MVP 계획으로 바꿔줘");
+    examples.push("지금 대화로 요구사항 초안을 잡아줘");
+  }
+  for (const check of mcpChecks) {
+    examples.push(setupAskExampleForMcp(check.id));
+  }
+  if (examples.length === 0) {
+    return;
+  }
+  console.log("");
+  console.log(aiChecks.length > 0 ? "You can now ask me to" : "After AI provider connection, you can ask me to");
+  for (const example of [...new Set(examples)].slice(0, 5)) {
+    console.log(`- ${example}`);
+  }
+}
+
+function setupAskExampleForMcp(id: string): string {
+  switch (id) {
+    case "notion":
+      return "Notion 페이지를 읽고 제품 요구사항 초안으로 정리해줘";
+    case "github":
+      return "GitHub repo 상태를 읽고 첫 이슈와 라벨 계획을 제안해줘";
+    case "figma":
+      return "Figma 파일을 요약하고 구현할 화면 목록을 뽑아줘";
+    case "stitch":
+      return "Stitch MCP 도구 목록을 확인하고 안전한 읽기 작업을 실행해줘";
+    default:
+      return `${id} MCP 도구로 읽을 수 있는 정보를 확인해줘`;
+  }
 }
 
 function printSetupRecoveryHints(checks: ConnectionCheck[], commandSurface: CommandSurface = "rph"): void {

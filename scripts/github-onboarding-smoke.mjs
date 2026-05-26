@@ -119,6 +119,8 @@ assertIncludes(setup.stdout, "setup live check passed", "setup");
 assertIncludes(setup.stdout, "ai:openai trust=protocol-ready:protocol-tool-call", "setup");
 assertIncludes(setup.stdout, "mcp:github trust=adapter-write-ready:credential-probe", "setup");
 assertIncludes(setup.stdout, "GITHUB_TOKEN: GitHub CLI 인증 감지", "setup");
+assertIncludes(setup.stdout, "You can now ask me to", "setup");
+assertIncludes(setup.stdout, "GitHub repo 상태를 읽고 첫 이슈와 라벨 계획을 제안해줘", "setup");
 
 const envPath = path.join(tmpRoot, ".env");
 const envText = fs.readFileSync(envPath, "utf8");
