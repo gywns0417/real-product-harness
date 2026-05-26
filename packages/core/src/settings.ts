@@ -16,7 +16,7 @@ import {
   mcpPolicyForServer,
   normalizeHarnessMcpPolicy
 } from "./mcp-policy";
-import { listMcpTools } from "./mcp-client";
+import { listMcpTools, type McpToolsListResult, type McpToolSummary } from "./mcp-client";
 import { connectionReportFile, harnessConfigFile } from "./paths";
 import { recordConnectionProofEvents } from "./proof-ledger";
 import { nowIso } from "./time";
@@ -66,6 +66,17 @@ export interface PersistedConfigRepairSummary {
   mcpChanged: boolean;
   migratedServers: string[];
   notes: string[];
+}
+
+export interface McpReadOnlyToolContractBindingResult {
+  config: HarnessConfig;
+  boundTools: string[];
+  missingTools: string[];
+}
+
+export interface AutoBindMcpReadOnlyToolContractsResult extends McpReadOnlyToolContractBindingResult {
+  autoSelectedTools: string[];
+  skippedReason?: string;
 }
 
 export const CONNECTION_REPORT_TRUST_MAX_AGE_MS = 30 * 60 * 1000;
@@ -337,7 +348,7 @@ export async function bindMcpReadOnlyToolContracts(
   projectRoot: string,
   serverId: McpServerId,
   env: NodeJS.ProcessEnv = process.env
-): Promise<{ config: HarnessConfig; boundTools: string[]; missingTools: string[] }> {
+): Promise<McpReadOnlyToolContractBindingResult> {
   const existing = readHarnessConfigSnapshot(projectRoot, env);
   const server = existing.mcpServers[serverId];
   if (!server) {
@@ -355,6 +366,67 @@ export async function bindMcpReadOnlyToolContracts(
     endpoint: server.url,
     headers: protocolMcpHeadersForRuntime(env, server, serverId)
   });
+  return bindMcpReadOnlyToolContractsFromList(projectRoot, existing, serverId, allowedTools, result);
+}
+
+export async function autoBindMcpReadOnlyToolContracts(
+  projectRoot: string,
+  serverId: McpServerId,
+  env: NodeJS.ProcessEnv = process.env
+): Promise<AutoBindMcpReadOnlyToolContractsResult> {
+  const existing = readHarnessConfigSnapshot(projectRoot, env);
+  const server = existing.mcpServers[serverId];
+  if (!server) {
+    throw new Error(`MCP server not found: ${serverId}`);
+  }
+  if (server.kind !== "mcp-server" || server.transport !== "http" || !server.url) {
+    return skippedAutoBind(existing, "not an HTTP protocol MCP server");
+  }
+  const policy = mcpPolicyForServer(existing, serverId);
+  const allowedTools = policy?.agentReadOnlyTools ?? server.agentReadOnlyTools ?? [];
+  if (allowedTools.length > 0) {
+    return {
+      ...await bindMcpReadOnlyToolContracts(projectRoot, serverId, env),
+      autoSelectedTools: []
+    };
+  }
+  if (!server.custom || (policy?.protocolReadiness ?? server.protocolReadiness) !== "tools/list") {
+    return skippedAutoBind(existing, "only custom tools/list MCP servers without an allowlist can be auto-bound");
+  }
+  const result = await listMcpTools({
+    endpoint: server.url,
+    headers: protocolMcpHeadersForRuntime(env, server, serverId)
+  });
+  const candidates = autoBindableReadOnlyToolNames(result.tools);
+  if (candidates.length === 0) {
+    return skippedAutoBind(existing, "no read-only no-arg tool was advertised by tools/list");
+  }
+  if (candidates.length > 1) {
+    return skippedAutoBind(existing, `multiple read-only no-arg tools advertised: ${candidates.join(",")}`);
+  }
+  const binding = bindMcpReadOnlyToolContractsFromList(projectRoot, existing, serverId, candidates, result);
+  return {
+    ...binding,
+    autoSelectedTools: candidates
+  };
+}
+
+function bindMcpReadOnlyToolContractsFromList(
+  projectRoot: string,
+  existing: HarnessConfig,
+  serverId: McpServerId,
+  allowedToolsInput: string[],
+  result: McpToolsListResult
+): McpReadOnlyToolContractBindingResult {
+  const server = existing.mcpServers[serverId];
+  if (!server) {
+    throw new Error(`MCP server not found: ${serverId}`);
+  }
+  const allowedTools = normalizeAgentReadOnlyTools(allowedToolsInput);
+  if (allowedTools.length === 0) {
+    throw new Error(`${serverId} has no read-only allowlist to bind; configure --allow-tool or --probe-tool first.`);
+  }
+  const policy = mcpPolicyForServer(existing, serverId);
   const contracts = captureMcpReadOnlyToolContracts(server, result.session, result.tools, allowedTools);
   const boundTools = Object.keys(contracts).sort();
   const missingTools = allowedTools.filter((tool) => !contracts[tool]).sort();
@@ -382,6 +454,43 @@ export async function bindMcpReadOnlyToolContracts(
   saveHarnessConfig(projectRoot, existing);
   writeProjectMcpConfig(projectRoot, existing);
   return { config: existing, boundTools, missingTools };
+}
+
+function skippedAutoBind(config: HarnessConfig, skippedReason: string): AutoBindMcpReadOnlyToolContractsResult {
+  return {
+    config,
+    boundTools: [],
+    missingTools: [],
+    autoSelectedTools: [],
+    skippedReason
+  };
+}
+
+function autoBindableReadOnlyToolNames(tools: McpToolSummary[]): string[] {
+  return tools
+    .filter((tool) => isAutoBindableReadOnlyTool(tool))
+    .map((tool) => tool.name)
+    .sort();
+}
+
+function isAutoBindableReadOnlyTool(tool: McpToolSummary): boolean {
+  const annotations = tool.annotations && typeof tool.annotations === "object"
+    ? tool.annotations as Record<string, unknown>
+    : {};
+  return annotations.readOnlyHint === true
+    && annotations.destructiveHint !== true
+    && inputSchemaAcceptsEmptyObject(tool.inputSchema);
+}
+
+function inputSchemaAcceptsEmptyObject(inputSchema: unknown): boolean {
+  if (inputSchema === undefined || inputSchema === null) {
+    return true;
+  }
+  if (typeof inputSchema !== "object" || Array.isArray(inputSchema)) {
+    return false;
+  }
+  const required = (inputSchema as Record<string, unknown>).required;
+  return !Array.isArray(required) || required.length === 0;
 }
 
 function protocolMcpHeadersForRuntime(

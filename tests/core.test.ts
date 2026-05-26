@@ -24,6 +24,7 @@ import {
   buildOperatorWorkspace,
   connectionReportConfigFingerprint,
   addCustomProtocolMcpServer,
+  autoBindMcpReadOnlyToolContracts,
   bindMcpReadOnlyToolContracts,
   initializeHarnessConfig,
   createPullRequestDraft,
@@ -4144,6 +4145,147 @@ describe("command parser and env validation", () => {
     expect(binding.config.mcpPolicyRegistry.servers["custom-echo"].agentReadOnlyTools).toEqual(["echo"]);
     expect(binding.config.mcpPolicyRegistry.servers["custom-echo"].toolContracts?.["missing-tool"]).toBeUndefined();
     expect(synced.mcpPolicyRegistry.servers["custom-echo"].agentReadOnlyTools).toEqual(["echo"]);
+  });
+
+  it("auto-binds one custom MCP read-only no-arg tool during live onboarding", async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { id?: string; method?: string };
+      if (body.method === "initialize") {
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: body.id,
+          result: {
+            protocolVersion: "2025-06-18",
+            capabilities: { tools: {} },
+            serverInfo: { name: "custom-echo", version: "test" }
+          }
+        }), {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            "Mcp-Session-Id": "session-auto-bind"
+          }
+        });
+      }
+      if (body.method === "notifications/initialized") {
+        return new Response(null, { status: 202 });
+      }
+      if (body.method === "tools/list") {
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: body.id,
+          result: {
+            tools: [{
+              name: "echo",
+              description: "Echo input",
+              inputSchema: { type: "object", properties: { text: { type: "string" } } },
+              annotations: { readOnlyHint: true, destructiveHint: false }
+            }]
+          }
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      throw new Error(`unexpected MCP method: ${body.method}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const env = {
+      CUSTOM_ECHO_MCP_TOKEN: "custom-secret"
+    } as NodeJS.ProcessEnv;
+    addCustomProtocolMcpServer(root, {
+      id: "custom-echo",
+      name: "Custom Echo",
+      url: "https://mcp.example.test/echo",
+      authMode: "bearer",
+      authEnvKey: "CUSTOM_ECHO_MCP_TOKEN"
+    }, env);
+
+    const binding = await autoBindMcpReadOnlyToolContracts(root, "custom-echo", env);
+    const synced = readHarnessConfigSnapshot(root, env);
+
+    expect(binding.skippedReason).toBeUndefined();
+    expect(binding.autoSelectedTools).toEqual(["echo"]);
+    expect(binding.boundTools).toEqual(["echo"]);
+    expect(binding.config.mcpPolicyRegistry.servers["custom-echo"]).toMatchObject({
+      kind: "read-only-allowlist",
+      agentReadOnlyTools: ["echo"],
+      allowReadOnlyToolCall: true,
+      requireReadOnlyToolContracts: true
+    });
+    expect(synced.mcpPolicyRegistry.servers["custom-echo"].toolContracts?.echo?.fingerprint).toEqual(expect.any(String));
+  });
+
+  it("does not auto-bind ambiguous custom MCP read-only tools", async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { id?: string; method?: string };
+      if (body.method === "initialize") {
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: body.id,
+          result: {
+            protocolVersion: "2025-06-18",
+            capabilities: { tools: {} },
+            serverInfo: { name: "custom-echo", version: "test" }
+          }
+        }), {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            "Mcp-Session-Id": "session-ambiguous-auto-bind"
+          }
+        });
+      }
+      if (body.method === "notifications/initialized") {
+        return new Response(null, { status: 202 });
+      }
+      if (body.method === "tools/list") {
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: body.id,
+          result: {
+            tools: [
+              {
+                name: "echo",
+                inputSchema: { type: "object" },
+                annotations: { readOnlyHint: true }
+              },
+              {
+                name: "search",
+                inputSchema: { type: "object" },
+                annotations: { readOnlyHint: true, destructiveHint: false }
+              },
+              {
+                name: "delete_everything",
+                inputSchema: { type: "object" },
+                annotations: { readOnlyHint: false, destructiveHint: true }
+              }
+            ]
+          }
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      throw new Error(`unexpected MCP method: ${body.method}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const env = {
+      CUSTOM_ECHO_MCP_TOKEN: "custom-secret"
+    } as NodeJS.ProcessEnv;
+    addCustomProtocolMcpServer(root, {
+      id: "custom-echo",
+      name: "Custom Echo",
+      url: "https://mcp.example.test/echo",
+      authMode: "bearer",
+      authEnvKey: "CUSTOM_ECHO_MCP_TOKEN"
+    }, env);
+
+    const binding = await autoBindMcpReadOnlyToolContracts(root, "custom-echo", env);
+    const synced = readHarnessConfigSnapshot(root, env);
+
+    expect(binding.boundTools).toEqual([]);
+    expect(binding.autoSelectedTools).toEqual([]);
+    expect(binding.skippedReason).toContain("multiple read-only no-arg tools");
+    expect(synced.mcpPolicyRegistry.servers["custom-echo"]).toMatchObject({
+      kind: "protocol-tools-list",
+      agentReadOnlyTools: [],
+      allowReadOnlyToolCall: false
+    });
   });
 
   it("rejects agent MCP tools/call when current tool metadata marks the tool mutating", async () => {

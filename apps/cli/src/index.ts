@@ -169,6 +169,7 @@ import {
   normalizeNotionPageId,
   normalizeGitHubRepoTarget,
   addCustomProtocolMcpServer,
+  autoBindMcpReadOnlyToolContracts,
   bindMcpReadOnlyToolContracts,
   configuredAiProviders,
   configuredMcpServers,
@@ -8162,10 +8163,22 @@ async function bindVerifiedMcpReadOnlyContracts(
   for (const check of mcpChecks) {
     const serverId = parseMcpServerId(check.id);
     const server = config.mcpServers[serverId];
-    if (!server || (server.agentReadOnlyTools ?? []).length === 0) {
+    if (!server) {
       continue;
     }
-    const binding = await bindMcpReadOnlyToolContracts(projectRoot, serverId, process.env);
+    const binding = (server.agentReadOnlyTools ?? []).length > 0
+      ? await bindMcpReadOnlyToolContracts(projectRoot, serverId, process.env)
+      : await autoBindMcpReadOnlyToolContracts(projectRoot, serverId, process.env);
+    if ("skippedReason" in binding && binding.skippedReason) {
+      console.log(`MCP read-only tool auto-bind skipped: ${serverId} (${binding.skippedReason})`);
+      continue;
+    }
+    const autoSelectedTools = "autoSelectedTools" in binding && Array.isArray(binding.autoSelectedTools)
+      ? binding.autoSelectedTools
+      : [];
+    if (autoSelectedTools.length > 0) {
+      console.log(`MCP read-only tool auto-selected: ${serverId} ${autoSelectedTools.join(",")}`);
+    }
     console.log(`MCP read-only tool contracts bound: ${serverId}`);
     console.log(`bound tools: ${binding.boundTools.join(",") || "none"}`);
     if (binding.missingTools.length > 0) {

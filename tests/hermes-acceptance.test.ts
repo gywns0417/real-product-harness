@@ -6037,19 +6037,23 @@ describe("Hermes-like CLI contracts", () => {
       expect(setup.stdout).toContain("custom-echo");
       expect(setup.stdout).toContain("authMode=bearer authEnv=CUSTOM_ECHO_MCP_TOKEN");
       expect(setup.stdout).toContain("mcp:custom-echo trust=protocol-ready:protocol-tools-list");
+      expect(setup.stdout).toContain("MCP read-only tool auto-selected: custom-echo echo");
+      expect(setup.stdout).toContain("MCP read-only tool contracts bound: custom-echo");
+      expect(setup.stdout).toContain("bound tools: echo");
       expect(setup.stdout).toContain("First action verified");
 
       const config = JSON.parse(fs.readFileSync(path.join(uninitializedRoot, ".rph", "config.json"), "utf8")) as {
-        mcpServers: Record<string, { url?: string; authMode?: string; authEnvKey?: string; custom?: boolean }>;
+        mcpServers: Record<string, { url?: string; authMode?: string; authEnvKey?: string; custom?: boolean; agentReadOnlyTools?: string[] }>;
       };
       expect(config.mcpServers["custom-echo"]).toMatchObject({
         url: "https://mcp.example.test/echo",
         authMode: "bearer",
         authEnvKey: "CUSTOM_ECHO_MCP_TOKEN",
-        custom: true
+        custom: true,
+        agentReadOnlyTools: ["echo"]
       });
       const mcpConfig = JSON.parse(fs.readFileSync(path.join(uninitializedRoot, ".mcp", "config.json"), "utf8")) as {
-        mcpServers: Record<string, { url?: string; auth?: { mode?: string; envKey?: string }; custom?: boolean }>;
+        mcpServers: Record<string, { url?: string; auth?: { mode?: string; envKey?: string }; custom?: boolean; agentReadOnlyTools?: string[] }>;
       };
       expect(mcpConfig.mcpServers["custom-echo"]).toMatchObject({
         url: "https://mcp.example.test/echo",
@@ -6057,7 +6061,8 @@ describe("Hermes-like CLI contracts", () => {
           mode: "bearer",
           envKey: "CUSTOM_ECHO_MCP_TOKEN"
         },
-        custom: true
+        custom: true,
+        agentReadOnlyTools: ["echo"]
       });
 
       const status = await runCli(["mcp", "status"], {
@@ -6071,7 +6076,8 @@ describe("Hermes-like CLI contracts", () => {
       expect(status.stdout).toContain("custom-echo");
       expect(status.stdout).toContain("protocol-mcp http https://mcp.example.test/echo");
       expect(status.stdout).toContain("authMode=bearer authEnv=CUSTOM_ECHO_MCP_TOKEN");
-      expect(status.stdout).toContain("policy=protocol-tools-list state=allowed-now");
+      expect(status.stdout).toContain("policy=read-only-allowlist state=allowed-now");
+      expect(status.stdout).toContain("readOnlyTools=echo");
       expect(status.stdout).toContain("next=rph mcp tools custom-echo");
 
       const proofs = await runCli(["proofs", "status"], {
@@ -6090,6 +6096,81 @@ describe("Hermes-like CLI contracts", () => {
       expect(projectStatus.exitCode).toBe(0);
       expect(projectStatus.stdout).toContain("Proof ledger");
       expect(projectStatus.stdout).toContain("connection:mcp:custom-echo");
+    } finally {
+      fs.rmSync(uninitializedRoot, { recursive: true, force: true });
+    }
+  }, 10000);
+
+  it("routes the first custom MCP ask turn through an auto-bound read-only tool", async () => {
+    const uninitializedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rph-custom-mcp-first-value-"));
+    try {
+      writeOpenAiEnv(uninitializedRoot, "https://example.invalid/v1");
+
+      const setup = await runCli([
+        "setup",
+        "mcp",
+        "add",
+        "custom-echo",
+        "--url",
+        "https://mcp.example.test/echo",
+        "--auth",
+        "bearer",
+        "--auth-env",
+        "CUSTOM_ECHO_MCP_TOKEN",
+        "--live"
+      ], {
+        cwd: uninitializedRoot,
+        env: {
+          ...withoutProviderEnv(),
+          CUSTOM_ECHO_MCP_TOKEN: "custom-secret"
+        },
+        preloadFetchMcpRuntime: true
+      });
+      expect(setup.exitCode).toBe(0);
+      expect(setup.stderr).toBe("");
+      expect(setup.stdout).toContain("MCP read-only tool auto-selected: custom-echo echo");
+      expect(setup.stdout).toContain("MCP read-only tool contracts bound: custom-echo");
+      expect(setup.stdout).toContain("bound tools: echo");
+
+      const ask = await runCli(["ask", "custom-echo echo 도구로 acceptance-mcp-ok를 확인해줘"], {
+        cwd: uninitializedRoot,
+        env: {
+          ...withoutProviderEnv(),
+          CUSTOM_ECHO_MCP_TOKEN: "custom-secret"
+        },
+        preloadFetchMcpRuntime: true
+      });
+      expect(ask.exitCode).toBe(0);
+      expect(ask.stderr).toBe("");
+      expect(ask.stdout).toContain("Custom MCP echo returned acceptance-mcp-ok.");
+
+      const manifest = JSON.parse(fs.readFileSync(path.join(uninitializedRoot, ".rph", "runtime", "current-session.json"), "utf8")) as {
+        activeTurn?: {
+          status: string;
+          toolCalls: Array<{ name: string; status: string; observation?: string }>;
+        };
+      };
+      expect(manifest.activeTurn?.status).toBe("complete");
+      expect(manifest.activeTurn?.toolCalls.find((call) => call.name === "mcp.tools.call")).toMatchObject({
+        name: "mcp.tools.call",
+        status: "succeeded",
+        observation: expect.stringContaining("acceptance-mcp-ok")
+      });
+
+      const agentStatus = await runCli(["agent", "status"], {
+        cwd: uninitializedRoot,
+        env: {
+          ...withoutProviderEnv(),
+          CUSTOM_ECHO_MCP_TOKEN: "custom-secret"
+        },
+        preloadFetchMcpRuntime: true
+      });
+      expect(agentStatus.exitCode).toBe(0);
+      expect(agentStatus.stdout).toContain("Latest agent tool proof");
+      expect(agentStatus.stdout).toContain("mcp.tools.call");
+      expect(agentStatus.stdout).toContain("tool=echo result=echo:acceptance-mcp-ok");
+      expect(agentStatus.stdout).toContain("connection:mcp:custom-echo");
+      expect(agentStatus.stdout).toContain("acceptance-mcp-ok");
     } finally {
       fs.rmSync(uninitializedRoot, { recursive: true, force: true });
     }
@@ -7871,11 +7952,14 @@ function createFetchMcpRuntimeStub(projectRoot: string): string {
     "    const input = typeof body.input === 'string' ? body.input : '';",
     "    const smoke = input.includes('Reply with exactly OK.');",
     "    const observed = input.includes('Tool observations:');",
+    "    const customEcho = input.includes('custom-echo') || input.includes('echo:acceptance-mcp-ok');",
     "    const text = smoke",
     "      ? 'OK'",
     "      : observed",
-    "        ? JSON.stringify({ action: { type: 'respond', message: 'Protocol MCP list_projects returned acceptance-mcp-ok.' } })",
-    "        : JSON.stringify({ action: { type: 'tool_call', tool: 'mcp.tools.call', args: { server: 'stitch', toolName: 'list_projects', readOnly: true, arguments: { filter: 'view=owned' } } } });",
+    "        ? JSON.stringify({ action: { type: 'respond', message: customEcho ? 'Custom MCP echo returned acceptance-mcp-ok.' : 'Protocol MCP list_projects returned acceptance-mcp-ok.' } })",
+    "        : customEcho",
+    "          ? JSON.stringify({ action: { type: 'tool_call', tool: 'mcp.tools.call', args: { server: 'custom-echo', toolName: 'echo', readOnly: true, arguments: { text: 'acceptance-mcp-ok' } } } })",
+    "          : JSON.stringify({ action: { type: 'tool_call', tool: 'mcp.tools.call', args: { server: 'stitch', toolName: 'list_projects', readOnly: true, arguments: { filter: 'view=owned' } } } });",
     "    return json({ output: [{ type: 'message', content: [{ type: 'output_text', text }] }], usage: { input_tokens: 10, output_tokens: 5 }, responseCallCount });",
     "  }",
     "  if (target.includes('stitch.googleapis.com/mcp') || target.includes('mcp.example.test/echo')) {",
