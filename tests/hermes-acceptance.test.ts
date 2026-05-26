@@ -5295,6 +5295,42 @@ describe("Hermes-like CLI contracts", () => {
     }
   }, 15000);
 
+  it("keeps one runtime shell session usable across setup, chat, status, chat, and explicit control", async () => {
+    const uninitializedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rph-runtime-mixed-session-"));
+    try {
+      const result = await runCli(["shell"], {
+        cwd: uninitializedRoot,
+        env: withoutProviderEnv(),
+        stdinChunks: [
+          { text: "/setup auto --ai openai --mcp none --live\n", delayMs: 0 },
+          { text: "test-openai-from-wizard\n", delayMs: 200 },
+          { text: "\n", delayMs: 50 },
+          { text: "https://example.invalid/v1\n", delayMs: 50 },
+          { text: "첫 대화야. 짧게 응답해줘\n", delayMs: 300 },
+          { text: "/status\n", delayMs: 150 },
+          { text: "두 번째 대화야. 계속 채팅으로 받아줘\n", delayMs: 150 },
+          { text: "/pm start\n", delayMs: 150 },
+          { text: "/exit\n", delayMs: 150 }
+        ],
+        preloadFetchOpenAiConnectionSuccess: true
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("setup live check passed");
+      expect(result.stdout).toContain("이제 일반 텍스트를 입력하면 연결된 AI agent와 대화합니다.");
+      expect((result.stdout.match(/\bOK\b/g) ?? []).length).toBeGreaterThanOrEqual(2);
+      expect(result.stdout).toContain("- current: SETUP");
+      expect(result.stdout).toContain("PM 워크플로우 시작");
+      const state = JSON.parse(fs.readFileSync(path.join(uninitializedRoot, ".rph", "state.json"), "utf8")) as {
+        currentStage: string;
+      };
+      expect(state.currentStage).toBe("PM_PRODUCT_DEFINITION_INTERVIEW");
+    } finally {
+      fs.rmSync(uninitializedRoot, { recursive: true, force: true });
+    }
+  }, 15000);
+
   it("retries failed setup auto --live credential entry inside the runtime shell", async () => {
     const uninitializedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rph-runtime-setup-auto-retry-"));
     try {
