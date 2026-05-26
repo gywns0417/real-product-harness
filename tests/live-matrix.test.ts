@@ -112,8 +112,11 @@ describe("live matrix report integrity", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "rph-live-matrix-openai-401-"));
     try {
       const reportPath = path.join(root, "latest.json");
+      const secretLike = "sk_test_secret_value_2468135790";
       const report = createMatrixReport();
       report.checks[0] = failedAiCheck("openai", "2026-01-01T00:00:00.000Z");
+      report.checks[0].message = `credential: token=${secretLike} rejected (401); generation: skipped`;
+      report.checks[0].readiness.stages[1].message = `token=${secretLike} rejected (401)`;
       report.onboardingProof[0] = proofFromCheck(report.checks[0]);
       fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
 
@@ -128,7 +131,54 @@ describe("live matrix report integrity", () => {
       });
 
       expect(result.status).toBe(1);
-      expect(result.stderr).toContain("ai:openai status=failed stage=none message=credential: request failed (401); generation: skipped");
+      expect(result.stdout).toContain("Recovery diagnostics");
+      expect(result.stdout).toContain("ai:openai");
+      expect(result.stdout).toContain("classification: ai-invalid-credentials");
+      expect(result.stdout).toContain("env: replace OPENAI_API_KEY in .env or the current shell env");
+      expect(result.stdout).toContain("degraded: rph setup auto --live --ai none");
+      expect(result.stdout).toContain("recheck: rph live ai:openai");
+      expect(result.stdout).toContain("token=<redacted> rejected (401)");
+      expect(result.stdout).not.toContain(secretLike);
+      expect(result.stderr).toContain("ai:openai status=failed stage=none message=credential: token=<redacted> rejected (401); generation: skipped");
+      expect(result.stderr).not.toContain(secretLike);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("prints recovery diagnostics when a configured Gemini credential hits quota or rate limits", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rph-live-matrix-gemini-429-"));
+    try {
+      const reportPath = path.join(root, "latest.json");
+      const secretLike = "AIza_test_secret_value_2468135790";
+      const report = createMatrixReport();
+      report.checks[2] = rateLimitedAiCheck("gemini", "2026-01-01T00:00:00.000Z");
+      report.checks[2].message = `credential: model catalog credential probe passed (200); generation: token=${secretLike} rate limited (429)`;
+      report.checks[2].readiness.stages[2].message = `token=${secretLike} rate limited (429)`;
+      report.onboardingProof[2] = proofFromCheck(report.checks[2]);
+      fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
+
+      const result = spawnSync(process.execPath, [
+        path.resolve(__dirname, "..", "scripts", "live-matrix.mjs"),
+        "--configured-only",
+        "--validate-report",
+        reportPath
+      ], {
+        cwd: path.resolve(__dirname, ".."),
+        encoding: "utf8"
+      });
+
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain("Recovery diagnostics");
+      expect(result.stdout).toContain("ai:gemini");
+      expect(result.stdout).toContain("classification: ai-quota-or-rate-limit");
+      expect(result.stdout).toContain("env: no secret replacement suggested for 429; check quota, billing, model access, or provider rate limits");
+      expect(result.stdout).toContain("degraded: rph setup auto --live --ai none");
+      expect(result.stdout).toContain("recheck: rph live ai:gemini");
+      expect(result.stdout).toContain("token=<redacted> rate limited (429)");
+      expect(result.stdout).not.toContain(secretLike);
+      expect(result.stderr).toContain("ai:gemini status=failed stage=credential-probe message=credential: model catalog credential probe passed (200); generation: token=<redacted> rate limited (429)");
+      expect(result.stderr).not.toContain(secretLike);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -489,7 +539,7 @@ function failedAiCheck(id: string, checkedAt: string) {
     id,
     status: "failed",
     message: "credential: request failed (401); generation: skipped",
-    requiredEnv: ["OPENAI_API_KEY"],
+    requiredEnv: aiRequiredEnv(id),
     missingEnv: [],
     endpoint: "https://api.openai.com/v1/responses",
     checkedAt,
@@ -503,6 +553,41 @@ function failedAiCheck(id: string, checkedAt: string) {
       ]
     }
   };
+}
+
+function rateLimitedAiCheck(id: string, checkedAt: string) {
+  return {
+    kind: "ai",
+    id,
+    status: "failed",
+    message: "credential: model catalog credential probe passed (200); generation: request failed (429)",
+    requiredEnv: aiRequiredEnv(id),
+    missingEnv: [],
+    endpoint: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+    checkedAt,
+    readiness: {
+      mode: "protocol-partial",
+      provenStage: "credential-probe",
+      stages: [
+        { stage: "transport", status: "passed", message: "provider endpoint reachable", endpoint: "https://generativelanguage.googleapis.com/v1beta/models" },
+        { stage: "credential-probe", status: "passed", message: "model catalog credential probe passed (200)", endpoint: "https://generativelanguage.googleapis.com/v1beta/models" },
+        { stage: "protocol-tool-call", status: "failed", message: "request failed (429)", endpoint: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent" }
+      ]
+    }
+  };
+}
+
+function aiRequiredEnv(id: string) {
+  if (id === "gemini") {
+    return ["GEMINI_API_KEY"];
+  }
+  if (id === "anthropic") {
+    return ["ANTHROPIC_API_KEY"];
+  }
+  if (id === "local") {
+    return ["LOCAL_AI_BASE_URL"];
+  }
+  return ["OPENAI_API_KEY"];
 }
 
 function skippedCheck(

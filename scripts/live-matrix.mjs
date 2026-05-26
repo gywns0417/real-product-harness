@@ -131,6 +131,9 @@ for (const check of checks) {
   const action = check.firstActionProof?.action ?? proof?.firstActionProof?.action;
   console.log(`- ${check.kind}:${check.id} status=${check.status} trust=${trust}:${check.readiness?.provenStage ?? "none"}${target ? ` target=${target}` : ""}${action ? ` action=${action}` : ""}`);
 }
+for (const line of renderRecoveryDiagnostics(checks, configuredOnly)) {
+  console.log(line);
+}
 console.log(`tmp: ${tmpRoot}`);
 console.log(`report: ${reportPath}`);
 
@@ -258,6 +261,169 @@ function sortJson(value) {
 function readinessStageStatus(check, stageNames, fallback) {
   const stage = check.readiness?.stages?.find((item) => stageNames.includes(item.stage));
   return stage?.status ?? fallback;
+}
+
+function renderRecoveryDiagnostics(checks, configuredOnlyMode) {
+  const failedChecks = checks.filter((check) => shouldRenderRecoveryDiagnostic(check, configuredOnlyMode));
+  if (failedChecks.length === 0) {
+    return [];
+  }
+  const lines = [
+    "",
+    "Recovery diagnostics",
+    "repair: rph setup repair --live"
+  ];
+  for (const check of failedChecks) {
+    const diagnostic = recoveryDiagnostic(check);
+    lines.push(`- ${check.kind}:${check.id}`);
+    lines.push(`  classification: ${diagnostic.classification}`);
+    lines.push(`  cause: ${diagnostic.cause}`);
+    lines.push(`  env: ${diagnostic.env}`);
+    lines.push(`  next: ${diagnostic.next}`);
+    lines.push(`  degraded: ${diagnostic.degraded}`);
+    lines.push(`  recheck: ${diagnostic.recheck}`);
+  }
+  return lines;
+}
+
+function shouldRenderRecoveryDiagnostic(check, configuredOnlyMode) {
+  if (check.status === "passed") {
+    return false;
+  }
+  if (configuredOnlyMode && check.status === "skipped" && Array.isArray(check.missingEnv) && check.missingEnv.length > 0) {
+    return false;
+  }
+  return true;
+}
+
+function recoveryDiagnostic(check) {
+  const classification = recoveryClassification(check);
+  return {
+    classification,
+    cause: recoveryCause(check),
+    env: recoveryEnvGuidance(check, classification),
+    next: recoveryNextAction(check, classification),
+    degraded: recoveryDegradedCommand(check),
+    recheck: recoveryRecheckCommand(check)
+  };
+}
+
+function recoveryClassification(check) {
+  if (Array.isArray(check.missingEnv) && check.missingEnv.length > 0) {
+    return "missing-env";
+  }
+  const statusCode = failedStatusCode(check);
+  if (statusCode === 401 || statusCode === 403) {
+    return check.kind === "ai" ? "ai-invalid-credentials" : "mcp-invalid-credentials";
+  }
+  if (statusCode === 429) {
+    return check.kind === "ai" ? "ai-quota-or-rate-limit" : "mcp-quota-or-rate-limit";
+  }
+  const failedStage = failedReadinessStage(check);
+  if (check.kind === "ai" && failedStage?.stage === "protocol-tool-call") {
+    return "ai-generation-failed";
+  }
+  if (check.kind === "mcp" && (failedStage?.stage === "protocol-tools-list" || failedStage?.stage === "protocol-tool-call")) {
+    return "mcp-protocol-failed";
+  }
+  return "connection-failed";
+}
+
+function recoveryCause(check) {
+  if (Array.isArray(check.missingEnv) && check.missingEnv.length > 0) {
+    return `missing ${check.missingEnv.join(", ")}`;
+  }
+  const failedStage = failedReadinessStage(check);
+  if (failedStage) {
+    return redactSecretText(`${failedStage.stage} failed: ${failedStage.message}`);
+  }
+  return redactSecretText(check.message ?? "connection check failed");
+}
+
+function recoveryEnvGuidance(check, classification) {
+  if (Array.isArray(check.missingEnv) && check.missingEnv.length > 0) {
+    return `set ${check.missingEnv.join(", ")} in .env or the current shell env`;
+  }
+  if (classification === "ai-invalid-credentials" || classification === "mcp-invalid-credentials") {
+    const envKeys = credentialEnvKeys(check);
+    if (envKeys.length > 0) {
+      return `replace ${envKeys.join(", ")} in .env or the current shell env`;
+    }
+    return "replace this target's credential env var; keep the rejected value out of logs";
+  }
+  if (classification === "ai-quota-or-rate-limit" || classification === "mcp-quota-or-rate-limit") {
+    return "no secret replacement suggested for 429; check quota, billing, model access, or provider rate limits";
+  }
+  const envKeys = credentialEnvKeys(check);
+  if (envKeys.length > 0) {
+    return `verify ${envKeys.join(", ")} without printing its value`;
+  }
+  return "no secret value needed in logs; keep credential values redacted";
+}
+
+function recoveryNextAction(check, classification) {
+  if (classification === "missing-env") {
+    return "set the missing env vars, then rerun the configured live matrix";
+  }
+  if (classification === "ai-invalid-credentials" || classification === "mcp-invalid-credentials") {
+    return "replace the rejected credential, then run the exact target recheck";
+  }
+  if (classification === "ai-quota-or-rate-limit" || classification === "mcp-quota-or-rate-limit") {
+    return "resolve quota, billing, model access, or rate limits, then run the exact target recheck";
+  }
+  if (check.kind === "ai") {
+    return "verify provider model access and base URL, then rerun this AI target";
+  }
+  if (check.kind === "mcp") {
+    return "verify connector credentials and permissions, then rerun this MCP target";
+  }
+  return "repair the connection values, then rerun the live check";
+}
+
+function recoveryDegradedCommand(check) {
+  if (check.kind === "ai") {
+    return "rph setup auto --live --ai none";
+  }
+  if (check.kind === "mcp") {
+    return "rph setup auto --live --mcp none";
+  }
+  return "rph setup auto --live --allow-missing";
+}
+
+function recoveryRecheckCommand(check) {
+  if (check.kind === "ai" || check.kind === "mcp") {
+    return `rph live ${check.kind}:${check.id}`;
+  }
+  return "rph setup check --live";
+}
+
+function failedReadinessStage(check) {
+  return check.readiness?.stages?.find((stage) => stage.status === "failed");
+}
+
+function failedStatusCode(check) {
+  const texts = [
+    failedReadinessStage(check)?.message,
+    check.message
+  ].filter(Boolean);
+  for (const text of texts) {
+    const match = String(text).match(/\((401|403|429)\)|\bstatus[= ](401|403|429)\b|\b(401|403|429)\b/i);
+    const value = match?.[1] ?? match?.[2] ?? match?.[3];
+    if (value) {
+      return Number(value);
+    }
+  }
+  return null;
+}
+
+function credentialEnvKeys(check) {
+  const keys = Array.isArray(check.requiredEnv) && check.requiredEnv.length > 0
+    ? check.requiredEnv
+    : Array.isArray(check.missingEnv)
+      ? check.missingEnv
+      : [];
+  const credentialKeys = keys.filter((key) => /(API_KEY|TOKEN|SECRET|AUTH|KEY)$/i.test(key));
+  return credentialKeys.length > 0 ? credentialKeys : keys;
 }
 
 function stageCovers(actual, required) {

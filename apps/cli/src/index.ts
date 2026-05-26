@@ -8228,7 +8228,7 @@ function assertLiveSetupSucceeded(projectRoot: string, checks: ConnectionCheck[]
     throw new Error("setup live check failed: no selected or configured connections were tested");
   }
   if (failures.length > 0) {
-    throw new Error(`setup live check failed: ${failures.map((check) => `${check.kind}:${check.id} ${check.status} (${check.message})`).join("; ")}`);
+    throw new Error(`setup live check failed: ${failures.map((check) => `${check.kind}:${check.id} ${check.status} (${sanitizeConnectionDiagnosticText(check.message)})`).join("; ")}`);
   }
   console.log("setup live check passed");
   printSetupConnectedHandoff(projectRoot, checks, options);
@@ -10336,10 +10336,10 @@ function mcpStatusNextAction(
 function printConnectionChecks(checks: ConnectionCheck[]): void {
   for (const check of checks) {
     const missing = check.missingEnv.length > 0 ? ` missing=${check.missingEnv.join(",")}` : "";
-    const endpoint = check.endpoint ? ` endpoint=${check.endpoint}` : "";
+    const endpoint = check.endpoint ? ` endpoint=${sanitizeConnectionDiagnosticText(check.endpoint)}` : "";
     const trust = connectionTrustLabel(check);
     const policy = check.policy ? ` policy=${check.policy.kind}:${check.policy.state}${check.policy.satisfied ? ":satisfied" : ":unsatisfied"}` : "";
-    console.log(`- ${renderStatusLine(`${check.kind}:${check.id}`, check.status)} trust=${trust} ${check.message}${missing}${endpoint}${policy}`);
+    console.log(`- ${renderStatusLine(`${check.kind}:${check.id}`, check.status)} trust=${trust} ${sanitizeConnectionDiagnosticText(check.message)}${missing}${endpoint}${policy}`);
   }
   printConnectionVerifiedTargets(checks);
   printConnectionFirstActionProofs(checks);
@@ -10420,7 +10420,7 @@ function printConnectionProofSteps(checks: ConnectionCheck[]): void {
     .map((check) => {
       const trust = humanConnectionTrust(check);
       const stages = check.readiness?.stages
-        .map((stage) => `${stage.stage}=${stage.status}`)
+        .map((stage) => `${stage.stage}=${stage.status}${stage.status === "failed" ? ` (${sanitizeConnectionDiagnosticText(stage.message)})` : ""}`)
         .join(" -> ");
       return `- ${check.kind}:${check.id} ${trust}: ${stages}`;
     });
@@ -10528,43 +10528,142 @@ function setupAskExampleForMcp(id: string): string {
   }
 }
 
+type SetupRecoveryClassification =
+  | "missing-env"
+  | "ai-invalid-credentials"
+  | "ai-quota-or-rate-limit"
+  | "ai-generation-failed"
+  | "mcp-invalid-credentials"
+  | "mcp-quota-or-rate-limit"
+  | "mcp-protocol-failed"
+  | "external-write-failed"
+  | "connection-failed";
+
+interface SetupRecoveryDiagnostic {
+  classification: SetupRecoveryClassification;
+  cause: string;
+  env: string;
+  next: string;
+  degraded: string;
+  recheck: string;
+  retry: string;
+}
+
 function printSetupRecoveryHints(checks: ConnectionCheck[], commandSurface: CommandSurface = "rph"): void {
+  for (const line of renderSetupRecoveryDiagnostics(checks, commandSurface)) {
+    console.log(line);
+  }
+}
+
+function renderSetupRecoveryDiagnostics(checks: ConnectionCheck[], commandSurface: CommandSurface = "rph"): string[] {
   const failing = checks.filter((check) => check.status !== "passed");
   if (failing.length === 0) {
     if (checks.some((check) => check.kind === "ai" && check.status === "passed")) {
-      console.log(`next: 일반 텍스트로 AI agent와 대화하거나 ${runtimeSurfaceCommand(commandSurface, "pm start")}`);
+      return [`next: 일반 텍스트로 AI agent와 대화하거나 ${runtimeSurfaceCommand(commandSurface, "pm start")}`];
     } else {
-      console.log(`next: ${runtimeSurfaceCommand(commandSurface, "setup auto --ai openai --live")} 또는 ${runtimeSurfaceCommand(commandSurface, "pm start")}`);
+      return [`next: ${runtimeSurfaceCommand(commandSurface, "setup auto --ai openai --live")} 또는 ${runtimeSurfaceCommand(commandSurface, "pm start")}`];
     }
-    return;
   }
-  console.log("");
-  console.log("Recovery hints");
-  console.log(`repair: ${runtimeSurfaceCommand(commandSurface, "setup repair --live")}`);
+  const lines = [
+    "",
+    "Recovery hints",
+    `repair: ${runtimeSurfaceCommand(commandSurface, "setup repair --live")}`
+  ];
   for (const check of failing) {
-    console.log(`- ${check.kind}:${check.id}`);
-    console.log(`  cause: ${setupFailureCause(check)}`);
-    console.log(`  next: ${setupNextAction(check, commandSurface)}`);
-    console.log(`  retry: ${setupRetryCommand(check, commandSurface)}`);
+    const diagnostic = setupRecoveryDiagnostic(check, commandSurface);
+    lines.push(`- ${check.kind}:${check.id}`);
+    lines.push(`  classification: ${diagnostic.classification}`);
+    lines.push(`  cause: ${diagnostic.cause}`);
+    lines.push(`  env: ${diagnostic.env}`);
+    lines.push(`  next: ${diagnostic.next}`);
+    lines.push(`  degraded: ${diagnostic.degraded}`);
+    lines.push(`  recheck: ${diagnostic.recheck}`);
+    lines.push(`  retry: ${diagnostic.retry}`);
   }
+  return lines;
+}
+
+function setupRecoveryDiagnostic(check: ConnectionCheck, commandSurface: CommandSurface): SetupRecoveryDiagnostic {
+  const classification = setupFailureClassification(check);
+  return {
+    classification,
+    cause: setupFailureCause(check),
+    env: setupEnvGuidance(check, classification),
+    next: setupNextAction(check, commandSurface),
+    degraded: setupDegradedOption(check, commandSurface),
+    recheck: setupTargetRecheckCommand(check, commandSurface),
+    retry: setupRetryCommand(check, commandSurface)
+  };
 }
 
 function setupFailureCause(check: ConnectionCheck): string {
   if (check.missingEnv.length > 0) {
     return `missing ${check.missingEnv.join(", ")}`;
   }
-  const failedStage = check.readiness?.stages.find((stage) => stage.status === "failed");
+  const failedStage = failedReadinessStage(check);
   if (failedStage) {
-    return `${failedStage.stage} failed: ${failedStage.message}`;
+    return sanitizeConnectionDiagnosticText(`${failedStage.stage} failed: ${failedStage.message}`);
   }
-  return check.message;
+  return sanitizeConnectionDiagnosticText(check.message);
+}
+
+function setupFailureClassification(check: ConnectionCheck): SetupRecoveryClassification {
+  if (check.missingEnv.length > 0) {
+    return "missing-env";
+  }
+  const statusCode = failedStatusCode(check);
+  if (statusCode === 401 || statusCode === 403) {
+    return check.kind === "ai" ? "ai-invalid-credentials" : "mcp-invalid-credentials";
+  }
+  if (statusCode === 429) {
+    return check.kind === "ai" ? "ai-quota-or-rate-limit" : "mcp-quota-or-rate-limit";
+  }
+  const failedStage = failedReadinessStage(check);
+  if (failedStage?.stage === "external-write") {
+    return "external-write-failed";
+  }
+  if (check.kind === "ai" && failedStage?.stage === "protocol-tool-call") {
+    return "ai-generation-failed";
+  }
+  if (check.kind === "mcp" && (failedStage?.stage === "protocol-tools-list" || failedStage?.stage === "protocol-tool-call")) {
+    return "mcp-protocol-failed";
+  }
+  return "connection-failed";
+}
+
+function setupEnvGuidance(check: ConnectionCheck, classification: SetupRecoveryClassification): string {
+  if (check.missingEnv.length > 0) {
+    return `set ${check.missingEnv.join(", ")} in .env or the current shell env`;
+  }
+  if (classification === "ai-invalid-credentials" || classification === "mcp-invalid-credentials") {
+    const envKeys = credentialEnvKeys(check);
+    if (envKeys.length > 0) {
+      return `replace ${envKeys.join(", ")} in .env or the current shell env`;
+    }
+    return "replace the credential env var for this target; do not paste the old value into logs";
+  }
+  if (classification === "ai-quota-or-rate-limit" || classification === "mcp-quota-or-rate-limit") {
+    return "no secret replacement suggested for 429; check quota, billing, or provider rate limits";
+  }
+  const envKeys = credentialEnvKeys(check);
+  if (envKeys.length > 0) {
+    return `verify ${envKeys.join(", ")} without printing its value`;
+  }
+  return "no secret value needed in logs; keep credential values redacted";
 }
 
 function setupNextAction(check: ConnectionCheck, commandSurface: CommandSurface = "rph"): string {
+  const classification = setupFailureClassification(check);
   if (check.missingEnv.length > 0) {
     return `.env에 ${check.missingEnv.join(", ")} 추가 또는 ${runtimeSurfaceCommand(commandSurface, "setup auto")}로 다시 입력`;
   }
-  const failedStage = check.readiness?.stages.find((stage) => stage.status === "failed");
+  if (classification === "ai-invalid-credentials" || classification === "mcp-invalid-credentials") {
+    return "credential 값이 거부되었습니다. env 값을 교체한 뒤 exact target recheck를 실행";
+  }
+  if (classification === "ai-quota-or-rate-limit" || classification === "mcp-quota-or-rate-limit") {
+    return "quota/rate limit 또는 billing/model 권한을 해결한 뒤 exact target recheck를 실행";
+  }
+  const failedStage = failedReadinessStage(check);
   if (failedStage?.stage === "credential-probe") {
     return "credential 값과 base URL을 확인한 뒤 다시 live check";
   }
@@ -10580,6 +10679,23 @@ function setupNextAction(check: ConnectionCheck, commandSurface: CommandSurface 
   return "연결 값 수정 후 live check 재실행";
 }
 
+function setupDegradedOption(check: ConnectionCheck, commandSurface: CommandSurface = "rph"): string {
+  if (check.kind === "ai") {
+    return `${runtimeSurfaceCommand(commandSurface, "setup auto --live --ai none")} (skip AI for now; plain text chat stays disabled)`;
+  }
+  if (check.kind === "mcp") {
+    return `${runtimeSurfaceCommand(commandSurface, "setup auto --live --mcp none")} (skip this connector for now; AI/local workflows can continue)`;
+  }
+  return runtimeSurfaceCommand(commandSurface, "setup auto --live --allow-missing");
+}
+
+function setupTargetRecheckCommand(check: ConnectionCheck, commandSurface: CommandSurface = "rph"): string {
+  if (check.kind === "ai" || check.kind === "mcp") {
+    return runtimeSurfaceCommand(commandSurface, `live ${check.kind}:${check.id}`);
+  }
+  return runtimeSurfaceCommand(commandSurface, "setup check --live");
+}
+
 function setupRetryCommand(check: ConnectionCheck, commandSurface: CommandSurface = "rph"): string {
   if (check.kind === "ai") {
     return `${runtimeSurfaceCommand(commandSurface, `setup auto --live --ai ${check.id} --mcp none`)}`;
@@ -10588,6 +10704,39 @@ function setupRetryCommand(check: ConnectionCheck, commandSurface: CommandSurfac
     return `${runtimeSurfaceCommand(commandSurface, `setup auto --live --ai none --mcp ${check.id}`)}`;
   }
   return runtimeSurfaceCommand(commandSurface, "setup auto --live");
+}
+
+function failedReadinessStage(check: ConnectionCheck): NonNullable<ConnectionCheck["readiness"]>["stages"][number] | undefined {
+  return check.readiness?.stages.find((stage) => stage.status === "failed");
+}
+
+function failedStatusCode(check: ConnectionCheck): number | null {
+  const texts = [
+    failedReadinessStage(check)?.message,
+    check.message
+  ].filter((text): text is string => Boolean(text));
+  for (const text of texts) {
+    const match = text.match(/\((\d{3})\)|\bstatus[= ](\d{3})\b/i);
+    const value = match?.[1] ?? match?.[2];
+    if (value) {
+      return Number(value);
+    }
+  }
+  return null;
+}
+
+function credentialEnvKeys(check: ConnectionCheck): string[] {
+  const keys = check.requiredEnv.length > 0 ? check.requiredEnv : check.missingEnv;
+  const credentialKeys = keys.filter((key) => /(API_KEY|TOKEN|SECRET|AUTH|KEY)$/i.test(key));
+  return credentialKeys.length > 0 ? credentialKeys : keys;
+}
+
+function sanitizeConnectionDiagnosticText(text: string): string {
+  return text
+    .replace(/(Bearer\s+)[^\s;,)]+/gi, "$1<redacted>")
+    .replace(/([?&](?:key|token|api_key|access_token)=)[^&\s]+/gi, "$1<redacted>")
+    .replace(/\b((?:api[_ -]?key|token|secret|authorization)[^:;,\n]{0,32}[:=]\s*)(["']?)[^"'\s;,)]+/gi, "$1$2<redacted>$2")
+    .replace(/\b(?:sk|rk|ghp|gho|ghu|ghs|ghr|github_pat|xoxb|xoxp|xoxa|xoxr|AIza)[A-Za-z0-9_-]{8,}\b/g, "<redacted>");
 }
 
 function parseAiProviderId(value: string | undefined): AiProviderId {

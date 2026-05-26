@@ -2671,6 +2671,74 @@ describe("command parser and env validation", () => {
     expect(output).toContain("Live connection check");
   });
 
+  it("prints actionable setup diagnostics for rejected AI credentials without exposing the secret", async () => {
+    const secret = "sk_test_secret_value_1234567890";
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.endsWith("/models")) {
+        return new Response(JSON.stringify({ data: [{ id: "gpt-5.4" }] }), { status: 200 });
+      }
+      if (target.endsWith("/responses")) {
+        return new Response(JSON.stringify({ error: { message: `Incorrect API key provided: ${secret}` } }), { status: 401 });
+      }
+      return new Response(JSON.stringify({ error: { message: `unexpected ${target}` } }), { status: 500 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ok = await withProcessEnv({
+      OPENAI_API_KEY: secret,
+      OPENAI_BASE_URL: "https://example.invalid/v1"
+    }, async () => runParsedCommand(root, parseCli(["setup", "auto", "--from-env", "--live", "--ai", "openai", "--mcp", "none"])));
+
+    const output = logSpy.mock.calls.flat().join("\n");
+    const errors = errorSpy.mock.calls.flat().join("\n");
+    expect(ok).toBe(false);
+    expect(output).toContain("classification: ai-invalid-credentials");
+    expect(output).toContain("env: replace OPENAI_API_KEY in .env or the current shell env");
+    expect(output).toContain("degraded: rph setup auto --live --ai none");
+    expect(output).toContain("recheck: rph live ai:openai");
+    expect(output).toContain("retry: rph setup auto --live --ai openai --mcp none");
+    expect(output).toContain("Incorrect API key provided: <redacted>");
+    expect(output).not.toContain(secret);
+    expect(errors).not.toContain(secret);
+    expect(errors).toContain("setup live check failed");
+  });
+
+  it("classifies AI quota and rate-limit failures with a recheck target and degraded path", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.endsWith("/models")) {
+        return new Response(JSON.stringify({ data: [{ id: "gpt-5.4" }] }), { status: 200 });
+      }
+      if (target.endsWith("/responses")) {
+        return new Response(JSON.stringify({ error: { message: "quota exceeded" } }), { status: 429 });
+      }
+      return new Response(JSON.stringify({ error: { message: `unexpected ${target}` } }), { status: 500 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ok = await withProcessEnv({
+      OPENAI_API_KEY: "sk_quota_secret_value_1234567890",
+      OPENAI_BASE_URL: "https://example.invalid/v1"
+    }, async () => runParsedCommand(root, parseCli(["setup", "auto", "--from-env", "--live", "--ai", "openai", "--mcp", "none"])));
+
+    const output = logSpy.mock.calls.flat().join("\n");
+    const errors = errorSpy.mock.calls.flat().join("\n");
+    expect(ok).toBe(false);
+    expect(output).toContain("classification: ai-quota-or-rate-limit");
+    expect(output).toContain("env: no secret replacement suggested for 429; check quota, billing, or provider rate limits");
+    expect(output).toContain("next: quota/rate limit 또는 billing/model 권한을 해결한 뒤 exact target recheck를 실행");
+    expect(output).toContain("degraded: rph setup auto --live --ai none");
+    expect(output).toContain("recheck: rph live ai:openai");
+    expect(output).toContain("quota exceeded");
+    expect(output).not.toContain("sk_quota_secret_value_1234567890");
+    expect(errors).not.toContain("sk_quota_secret_value_1234567890");
+  });
+
   it("generates text through the active AI provider without exposing secrets", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({
       output: [
